@@ -1,6 +1,12 @@
 package coordinator
 
-import "github.com/open-inference-mesh/oim/internal/protocol"
+import (
+	"errors"
+
+	"github.com/open-inference-mesh/oim/internal/protocol"
+)
+
+var ErrNotImplemented = errors.New("milestone 3: not implemented")
 
 // SpotCheckFastLane re-runs a sampled fraction of fast-lane jobs on a second node.
 // SampleRate is configurable — baked-in 100% defeats efficiency, 0% defeats verification.

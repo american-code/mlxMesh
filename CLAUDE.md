@@ -51,16 +51,38 @@ Node Agents (wrapping Exo)         M1 ✓
 | `internal/capability` | Live manifest assembly from Exo state |
 | `internal/bench` | Tier benchmarking (short/medium/long reference prompts) |
 | `internal/identity` | Ed25519 keypair persistence at `~/.config/oim/node_identity.json` |
-| `internal/coordinator` | Pod coordinator stubs (M2) |
-| `internal/directory` | Resolver interface + staged implementations |
+| `internal/coordinator` | Pod coordinator — NodeRegistry, ScoreForFastLane, DispatchFastLane, AssignBackgroundJob, ResolveForCycle |
+| `internal/jobrunner` | Node-side job execution (ExecuteFastLane, ExecuteBackgroundLane, RefuseIfConstrained) |
+| `internal/agent` | Node agent lifecycle (register → serve jobs → heartbeat loop) |
+| `internal/directory` | Resolver interface + staged implementations (M4) |
 | `internal/settlement` | Division-order ledger stubs (M5) |
 
 ## Build / test
 ```bash
-/usr/local/go/bin/go build ./...   # clean build
-/usr/local/go/bin/go test ./...    # all tests pass
-make build                         # produces ./bin/oim
-make install                       # installs to $GOPATH/bin
+/usr/local/go/bin/go build ./...        # clean build
+/usr/local/go/bin/go test ./...         # all tests pass (15 tests)
+/usr/local/go/bin/go build -o bin/oim ./cmd/oim
+/usr/local/go/bin/go build -o bin/oim-coordinator ./cmd/coordinator
+```
+
+## M2 runtime: two-node quick start
+```bash
+# Terminal 1 — pod coordinator
+./bin/oim-coordinator --pod-id pod-local --region us
+
+# Terminal 2 — node 1 (must have Exo running)
+./bin/oim node start --coordinator http://localhost:9000 --listen :8765 --cap 0.5
+
+# Terminal 3 — node 2
+./bin/oim node start --coordinator http://localhost:9000 --listen :8766 --cap 0.5
+
+# Dispatch a fast-lane job (any OpenAI client works)
+curl -X POST http://localhost:9000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"llama-3.2-3b","messages":[{"role":"user","content":"hello"}]}'
+
+# Pod health
+curl http://localhost:9000/health
 ```
 
 ## Platform notes
@@ -71,9 +93,9 @@ make install                       # installs to $GOPATH/bin
 
 ## Milestone status
 - **M1 DONE** — node agent: manifest, governor, bench, identity, CLI (`oim node status`, `oim bench run`)
-- M2 stub — pod coordinator
-- M3 stub — spot-check verification
-- M4 stub — centralized directory
-- M5 stub — settlement ledger
-- M6 stub — MoE expert-shard planner
+- **M2 DONE** — pod coordinator: NodeRegistry (signature-verified, TTL decay), fast-lane routing (measured-TPS scoring, Secure Enclave gate, failover), background-lane sticky assignment (primary + N backups, cycle resolution with failover), `oim node start`, `oim-coordinator` server, 15 tests passing
+- M3 stub — spot-check verification (`internal/coordinator/verification.go`)
+- M4 stub — centralized directory (`internal/directory/resolver.go`)
+- M5 stub — settlement ledger (`internal/settlement/ledger.go`)
+- M6 stub — MoE expert-shard planner (`internal/coordinator/verification.go:PlanMoEExpertAssignment`)
 - M7 stub — federated directory

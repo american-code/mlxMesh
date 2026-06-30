@@ -63,6 +63,7 @@ func AssembleManifest(
 		MeasuredSignature:    sig,
 		ReachabilityEndpoint: opts.ReachabilityEndpoint,
 		PricePerUnit:         opts.PricePerUnit,
+		HasSecureEnclave:     protocol.CheckSecureEnclaveAvailable(),
 	}, nil
 }
 

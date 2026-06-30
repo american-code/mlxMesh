@@ -4,11 +4,15 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
+	"time"
 
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 
+	"github.com/open-inference-mesh/oim/internal/agent"
 	"github.com/open-inference-mesh/oim/internal/bench"
 	"github.com/open-inference-mesh/oim/internal/capability"
 	"github.com/open-inference-mesh/oim/internal/exoadapter"
@@ -155,15 +159,50 @@ func nodeStatusCmd() *cobra.Command {
 }
 
 func nodeStartCmd() *cobra.Command {
-	return &cobra.Command{
+	var coordinatorURL, listenAddr, geoHint string
+	var capPct float64
+	var refreshSec int
+
+	cmd := &cobra.Command{
 		Use:   "start",
-		Short: "Start the node agent (Milestone 2)",
+		Short: "Start the node agent and register with a pod coordinator",
+		Long: `Registers this node with the assigned pod coordinator and starts
+accepting inference jobs. The node serves jobs at --listen and refreshes
+its capability manifest every --refresh-interval seconds.
+
+Prerequisites: Exo must be running (oim node status to verify).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("Node agent main loop not yet implemented (Milestone 2).")
-			fmt.Println("Run `oim node status` to verify your node is ready.")
-			return nil
+			priv, pub, err := identity.LoadOrCreate()
+			if err != nil {
+				return fmt.Errorf("load identity: %w", err)
+			}
+			nodeID := protocol.NodeIDFromPubKey(pub)
+			fmt.Printf("Node ID:     %s\n", nodeID)
+			fmt.Printf("Coordinator: %s\n", coordinatorURL)
+			fmt.Printf("Listening:   %s\n\n", listenAddr)
+
+			cfg := agent.Config{
+				CoordinatorURL:  coordinatorURL,
+				ExoURL:          exoadapter.DefaultURL,
+				ListenAddr:      listenAddr,
+				RefreshInterval: time.Duration(refreshSec) * time.Second,
+				CapacityPct:     capPct,
+				GeographicHint:  geoHint,
+			}
+
+			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			fmt.Println("Node agent running. Press Ctrl+C to stop.")
+			return agent.Run(ctx, priv, pub, cfg)
 		},
 	}
+	cmd.Flags().StringVar(&coordinatorURL, "coordinator", "http://localhost:9000", "Pod coordinator URL")
+	cmd.Flags().StringVar(&listenAddr, "listen", ":8765", "Address for this node to listen for jobs")
+	cmd.Flags().Float64Var(&capPct, "cap", 0.5, "Memory contribution cap (0.0–1.0)")
+	cmd.Flags().IntVar(&refreshSec, "refresh-interval", 30, "Manifest refresh interval in seconds")
+	cmd.Flags().StringVar(&geoHint, "region", "", "Geographic region hint (us/eu/apac); defaults to auto-detect")
+	return cmd
 }
 
 // --- bench subcommands ---

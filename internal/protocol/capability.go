@@ -55,6 +55,9 @@ type CapabilityManifest struct {
 	MeasuredSignature    *MeasuredSignature `json:"measured_signature,omitempty"`
 	ReachabilityEndpoint string             `json:"reachability_endpoint"`
 	PricePerUnit         map[string]float64 `json:"price_per_unit"`
+	// HasSecureEnclave gates eligibility for SensitivityHighRequiresAttestation jobs.
+	// This is a capability CHECK, not a confidentiality guarantee (proposal §8.1).
+	HasSecureEnclave bool `json:"has_secure_enclave"`
 }
 
 // Bytes serializes the manifest to canonical JSON bytes for signing.

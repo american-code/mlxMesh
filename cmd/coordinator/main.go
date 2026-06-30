@@ -1,10 +1,238 @@
 // Pod coordinator server — one per geographic/latency pod.
-// MILESTONE 2 — not implemented yet.
+// Routing decisions happen here; the directory layer only does discovery (proposal §7.1).
 package main
 
-import "fmt"
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/open-inference-mesh/oim/internal/coordinator"
+	"github.com/open-inference-mesh/oim/internal/protocol"
+)
 
 func main() {
-	fmt.Println("Pod coordinator not yet implemented (Milestone 2).")
-	fmt.Println("See internal/coordinator/ for the planned implementation.")
+	if err := rootCmd().Execute(); err != nil {
+		os.Exit(1)
+	}
+}
+
+func rootCmd() *cobra.Command {
+	var listenAddr, podID, regionHint string
+	var maxDispatchAttempts int
+
+	cmd := &cobra.Command{
+		Use:   "oim-coordinator",
+		Short: "Open Inference Mesh pod coordinator",
+		Long: `oim-coordinator is the pod coordinator for the Open Inference Mesh.
+It maintains a live registry of contributing nodes within this geographic pod
+and routes inference jobs to the best available node.
+
+Nodes register with: oim node start --coordinator http://<this-host>:<port>`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runCoordinator(listenAddr, podID, regionHint, maxDispatchAttempts)
+		},
+	}
+	cmd.Flags().StringVar(&listenAddr, "listen", ":9000", "Address to listen on")
+	cmd.Flags().StringVar(&podID, "pod-id", "pod-local", "Unique identifier for this pod")
+	cmd.Flags().StringVar(&regionHint, "region", "us", "Geographic region hint (us/eu/apac)")
+	cmd.Flags().IntVar(&maxDispatchAttempts, "max-attempts", 3, "Max nodes to try per fast-lane dispatch")
+	return cmd
+}
+
+func runCoordinator(listenAddr, podID, regionHint string, maxAttempts int) error {
+	registry := coordinator.NewNodeRegistry()
+	assignments := coordinator.NewAssignmentStore()
+
+	mux := http.NewServeMux()
+
+	// --- Node registration ---
+
+	// POST /nodes/register — NodeRegistration → registry
+	mux.HandleFunc("POST /nodes/register", func(w http.ResponseWriter, r *http.Request) {
+		var reg protocol.NodeRegistration
+		if err := json.NewDecoder(r.Body).Decode(&reg); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse registration: "+err.Error())
+			return
+		}
+		ok, err := registry.Register(reg)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !ok {
+			writeErr(w, http.StatusForbidden, "signature verification failed")
+			return
+		}
+		log.Printf("[coordinator] registered node %s (%s)", reg.Manifest.NodeID, reg.Manifest.GeographicHint)
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status":  "registered",
+			"node_id": reg.Manifest.NodeID,
+		})
+	})
+
+	// POST /nodes/{id}/refresh — updated CapabilityManifest
+	mux.HandleFunc("POST /nodes/{id}/refresh", func(w http.ResponseWriter, r *http.Request) {
+		nodeID := r.PathValue("id")
+		var manifest protocol.CapabilityManifest
+		if err := json.NewDecoder(r.Body).Decode(&manifest); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse manifest: "+err.Error())
+			return
+		}
+		if err := registry.Refresh(nodeID, manifest); err != nil {
+			writeErr(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "refreshed"})
+	})
+
+	// DELETE /nodes/{id} — explicit deregister (optional; TTL handles stale nodes automatically)
+	mux.HandleFunc("DELETE /nodes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		nodeID := r.PathValue("id")
+		registry.MarkUnreachable(nodeID)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "deregistered"})
+	})
+
+	// --- Job routing ---
+
+	// POST /v1/chat/completions — OpenAI-compatible fast-lane dispatch.
+	// Accepts standard OpenAI format + optional oim_* extension fields.
+	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model       string           `json:"model"`
+			Messages    []map[string]any `json:"messages"`
+			OIMJobID    string           `json:"oim_job_id"`
+			OIMSensitiv string           `json:"oim_sensitivity"`
+			OIMMaxPrice float64          `json:"oim_max_price_per_unit"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse request: "+err.Error())
+			return
+		}
+
+		sensitivity := protocol.SensitivityModerate
+		if req.OIMSensitiv == string(protocol.SensitivityLow) {
+			sensitivity = protocol.SensitivityLow
+		} else if req.OIMSensitiv == string(protocol.SensitivityHighRequiresAttestation) {
+			sensitivity = protocol.SensitivityHighRequiresAttestation
+		}
+
+		jobID := req.OIMJobID
+		if jobID == "" {
+			jobID = fmt.Sprintf("job-%d", time.Now().UnixNano())
+		}
+
+		job := protocol.JobSpec{
+			JobID:           jobID,
+			ModelID:         req.Model,
+			Lane:            protocol.JobLaneFast,
+			Sensitivity:     sensitivity,
+			MaxPricePerUnit: req.OIMMaxPrice,
+			RedundancyDepth: 0,
+			PayloadRef:      "",
+		}
+
+		result, err := coordinator.DispatchFastLane(r.Context(), job, req.Messages, registry, maxAttempts)
+		if err != nil {
+			writeErr(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
+
+	// POST /jobs/background/assign — persisted sticky-session assignment.
+	mux.HandleFunc("POST /jobs/background/assign", func(w http.ResponseWriter, r *http.Request) {
+		var job protocol.JobSpec
+		if err := json.NewDecoder(r.Body).Decode(&job); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse job spec: "+err.Error())
+			return
+		}
+		if err := job.Validate(); err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid job spec: "+err.Error())
+			return
+		}
+		a, err := coordinator.AssignBackgroundJob(job, registry)
+		if err != nil {
+			writeErr(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		assignments.Save(a)
+		writeJSON(w, http.StatusOK, a)
+	})
+
+	// POST /jobs/background/cycle — resolve which node handles this recurrence cycle.
+	mux.HandleFunc("POST /jobs/background/cycle", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			JobID string `json:"job_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse request: "+err.Error())
+			return
+		}
+		a, ok := assignments.Get(req.JobID)
+		if !ok {
+			writeErr(w, http.StatusNotFound, fmt.Sprintf("no assignment for job %s; call /jobs/background/assign first", req.JobID))
+			return
+		}
+		nodeID, isCont, err := coordinator.ResolveForCycle(a, registry)
+		if err != nil {
+			writeErr(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"node_id":         nodeID,
+			"is_continuation": isCont,
+		})
+	})
+
+	// --- Pod health ---
+
+	// GET /health — PodHealthDigest for directory layer and monitoring.
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		digest := registry.HealthDigest(podID, regionHint)
+		writeJSON(w, http.StatusOK, digest)
+	})
+
+	ln, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", listenAddr, err)
+	}
+
+	srv := &http.Server{Handler: mux}
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-quit
+		log.Println("[coordinator] shutting down")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	}()
+
+	log.Printf("[coordinator] pod=%s region=%s listening on %s", podID, regionHint, listenAddr)
+	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeErr(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
 }
