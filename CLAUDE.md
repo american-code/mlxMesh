@@ -55,12 +55,12 @@ Node Agents (wrapping Exo)         M1 ✓
 | `internal/jobrunner` | Node-side job execution (ExecuteFastLane, ExecuteBackgroundLane, RefuseIfConstrained) |
 | `internal/agent` | Node agent lifecycle (register → serve jobs → heartbeat loop, ReportJobOutcome, SubmitBenchmarkResult) |
 | `internal/directory` | Resolver interface, PodStore (TTL-based), Gossip (single-pair), CentralizedResolver (cache fallback) |
-| `internal/settlement` | Division-order ledger stubs (M5) |
+| `internal/settlement` | Division-order accounting, settlement records (Ed25519-signed), credit ledger (grant/earned split), grant decay, payment pointer validation |
 
 ## Build / test
 ```bash
 /usr/local/go/bin/go build ./...        # clean build
-/usr/local/go/bin/go test ./...         # all tests pass (46 tests)
+/usr/local/go/bin/go test ./...         # all tests pass (61 tests)
 /usr/local/go/bin/go build -o bin/oim ./cmd/oim
 /usr/local/go/bin/go build -o bin/oim-coordinator ./cmd/coordinator
 ```
@@ -96,6 +96,6 @@ curl http://localhost:9000/health
 - **M2 DONE** — pod coordinator: NodeRegistry (signature-verified, TTL decay), fast-lane routing (measured-TPS scoring, Secure Enclave gate, failover), background-lane sticky assignment (primary + N backups, cycle resolution with failover), `oim node start`, `oim-coordinator` server
 - **M3 DONE** — verification layer: `SpotCheckFastLane` (probabilistic re-dispatch, content-length consistency), `StatisticalBaselineCheck` (3σ baseline drift detection), `VerifyTierClaim` (compares submitted benchmark vs claimed signature, detects tier fraud), `MeasurementStore` (per-node submitted benchmark store), `ReportJobOutcome` + `SubmitBenchmarkResult` (reputation client), coordinator endpoints `/nodes/{id}/benchmark-result`, `/nodes/{id}/job-outcome`, `/nodes/{id}/verify-tier`, agent re-bench loop (BenchInterval), 28 tests passing
 - **M4 DONE** — centralized directory: `PodStore` (TTL-based pod digest store), `Gossip` (one-hop bootstrap-pair sync, no loop amplification), `CentralizedResolver` (tries all endpoints → falls back to cache on total outage), `oim-directory` server (`POST /pods/register`, `GET /pods`, `POST /gossip/digest`, `GET /health`), coordinator `--directory` flag with periodic reporting goroutine, 46 tests passing
-- M5 stub — settlement ledger (`internal/settlement/ledger.go`)
+- **M5 DONE** — settlement layer: `BuildDivisionOrder` (multi-line resource accounting, shrinkage), `CreateSettlementRecord` (Ed25519-signed, failed-verification records kept as evidence), `ValidatePaymentPointer` (format only, no fund custody), `Ledger` (append-only, grant-before-earned debit, `TotalOutstandingGrantLiability`), `VerifiedCapacityScore` (registry method, verified nodes only), `CurrentGrantMultiplier` + `IssueStartupGrant` (stepped decay by pod), coordinator endpoints `/settlement/records`, `/users/{id}/startup-grant`, `/users/{id}/balance`, 61 tests passing
 - M6 stub — MoE expert-shard planner (`internal/coordinator/verification.go:PlanMoEExpertAssignment`)
 - M7 stub — federated directory

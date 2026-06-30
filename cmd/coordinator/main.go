@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/open-inference-mesh/oim/internal/coordinator"
 	"github.com/open-inference-mesh/oim/internal/directory"
 	"github.com/open-inference-mesh/oim/internal/protocol"
+	"github.com/open-inference-mesh/oim/internal/settlement"
 )
 
 func main() {
@@ -54,10 +56,36 @@ Optionally report aggregate health to a directory with --directory.`,
 	return cmd
 }
 
+// podCapacitySource wraps NodeRegistry + MeasurementStore to satisfy settlement.NodeCapacitySource.
+// Ignores the podID parameter because all nodes in this registry belong to this pod.
+type podCapacitySource struct {
+	registry     *coordinator.NodeRegistry
+	measurements *coordinator.MeasurementStore
+}
+
+func (s *podCapacitySource) VerifiedCapacityForPod(_ string) float64 {
+	return s.registry.VerifiedCapacityScore(s.measurements, 0.20)
+}
+
+// settlementRecordStore is a minimal in-memory store for published settlement records.
+type settlementRecordStore struct {
+	mu      sync.Mutex
+	records []map[string]any
+}
+
+func (s *settlementRecordStore) store(r map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.records = append(s.records, r)
+}
+
 func runCoordinator(listenAddr, podID, regionHint, directoryURL string, maxAttempts int, directoryInterval time.Duration) error {
 	registry := coordinator.NewNodeRegistry()
 	assignments := coordinator.NewAssignmentStore()
 	measurements := coordinator.NewMeasurementStore()
+	ledger := settlement.NewLedger()
+	settlementRecords := &settlementRecordStore{}
+	capacitySrc := &podCapacitySource{registry: registry, measurements: measurements}
 
 	mux := http.NewServeMux()
 
@@ -279,6 +307,60 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL string, maxAttem
 			"tolerance": tolerancePct,
 			"reason":    reason,
 		})
+	})
+
+	// --- Settlement (proposal §9 and §10) ---
+
+	// POST /settlement/records — receive a signed settlement record from a node.
+	// Stores the record regardless of verification_result — failed-verification records
+	// are evidence for dispute resolution, not noise to be silently dropped (proposal §10).
+	// Credits the node's earned balance when verification_result is true.
+	mux.HandleFunc("POST /settlement/records", func(w http.ResponseWriter, r *http.Request) {
+		var record map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&record); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse record: "+err.Error())
+			return
+		}
+		settlementRecords.store(record)
+
+		if verified, _ := record["verification_result"].(bool); verified {
+			if do, ok := record["division_order"].(map[string]any); ok {
+				nodeID, _ := do["node_id"].(string)
+				totalValue, _ := do["total_value"].(float64)
+				recordID, _ := record["record_id"].(string)
+				if nodeID != "" && totalValue > 0 {
+					_ = ledger.CreditAccount(settlement.CreditEntry{
+						UserID:            nodeID,
+						Origin:            settlement.CreditOriginEarnedContrib,
+						Amount:            totalValue,
+						GrantedOrEarnedAt: time.Now(),
+						SourceReference:   recordID,
+					})
+					log.Printf("[coordinator] credited node=%s amount=%.4f record=%s", nodeID, totalValue, recordID)
+				}
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "stored"})
+	})
+
+	// POST /users/{id}/startup-grant — issue a one-time bootstrap grant sized by pod verified capacity.
+	// The grant amount steps down as verified capacity grows (proposal §9.4, §11).
+	mux.HandleFunc("POST /users/{id}/startup-grant", func(w http.ResponseWriter, r *http.Request) {
+		userID := r.PathValue("id")
+		entry, err := settlement.IssueStartupGrant(ledger, userID, podID, capacitySrc, settlement.DEFAULT_DECAY_STEPS)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		log.Printf("[coordinator] startup-grant user=%s amount=%.2f pod=%s", userID, entry.Amount, podID)
+		writeJSON(w, http.StatusOK, entry)
+	})
+
+	// GET /users/{id}/balance — credit balance split by grant vs. earned origin.
+	// The split must never be collapsed to one number — dashboard shows both separately (proposal §5a).
+	mux.HandleFunc("GET /users/{id}/balance", func(w http.ResponseWriter, r *http.Request) {
+		userID := r.PathValue("id")
+		writeJSON(w, http.StatusOK, ledger.GetBalance(userID))
 	})
 
 	// --- Pod health ---

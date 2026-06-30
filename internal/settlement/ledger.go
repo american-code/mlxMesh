@@ -1,25 +1,12 @@
 // Package settlement implements off-protocol payment accounting (proposal §9 and §10).
 // No fund custody anywhere in this package — it produces verified records, never moves money.
 // Settlement and payment are deliberately separate concerns (proposal §10).
-//
-// MILESTONE 5 — not implemented yet.
 package settlement
 
 import (
-	"errors"
+	"sync"
 	"time"
 )
-
-var ErrNotImplemented = errors.New("milestone 5: not implemented")
-
-// ResourceLine is one decomposed contribution line.
-// Never blend these into one unit — the split is load-bearing (proposal §9.2).
-type ResourceLine struct {
-	ResourceType    string  `json:"resource_type"`    // "memory_hours" | "compute_cycles" | "bandwidth_relayed"
-	MeasuredAmount  float64 `json:"measured_amount"`
-	DeliveredAmount float64 `json:"delivered_amount"` // post-verification, post-overhead
-	UnitPrice       float64 `json:"unit_price"`
-}
 
 // CreditOrigin distinguishes subsidy from earned contribution.
 // This split is load-bearing — it answers "is the network running on real
@@ -27,13 +14,13 @@ type ResourceLine struct {
 type CreditOrigin string
 
 const (
-	CreditOriginStartupGrant    CreditOrigin = "startup_grant"
-	CreditOriginEarnedContrib   CreditOrigin = "earned"
-	// CreditOriginEarnedReferral is reserved — do NOT implement until a
-	// dedicated growth-incentive design pass is done (Helium-shaped risk).
+	CreditOriginStartupGrant  CreditOrigin = "startup_grant"
+	CreditOriginEarnedContrib CreditOrigin = "earned"
+	// CreditOriginEarnedReferral is reserved — do NOT implement until a dedicated
+	// growth-incentive design pass is done (Helium-shaped risk, proposal §11).
 )
 
-// CreditEntry is one ledger record.
+// CreditEntry is one append-only ledger record.
 type CreditEntry struct {
 	UserID            string       `json:"user_id"`
 	Origin            CreditOrigin `json:"origin"`
@@ -51,47 +38,138 @@ type Balance struct {
 	Total         float64 `json:"total"`
 }
 
-// GetBalance returns a user's balance split by origin. MILESTONE 5.
-func GetBalance(userID string) (Balance, error) { return Balance{}, ErrNotImplemented }
+type ledgerDebit struct {
+	UserID    string
+	Amount    float64
+	JobID     string
+	WrittenAt time.Time
+}
 
-// CreditAccount is an append-only ledger write. MILESTONE 5.
-func CreditAccount(entry CreditEntry) error { return ErrNotImplemented }
+// Ledger is a thread-safe, append-only credit ledger split by origin.
+// Credits are written via CreditAccount; debits are recorded separately
+// so the credit history is never mutated.
+type Ledger struct {
+	mu      sync.RWMutex
+	entries []CreditEntry
+	debits  []ledgerDebit
+}
+
+func NewLedger() *Ledger { return &Ledger{} }
+
+// CreditAccount appends an earned or grant credit.
+// Append-only — existing entries are never modified (proposal §9.4).
+func (l *Ledger) CreditAccount(entry CreditEntry) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = append(l.entries, entry)
+	return nil
+}
+
+// GetBalance returns the user's credit split by origin.
+// Grant balance is consumed before earned balance during debits.
+func (l *Ledger) GetBalance(userID string) Balance {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	var grantTotal, earnedTotal, totalDebited float64
+	for _, e := range l.entries {
+		if e.UserID != userID {
+			continue
+		}
+		switch e.Origin {
+		case CreditOriginStartupGrant:
+			grantTotal += e.Amount
+		case CreditOriginEarnedContrib:
+			earnedTotal += e.Amount
+		}
+	}
+	for _, d := range l.debits {
+		if d.UserID == userID {
+			totalDebited += d.Amount
+		}
+	}
+
+	// Grant is debited first; the remainder rolls into earned.
+	grantUsed := min(totalDebited, grantTotal)
+	earnedUsed := max(0.0, totalDebited-grantTotal)
+	grantBal := max(0.0, grantTotal-grantUsed)
+	earnedBal := max(0.0, earnedTotal-earnedUsed)
+	return Balance{
+		GrantBalance:  grantBal,
+		EarnedBalance: earnedBal,
+		Total:         grantBal + earnedBal,
+	}
+}
 
 // DebitAccount spends credits against a submitted job.
 // Debits grant_balance before earned_balance.
 // Returns false on insufficient balance — callers must reject the job, not queue it.
-// MILESTONE 5.
-func DebitAccount(userID string, amount float64, jobID string) (bool, error) {
-	return false, ErrNotImplemented
+func (l *Ledger) DebitAccount(userID string, amount float64, jobID string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	var grantTotal, earnedTotal, totalDebited float64
+	for _, e := range l.entries {
+		if e.UserID != userID {
+			continue
+		}
+		switch e.Origin {
+		case CreditOriginStartupGrant:
+			grantTotal += e.Amount
+		case CreditOriginEarnedContrib:
+			earnedTotal += e.Amount
+		}
+	}
+	for _, d := range l.debits {
+		if d.UserID == userID {
+			totalDebited += d.Amount
+		}
+	}
+
+	if amount > grantTotal+earnedTotal-totalDebited {
+		return false
+	}
+	l.debits = append(l.debits, ledgerDebit{
+		UserID:    userID,
+		Amount:    amount,
+		JobID:     jobID,
+		WrittenAt: time.Now(),
+	})
+	return true
 }
 
-// ComputeShrinkage returns the gap between measured and delivered contribution.
-// Report this explicitly — never silently absorb it (proposal §9.2).
-func ComputeShrinkage(measured, delivered float64) float64 {
-	return measured - delivered
-}
+// TotalOutstandingGrantLiability returns the sum of all unspent startup-grant credits
+// across all users. This is the network's current subsidy exposure — should decrease
+// as verified capacity grows and grants decay (proposal §9.4).
+func (l *Ledger) TotalOutstandingGrantLiability() float64 {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 
-// BuildDivisionOrder assembles the multi-line settlement record for one job/cycle.
-// MILESTONE 5.
-func BuildDivisionOrder(jobID, nodeID string, lines []ResourceLine) (map[string]any, error) {
-	return nil, ErrNotImplemented
-}
+	type userState struct {
+		grantTotal  float64
+		totalDebited float64
+	}
+	users := map[string]*userState{}
+	ensure := func(id string) *userState {
+		if _, ok := users[id]; !ok {
+			users[id] = &userState{}
+		}
+		return users[id]
+	}
 
-// CreateSettlementRecord signs the division order plus verification outcome.
-// A record with verificationResult=false must still be created and published —
-// it's evidence for dispute resolution. Silently dropping failed verifications
-// erases the audit trail (proposal §10). MILESTONE 5.
-func CreateSettlementRecord(divisionOrder map[string]any, verificationResult bool, signerPrivateKey []byte) (map[string]any, error) {
-	return nil, ErrNotImplemented
-}
+	for _, e := range l.entries {
+		if e.Origin == CreditOriginStartupGrant {
+			ensure(e.UserID).grantTotal += e.Amount
+		}
+	}
+	for _, d := range l.debits {
+		ensure(d.UserID).totalDebited += d.Amount
+	}
 
-// PaymentPointer declares where a node operator wants to be paid.
-// The protocol never custodies funds — this only carries WHERE, not HOW.
-type PaymentPointer struct {
-	RailType           string `json:"rail_type"`            // "stablecoin" | "fiat_invoice" | "other"
-	AddressOrReference string `json:"address_or_reference"`
+	var liability float64
+	for _, s := range users {
+		grantUsed := min(s.totalDebited, s.grantTotal)
+		liability += max(0.0, s.grantTotal-grantUsed)
+	}
+	return liability
 }
-
-// ValidatePaymentPointer does format/sanity validation only.
-// Must NOT initiate any transaction — that would mean touching money. MILESTONE 5.
-func ValidatePaymentPointer(p PaymentPointer) (bool, error) { return false, ErrNotImplemented }

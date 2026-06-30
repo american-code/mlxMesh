@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/open-inference-mesh/oim/internal/bench"
 	"github.com/open-inference-mesh/oim/internal/protocol"
 )
 
@@ -159,6 +160,31 @@ func (r *NodeRegistry) HealthDigest(podID, regionHint string) protocol.PodHealth
 		AggregateHealthScore: health,
 		NodeCountApprox:      liveCount,
 	}
+}
+
+// VerifiedCapacityScore sums the measured TPS of all live nodes whose submitted benchmark
+// passes tier verification within tolerancePct of their claimed signature.
+// Nodes that have never submitted a measurement, whose measurement diverges too far from
+// their claim, or that are not currently live contribute zero to the score.
+// This is the input to settlement/grant_decay — spinning up junk nodes that never pass
+// verification must not drive grants toward zero (proposal §9.4).
+func (r *NodeRegistry) VerifiedCapacityScore(measurements *MeasurementStore, tolerancePct float64) float64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var score float64
+	for _, e := range r.entries {
+		if !e.isLive() || e.manifest.MeasuredSignature == nil {
+			continue
+		}
+		measured, ok := measurements.Get(e.manifest.NodeID)
+		if !ok {
+			continue
+		}
+		if bench.CompareSignatures(e.manifest.MeasuredSignature, measured, tolerancePct) {
+			score += measured.TokensPerSecDecode
+		}
+	}
+	return score
 }
 
 func hasModel(m protocol.CapabilityManifest, modelID, quantization string) bool {
