@@ -159,7 +159,7 @@ func nodeStatusCmd() *cobra.Command {
 }
 
 func nodeStartCmd() *cobra.Command {
-	var coordinatorURL, listenAddr, geoHint string
+	var coordinatorURL, listenAddr, geoHint, exoURL, reachabilityEndpoint string
 	var capPct float64
 	var refreshSec int
 
@@ -182,12 +182,13 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 			fmt.Printf("Listening:   %s\n\n", listenAddr)
 
 			cfg := agent.Config{
-				CoordinatorURL:  coordinatorURL,
-				ExoURL:          exoadapter.DefaultURL,
-				ListenAddr:      listenAddr,
-				RefreshInterval: time.Duration(refreshSec) * time.Second,
-				CapacityPct:     capPct,
-				GeographicHint:  geoHint,
+				CoordinatorURL:       coordinatorURL,
+				ExoURL:               exoURL,
+				ListenAddr:           listenAddr,
+				ReachabilityEndpoint: reachabilityEndpoint,
+				RefreshInterval:      time.Duration(refreshSec) * time.Second,
+				CapacityPct:          capPct,
+				GeographicHint:       geoHint,
 			}
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -199,6 +200,8 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 	}
 	cmd.Flags().StringVar(&coordinatorURL, "coordinator", "http://localhost:9000", "Pod coordinator URL")
 	cmd.Flags().StringVar(&listenAddr, "listen", ":8765", "Address for this node to listen for jobs")
+	cmd.Flags().StringVar(&exoURL, "exo-url", exoadapter.DefaultURL, "Exo HTTP endpoint")
+	cmd.Flags().StringVar(&reachabilityEndpoint, "reachability-endpoint", "", "Endpoint advertised to coordinator (overrides auto-derived; use for NAT/Docker)")
 	cmd.Flags().Float64Var(&capPct, "cap", 0.5, "Memory contribution cap (0.0–1.0)")
 	cmd.Flags().IntVar(&refreshSec, "refresh-interval", 30, "Manifest refresh interval in seconds")
 	cmd.Flags().StringVar(&geoHint, "region", "", "Geographic region hint (us/eu/apac); defaults to auto-detect")

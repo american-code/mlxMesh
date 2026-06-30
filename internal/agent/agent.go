@@ -27,12 +27,13 @@ import (
 
 // Config holds the node agent's operational parameters.
 type Config struct {
-	CoordinatorURL  string
-	ExoURL          string
-	ListenAddr      string        // e.g. ":8765"
-	RefreshInterval time.Duration // how often to re-register and refresh manifest
-	BenchInterval   time.Duration // how often to re-run benchmark and submit result (0 = disabled)
-	CapacityPct     float64       // memory contribution cap (0.0–1.0)
+	CoordinatorURL       string
+	ExoURL               string
+	ListenAddr           string        // e.g. ":8765"
+	ReachabilityEndpoint string        // overrides auto-derived endpoint (useful behind NAT / in containers)
+	RefreshInterval      time.Duration // how often to re-register and refresh manifest
+	BenchInterval        time.Duration // how often to re-run benchmark and submit result (0 = disabled)
+	CapacityPct          float64       // memory contribution cap (0.0–1.0)
 	GeographicHint  string
 }
 
@@ -60,10 +61,15 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	}
 
 	// Derive the reachability endpoint from the listen address so the coordinator
-	// knows how to reach back to this node.
-	reachabilityEndpoint, err := resolveReachabilityEndpoint(listenAddr)
-	if err != nil {
-		return fmt.Errorf("resolve reachability endpoint: %w", err)
+	// knows how to reach back to this node. An explicit override takes precedence
+	// (needed behind NAT and in Docker containers).
+	reachabilityEndpoint := cfg.ReachabilityEndpoint
+	if reachabilityEndpoint == "" {
+		var epErr error
+		reachabilityEndpoint, epErr = resolveReachabilityEndpoint(listenAddr)
+		if epErr != nil {
+			return fmt.Errorf("resolve reachability endpoint: %w", epErr)
+		}
 	}
 
 	opts := capability.DefaultOptions()

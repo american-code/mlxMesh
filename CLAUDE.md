@@ -59,11 +59,64 @@ Node Agents (wrapping Exo)         M1 ✓
 
 ## Build / test
 ```bash
-/usr/local/go/bin/go build ./...        # clean build
+/usr/local/go/bin/go build ./...        # clean build (includes stub-exo)
 /usr/local/go/bin/go test ./...         # all tests pass (75 tests)
 /usr/local/go/bin/go build -o bin/oim ./cmd/oim
 /usr/local/go/bin/go build -o bin/oim-coordinator ./cmd/coordinator
+/usr/local/go/bin/go build -o bin/stub-exo ./cmd/stub-exo
 ```
+
+## Docker simulation cluster
+```bash
+make sim          # docker compose build + up (2 regions, 3 nodes, no GPU needed)
+make sim-down     # tear it all down
+
+# Or manually:
+docker compose build
+docker compose up -d
+docker compose logs -f coordinator-us
+
+# Verify the mesh is live:
+curl http://localhost:9100/health                              # directory
+curl 'http://localhost:9100/pods?model_id=llama-3.2-3b'      # pod discovery
+curl http://localhost:9000/health                             # US coordinator
+curl http://localhost:9001/health                             # EU coordinator
+
+# Send an inference job:
+curl -X POST http://localhost:9000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"llama-3.2-3b","messages":[{"role":"user","content":"hello"}]}'
+
+# Settlement:
+curl -X POST http://localhost:9000/users/alice/startup-grant
+curl http://localhost:9000/users/alice/balance
+```
+
+### Simulation topology
+```
+directory          :9100   (single global librarian)
+coordinator-us     :9000   (pod-us, reports to directory)
+coordinator-eu     :9001   (pod-eu, reports to directory)
+stub-exo-us-1              (fake Exo: llama+mixtral, 32 GB, 150 ms)
+node-us-1          :8765   (registers with coordinator-us)
+stub-exo-us-2              (fake Exo: llama only, 16 GB, 220 ms)
+node-us-2          :8766   (registers with coordinator-us)
+stub-exo-eu-1              (fake Exo: llama+mixtral, 24 GB, 300 ms)
+node-eu-1          :8767   (registers with coordinator-eu)
+```
+
+### Stub Exo config (env vars per node)
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `STUB_LISTEN` | `:52415` | listen address |
+| `STUB_NODE_NAME` | `stub-node` | appears in responses |
+| `STUB_MODELS` | `llama-3.2-3b,mixtral-8x7b` | comma-separated model IDs |
+| `STUB_MEMORY_GB` | `16` | declared memory for placement previews |
+| `STUB_LATENCY_MS` | `150` | simulated inference latency |
+
+### New flags on `oim node start`
+- `--exo-url` — Exo HTTP endpoint (was hardcoded before; now required for Docker)
+- `--reachability-endpoint` — overrides auto-derived endpoint (needed behind NAT / in containers)
 
 ## M2 runtime: two-node quick start
 ```bash
