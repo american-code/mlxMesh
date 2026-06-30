@@ -1,0 +1,7 @@
+bin/
+dist/
+*.test
+*.out
+vendor/
+.env
+~/.config/oim/node_identity.json

@@ -1,0 +1,79 @@
+# CLAUDE.md — Open Inference Mesh
+
+## Project identity
+- **Protocol name:** Open Inference Mesh
+- **Brand:** MeshAI (for iOS/watchOS/visionOS client apps)
+- **CLI binary:** `oim`
+- **Go module:** `github.com/open-inference-mesh/oim`
+- **Go version:** 1.22
+
+## Design doc rule
+Source docs live in `/Users/melton/meshAI/`. When multiple files have the same base name with version numbers (e.g. `Architecture 2.md`, `Architecture 3.md`), **always use the highest-numbered file** — it is the current iteration.
+
+## Core architecture (non-negotiable constraints)
+- **No WAN dense-model pipeline-sharding** — 20–150 ms inter-hop latency kills sequential token passing; MoE expert-sharding is the only WAN-viable strategy for large models
+- **No native token** — off-protocol payment rails (stablecoin/fiat) to avoid Helium-style token trap; `earned_referral` credit type is explicitly banned
+- **Division-order accounting** — measured resource lines, not declared; grant vs earned balances must NEVER collapse to one number
+- **Ed25519 node identity** — node_id = `SHA-256(pubkey)[:32]` hex; never operator-chosen
+- **Bootstrap grants** — per-pod, keyed to VERIFIED capacity, decay as earned capacity grows
+- Sensitivity tiers: `low` | `moderate` | `high_requires_attestation` (Secure Enclave gate)
+
+## Exo integration
+- Exo (`exo-explore/exo`) is treated as a **black-box HTTP API** at `http://localhost:52415`
+- `oim` sits one layer above Exo — it does NOT replace or fork Exo
+- Single-cluster LAN inference is Exo's job; cross-cluster WAN coordination is `oim`'s job
+
+## Three-layer hierarchy
+```
+Global Directory (librarian)       M4 (centralized) → M7 (federated)
+        │
+Pod Coordinators (1 per region)    M2
+        │
+Node Agents (wrapping Exo)         M1 ✓
+```
+
+## Dual-lane routing
+- **Fast lane** — interactive, resolver-routed, low-latency
+- **Background lane** — recurring/batch, scheduler-routed, sticky-session (requires `RecurrenceSpec`)
+- Fast-lane jobs MUST NOT have `Recurrence`; background-lane jobs MUST have it
+
+## Directory evolution (pluggable Resolver interface)
+1. Centralized (M4) — single librarian
+2. Federated (M7) — multi-librarian
+3. DHT — deferred (Sybil/eclipse risk not yet mitigated)
+
+## Key packages
+| Package | Purpose |
+|---------|---------|
+| `internal/protocol` | Wire types, crypto, job specs |
+| `internal/exoadapter` | Thin HTTP client for Exo |
+| `internal/governor` | Memory caps, foreground detection (platform-split via build tags) |
+| `internal/capability` | Live manifest assembly from Exo state |
+| `internal/bench` | Tier benchmarking (short/medium/long reference prompts) |
+| `internal/identity` | Ed25519 keypair persistence at `~/.config/oim/node_identity.json` |
+| `internal/coordinator` | Pod coordinator stubs (M2) |
+| `internal/directory` | Resolver interface + staged implementations |
+| `internal/settlement` | Division-order ledger stubs (M5) |
+
+## Build / test
+```bash
+/usr/local/go/bin/go build ./...   # clean build
+/usr/local/go/bin/go test ./...    # all tests pass
+make build                         # produces ./bin/oim
+make install                       # installs to $GOPATH/bin
+```
+
+## Platform notes
+- `internal/governor/foreground_unix.go` — `//go:build darwin || linux` (uses `syscall.Syscall` + `TIOCGPGRP`)
+- `internal/governor/foreground_other.go` — `//go:build !darwin && !linux` (returns true)
+- Apple Silicon (M-series, unified memory) is the reference platform; `gopsutil` used for accurate macOS memory readings
+- `crypto/go:Ed25519` from stdlib — no external crypto dep
+
+## Milestone status
+- **M1 DONE** — node agent: manifest, governor, bench, identity, CLI (`oim node status`, `oim bench run`)
+- M2 stub — pod coordinator
+- M3 stub — spot-check verification
+- M4 stub — centralized directory
+- M5 stub — settlement ledger
+- M6 stub — MoE expert-shard planner
+- M7 stub — federated directory

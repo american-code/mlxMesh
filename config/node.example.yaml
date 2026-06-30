@@ -1,0 +1,26 @@
+# Open Inference Mesh — node agent configuration
+# Copy to ~/.config/oim/config.yaml and edit.
+
+# URL of the local Exo instance this node agent wraps.
+exo_url: http://localhost:52415
+
+# Fraction of total RAM to offer to the mesh (0.0–1.0).
+# Actual committed memory is min(memory_cap_pct * total_ram, available_ram).
+memory_cap_pct: 0.5
+
+# Coarse region hint for pod assignment. Never an exact location.
+# Options: us | eu | apac
+geographic_hint: us
+
+# How the pod coordinator reaches this node.
+reachability_endpoint: http://YOUR_LAN_IP:8765
+
+# Pod coordinator to register with (leave empty until Milestone 2).
+pod_endpoint: ""
+
+# Prices you're willing to accept per resource unit (0.0 = free / not yet set).
+# Unit definitions: see internal/settlement/ledger.go (ResourceLine).
+price_per_unit:
+  compute_cycles: 0.0
+  memory_hours: 0.0
+  bandwidth_relayed: 0.0
