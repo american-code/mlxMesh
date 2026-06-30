@@ -15,10 +15,7 @@ import (
 	"github.com/open-inference-mesh/oim/internal/protocol"
 )
 
-var (
-	ErrNotImplemented = errors.New("milestone 6: not implemented")
-	ErrNoMeasurement  = errors.New("no submitted benchmark measurement for this node")
-)
+var ErrNoMeasurement = errors.New("no submitted benchmark measurement for this node")
 
 // SpotCheckFastLane re-runs the job on a verifier node and compares output consistency.
 // sampleRate controls what fraction of fast-lane jobs are checked (0.0 = never, 1.0 = always).
@@ -139,11 +136,3 @@ func responseContentLen(result map[string]any) int {
 	return len(content)
 }
 
-// PlanMoEExpertAssignment returns {nodeID: []expertIDs} for MoE model sharding.
-// Must respect each node's EnforceContributionCap-derived memory ceiling.
-// Do NOT attempt dense-model pipeline-sharding across WAN nodes — see proposal §3/6.2.
-//
-// MILESTONE 6 — not implemented yet. Do not start before M1-5 are validated.
-func PlanMoEExpertAssignment(modelID string, totalExperts int, candidates []protocol.CapabilityManifest) (map[string][]int, error) {
-	return nil, ErrNotImplemented
-}

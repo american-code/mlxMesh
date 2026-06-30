@@ -51,7 +51,7 @@ Node Agents (wrapping Exo)         M1 ✓
 | `internal/capability` | Live manifest assembly from Exo state |
 | `internal/bench` | Tier benchmarking (short/medium/long reference prompts) |
 | `internal/identity` | Ed25519 keypair persistence at `~/.config/oim/node_identity.json` |
-| `internal/coordinator` | Pod coordinator — NodeRegistry, ScoreForFastLane, DispatchFastLane, AssignBackgroundJob, ResolveForCycle, MeasurementStore, VerifyTierClaim, SpotCheckFastLane, StatisticalBaselineCheck |
+| `internal/coordinator` | Pod coordinator — NodeRegistry, ScoreForFastLane, DispatchFastLane, AssignBackgroundJob, ResolveForCycle, MeasurementStore, VerifyTierClaim, SpotCheckFastLane, StatisticalBaselineCheck, PlanMoEExpertAssignment, RouteTokenToExpertNode, DetectExpertLoadImbalance |
 | `internal/jobrunner` | Node-side job execution (ExecuteFastLane, ExecuteBackgroundLane, RefuseIfConstrained) |
 | `internal/agent` | Node agent lifecycle (register → serve jobs → heartbeat loop, ReportJobOutcome, SubmitBenchmarkResult) |
 | `internal/directory` | Resolver interface, PodStore (TTL-based), Gossip (single-pair), CentralizedResolver (cache fallback) |
@@ -60,7 +60,7 @@ Node Agents (wrapping Exo)         M1 ✓
 ## Build / test
 ```bash
 /usr/local/go/bin/go build ./...        # clean build
-/usr/local/go/bin/go test ./...         # all tests pass (61 tests)
+/usr/local/go/bin/go test ./...         # all tests pass (75 tests)
 /usr/local/go/bin/go build -o bin/oim ./cmd/oim
 /usr/local/go/bin/go build -o bin/oim-coordinator ./cmd/coordinator
 ```
@@ -97,5 +97,5 @@ curl http://localhost:9000/health
 - **M3 DONE** — verification layer: `SpotCheckFastLane` (probabilistic re-dispatch, content-length consistency), `StatisticalBaselineCheck` (3σ baseline drift detection), `VerifyTierClaim` (compares submitted benchmark vs claimed signature, detects tier fraud), `MeasurementStore` (per-node submitted benchmark store), `ReportJobOutcome` + `SubmitBenchmarkResult` (reputation client), coordinator endpoints `/nodes/{id}/benchmark-result`, `/nodes/{id}/job-outcome`, `/nodes/{id}/verify-tier`, agent re-bench loop (BenchInterval), 28 tests passing
 - **M4 DONE** — centralized directory: `PodStore` (TTL-based pod digest store), `Gossip` (one-hop bootstrap-pair sync, no loop amplification), `CentralizedResolver` (tries all endpoints → falls back to cache on total outage), `oim-directory` server (`POST /pods/register`, `GET /pods`, `POST /gossip/digest`, `GET /health`), coordinator `--directory` flag with periodic reporting goroutine, 46 tests passing
 - **M5 DONE** — settlement layer: `BuildDivisionOrder` (multi-line resource accounting, shrinkage), `CreateSettlementRecord` (Ed25519-signed, failed-verification records kept as evidence), `ValidatePaymentPointer` (format only, no fund custody), `Ledger` (append-only, grant-before-earned debit, `TotalOutstandingGrantLiability`), `VerifiedCapacityScore` (registry method, verified nodes only), `CurrentGrantMultiplier` + `IssueStartupGrant` (stepped decay by pod), coordinator endpoints `/settlement/records`, `/users/{id}/startup-grant`, `/users/{id}/balance`, 61 tests passing
-- M6 stub — MoE expert-shard planner (`internal/coordinator/verification.go:PlanMoEExpertAssignment`)
+- **M6 DONE** — MoE expert-shard planner: `PlanMoEExpertAssignment` (largest-remainder proportional assignment, memory-cap weighted, nodeID-deterministic), `RouteTokenToExpertNode` (top-K and single-expert routing decision formats, JSON float64 safe), `DetectExpertLoadImbalance` (2× per-expert average threshold, detect-only — rebalancing is explicitly out of scope per §6.3), 75 tests passing
 - M7 stub — federated directory
