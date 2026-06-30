@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/open-inference-mesh/oim/internal/coordinator"
+	"github.com/open-inference-mesh/oim/internal/directory"
 	"github.com/open-inference-mesh/oim/internal/protocol"
 )
 
@@ -27,8 +28,8 @@ func main() {
 }
 
 func rootCmd() *cobra.Command {
-	var listenAddr, podID, regionHint string
-	var maxDispatchAttempts int
+	var listenAddr, podID, regionHint, directoryURL string
+	var maxDispatchAttempts, directoryIntervalSec int
 
 	cmd := &cobra.Command{
 		Use:   "oim-coordinator",
@@ -37,19 +38,23 @@ func rootCmd() *cobra.Command {
 It maintains a live registry of contributing nodes within this geographic pod
 and routes inference jobs to the best available node.
 
-Nodes register with: oim node start --coordinator http://<this-host>:<port>`,
+Nodes register with: oim node start --coordinator http://<this-host>:<port>
+Optionally report aggregate health to a directory with --directory.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCoordinator(listenAddr, podID, regionHint, maxDispatchAttempts)
+			return runCoordinator(listenAddr, podID, regionHint, directoryURL,
+				maxDispatchAttempts, time.Duration(directoryIntervalSec)*time.Second)
 		},
 	}
 	cmd.Flags().StringVar(&listenAddr, "listen", ":9000", "Address to listen on")
 	cmd.Flags().StringVar(&podID, "pod-id", "pod-local", "Unique identifier for this pod")
 	cmd.Flags().StringVar(&regionHint, "region", "us", "Geographic region hint (us/eu/apac)")
 	cmd.Flags().IntVar(&maxDispatchAttempts, "max-attempts", 3, "Max nodes to try per fast-lane dispatch")
+	cmd.Flags().StringVar(&directoryURL, "directory", "", "Directory server URL for pod discovery registration (empty = disabled)")
+	cmd.Flags().IntVar(&directoryIntervalSec, "directory-interval", 60, "Seconds between directory health-digest reports")
 	return cmd
 }
 
-func runCoordinator(listenAddr, podID, regionHint string, maxAttempts int) error {
+func runCoordinator(listenAddr, podID, regionHint, directoryURL string, maxAttempts int, directoryInterval time.Duration) error {
 	registry := coordinator.NewNodeRegistry()
 	assignments := coordinator.NewAssignmentStore()
 	measurements := coordinator.NewMeasurementStore()
@@ -293,9 +298,30 @@ func runCoordinator(listenAddr, podID, regionHint string, maxAttempts int) error
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	done := make(chan struct{})
+
+	// Optional: report aggregate pod health to the directory on a recurring schedule.
+	if directoryURL != "" {
+		resolver := directory.NewCentralizedResolver([]string{directoryURL})
+		go func() {
+			reportToDirectory(resolver, registry, podID, regionHint)
+			ticker := time.NewTicker(directoryInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-ticker.C:
+					reportToDirectory(resolver, registry, podID, regionHint)
+				}
+			}
+		}()
+		log.Printf("[coordinator] reporting to directory %s every %s", directoryURL, directoryInterval)
+	}
 
 	go func() {
 		<-quit
+		close(done)
 		log.Println("[coordinator] shutting down")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -307,6 +333,17 @@ func runCoordinator(listenAddr, podID, regionHint string, maxAttempts int) error
 		return err
 	}
 	return nil
+}
+
+func reportToDirectory(resolver *directory.CentralizedResolver, registry *coordinator.NodeRegistry, podID, regionHint string) {
+	digest := registry.HealthDigest(podID, regionHint)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := resolver.RegisterPod(ctx, digest); err != nil {
+		log.Printf("[coordinator] directory report: %v", err)
+	} else {
+		log.Printf("[coordinator] reported to directory: pod=%s models=%v", podID, digest.ServableModelIDs)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
