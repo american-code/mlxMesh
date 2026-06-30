@@ -52,6 +52,7 @@ Nodes register with: oim node start --coordinator http://<this-host>:<port>`,
 func runCoordinator(listenAddr, podID, regionHint string, maxAttempts int) error {
 	registry := coordinator.NewNodeRegistry()
 	assignments := coordinator.NewAssignmentStore()
+	measurements := coordinator.NewMeasurementStore()
 
 	mux := http.NewServeMux()
 
@@ -191,6 +192,87 @@ func runCoordinator(listenAddr, podID, regionHint string, maxAttempts int) error
 		writeJSON(w, http.StatusOK, map[string]any{
 			"node_id":         nodeID,
 			"is_continuation": isCont,
+		})
+	})
+
+	// --- Reputation / verification ---
+
+	// POST /nodes/{id}/benchmark-result — node submits a fresh MeasuredSignature.
+	// Stored in MeasurementStore; used by VerifyTierClaim to detect fraud (proposal §8.2/9.2).
+	mux.HandleFunc("POST /nodes/{id}/benchmark-result", func(w http.ResponseWriter, r *http.Request) {
+		nodeID := r.PathValue("id")
+		var sig protocol.MeasuredSignature
+		if err := json.NewDecoder(r.Body).Decode(&sig); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse measurement: "+err.Error())
+			return
+		}
+		measurements.Store(nodeID, &sig)
+		log.Printf("[coordinator] node %s submitted benchmark: %.1f tok/s decode", nodeID, sig.TokensPerSecDecode)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "stored"})
+	})
+
+	// POST /nodes/{id}/job-outcome — node reports job completion.
+	// Foundation for M5 settlement; logged now, reconciled in settlement layer.
+	mux.HandleFunc("POST /nodes/{id}/job-outcome", func(w http.ResponseWriter, r *http.Request) {
+		nodeID := r.PathValue("id")
+		var outcome struct {
+			JobID     string  `json:"job_id"`
+			Success   bool    `json:"success"`
+			LatencyMs float64 `json:"latency_ms"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&outcome); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse outcome: "+err.Error())
+			return
+		}
+		log.Printf("[coordinator] job-outcome node=%s job=%s success=%v latency=%.0fms",
+			nodeID, outcome.JobID, outcome.Success, outcome.LatencyMs)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "recorded"})
+	})
+
+	// GET /nodes/{id}/verify-tier?tolerance=0.20 — compare node's submitted benchmark
+	// against its registered claimed MeasuredSignature.
+	mux.HandleFunc("GET /nodes/{id}/verify-tier", func(w http.ResponseWriter, r *http.Request) {
+		nodeID := r.PathValue("id")
+		tolerancePct := 0.20
+		if t := r.URL.Query().Get("tolerance"); t != "" {
+			if _, err := fmt.Sscanf(t, "%f", &tolerancePct); err != nil {
+				writeErr(w, http.StatusBadRequest, "invalid tolerance: "+err.Error())
+				return
+			}
+		}
+		// Look up claimed signature from registry.
+		claimed, err := registry.ClaimedSignature(nodeID)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, err.Error())
+			return
+		}
+		if claimed == nil {
+			// No claimed signature — node registered without a benchmark. Cannot verify.
+			writeJSON(w, http.StatusOK, map[string]any{
+				"node_id":  nodeID,
+				"verified": false,
+				"reason":   "node has no claimed MeasuredSignature to compare against",
+			})
+			return
+		}
+		ok, err := coordinator.VerifyTierClaim(nodeID, *claimed, measurements, tolerancePct)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"node_id":  nodeID,
+				"verified": false,
+				"reason":   err.Error(),
+			})
+			return
+		}
+		reason := "within tolerance"
+		if !ok {
+			reason = "measured performance diverges from claimed signature"
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"node_id":   nodeID,
+			"verified":  ok,
+			"tolerance": tolerancePct,
+			"reason":    reason,
 		})
 	})
 

@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/open-inference-mesh/oim/internal/bench"
 	"github.com/open-inference-mesh/oim/internal/capability"
 	"github.com/open-inference-mesh/oim/internal/exoadapter"
 	"github.com/open-inference-mesh/oim/internal/jobrunner"
@@ -30,6 +31,7 @@ type Config struct {
 	ExoURL          string
 	ListenAddr      string        // e.g. ":8765"
 	RefreshInterval time.Duration // how often to re-register and refresh manifest
+	BenchInterval   time.Duration // how often to re-run benchmark and submit result (0 = disabled)
 	CapacityPct     float64       // memory contribution cap (0.0–1.0)
 	GeographicHint  string
 }
@@ -40,6 +42,7 @@ func DefaultConfig() Config {
 		ExoURL:          exoadapter.DefaultURL,
 		ListenAddr:      ":8765",
 		RefreshInterval: 30 * time.Second,
+		BenchInterval:   0, // disabled by default; enable with --bench-interval
 		CapacityPct:     0.5,
 		GeographicHint:  "",
 	}
@@ -81,7 +84,8 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	log.Printf("[agent] registered with coordinator %s as node %s", cfg.CoordinatorURL, manifest.NodeID)
 
 	// Start HTTP server for job reception (non-blocking).
-	srv := buildJobServer(runner, cfg.CapacityPct)
+	nodeID := manifest.NodeID
+	srv := buildJobServer(runner, cfg.CapacityPct, nodeID, cfg.CoordinatorURL)
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", listenAddr, err)
@@ -93,9 +97,16 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 		}
 	}()
 
-	// Heartbeat loop: refresh manifest at RefreshInterval.
+	// Heartbeat loop: refresh manifest at RefreshInterval; re-bench at BenchInterval if set.
 	ticker := time.NewTicker(cfg.RefreshInterval)
 	defer ticker.Stop()
+	var benchC <-chan time.Time
+	if cfg.BenchInterval > 0 {
+		bt := time.NewTicker(cfg.BenchInterval)
+		defer bt.Stop()
+		benchC = bt.C
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -103,28 +114,43 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			return srv.Shutdown(shutCtx)
+
 		case <-ticker.C:
 			fresh, err := capability.AssembleManifest(ctx, exo, pub, opts)
 			if err != nil {
 				log.Printf("[agent] manifest refresh error: %v", err)
 				continue
 			}
-			if err := refresh(ctx, cfg.CoordinatorURL, manifest.NodeID, fresh); err != nil {
-				// Refresh failures are non-fatal — the TTL in the registry will
-				// eventually expire this node, but transient network blips shouldn't
-				// kill the agent. Re-register on the next tick if refresh keeps failing.
+			if err := refresh(ctx, cfg.CoordinatorURL, nodeID, fresh); err != nil {
 				log.Printf("[agent] refresh error (will retry): %v", err)
 				if regErr := register(ctx, cfg.CoordinatorURL, priv, pub, fresh); regErr != nil {
 					log.Printf("[agent] re-registration also failed: %v", regErr)
 				}
 			}
 			manifest = fresh
+
+		case <-benchC:
+			// Re-benchmark and submit result so the coordinator can detect tier fraud.
+			// Non-fatal — a failed bench does not kill the agent.
+			if len(manifest.Models) == 0 {
+				continue
+			}
+			sig, err := bench.Run(ctx, exo, manifest.Models[0].ModelID, "medium", 1)
+			if err != nil {
+				log.Printf("[agent] re-bench error: %v", err)
+				continue
+			}
+			if err := SubmitBenchmarkResult(ctx, cfg.CoordinatorURL, nodeID, sig); err != nil {
+				log.Printf("[agent] submit benchmark result: %v", err)
+			} else {
+				log.Printf("[agent] submitted benchmark: %.1f tok/s decode", sig.TokensPerSecDecode)
+			}
 		}
 	}
 }
 
 // buildJobServer constructs the HTTP mux that accepts inference jobs from the coordinator.
-func buildJobServer(runner *jobrunner.Runner, capPct float64) *http.Server {
+func buildJobServer(runner *jobrunner.Runner, capPct float64, nodeID, coordinatorURL string) *http.Server {
 	mux := http.NewServeMux()
 
 	// Health endpoint for coordinator liveness checks.
@@ -157,16 +183,26 @@ func buildJobServer(runner *jobrunner.Runner, capPct float64) *http.Server {
 		}
 
 		isContinuation := r.Header.Get("X-OIM-Continuation") == "true"
+		start := time.Now()
 		var result map[string]any
-		var err error
+		var execErr error
 
 		if req.Lane == string(protocol.JobLaneBackground) {
-			result, err = runner.ExecuteBackgroundLane(r.Context(), spec, req.Messages, capPct, isContinuation)
+			result, execErr = runner.ExecuteBackgroundLane(r.Context(), spec, req.Messages, capPct, isContinuation)
 		} else {
-			result, err = runner.ExecuteFastLane(r.Context(), spec, req.Messages, capPct)
+			result, execErr = runner.ExecuteFastLane(r.Context(), spec, req.Messages, capPct)
 		}
-		if err != nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+
+		latencyMs := float64(time.Since(start).Milliseconds())
+		go func() {
+			// Non-blocking outcome report; ignore error — reporting failure must not disrupt the job.
+			if err := ReportJobOutcome(context.Background(), coordinatorURL, nodeID, spec.JobID, execErr == nil, latencyMs); err != nil {
+				log.Printf("[agent] report outcome: %v", err)
+			}
+		}()
+
+		if execErr != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": execErr.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, result)

@@ -111,6 +111,18 @@ func (r *NodeRegistry) Candidates(modelID, quantization string) ([]protocol.Capa
 	return out, nil
 }
 
+// ClaimedSignature returns the MeasuredSignature from a node's registered manifest,
+// or (nil, nil) if the node registered without a benchmark. Returns error if node unknown.
+func (r *NodeRegistry) ClaimedSignature(nodeID string) (*protocol.MeasuredSignature, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.entries[nodeID]
+	if !ok {
+		return nil, fmt.Errorf("node %s not registered", nodeID)
+	}
+	return e.manifest.MeasuredSignature, nil
+}
+
 // HealthDigest returns the aggregate pod health for the directory layer.
 // Deliberately aggregate-only — individual node data never leaves the pod (proposal §7.1).
 func (r *NodeRegistry) HealthDigest(podID, regionHint string) protocol.PodHealthDigest {
