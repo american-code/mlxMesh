@@ -59,6 +59,8 @@ func AssembleManifest(
 		DeclaredMemoryGB:     round2(totalGB),
 		DeclaredMemoryCapPct: opts.MemoryCapPct,
 		GeographicHint:       opts.GeographicHint,
+		GeoLat:               opts.GeoLat,
+		GeoLng:               opts.GeoLng,
 		Models:               models,
 		MeasuredSignature:    sig,
 		ReachabilityEndpoint: opts.ReachabilityEndpoint,
@@ -71,6 +73,8 @@ func AssembleManifest(
 type Options struct {
 	MemoryCapPct         float64
 	GeographicHint       string
+	GeoLat               float64 // approximate latitude; 0 = not declared
+	GeoLng               float64 // approximate longitude; 0 = not declared
 	ReachabilityEndpoint string
 	PricePerUnit         map[string]float64
 }
@@ -152,6 +156,21 @@ func buildModelList(ctx context.Context, exo *exoadapter.Client) ([]protocol.Mod
 func loadLastSignature() *protocol.MeasuredSignature {
 	b, err := os.ReadFile(signatureCachePath)
 	if err != nil {
+		// OIM_INITIAL_TPS seeds a fake tok/s for simulation nodes that have not run a
+		// real benchmark yet. Never set this env var on production nodes.
+		if tpsStr := os.Getenv("OIM_INITIAL_TPS"); tpsStr != "" {
+			var tps float64
+			fmt.Sscanf(tpsStr, "%f", &tps)
+			if tps > 0 {
+				return &protocol.MeasuredSignature{
+					TokensPerSecDecode:  tps,
+					TokensPerSecPrefill: tps * 2.5,
+					MeasuredAt:          "1970-01-01T00:00:00Z",
+					BenchmarkPromptID:   "stub",
+					SampleCount:         0,
+				}
+			}
+		}
 		return nil
 	}
 	var sig protocol.MeasuredSignature

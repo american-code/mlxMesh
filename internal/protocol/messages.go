@@ -14,9 +14,12 @@ type NodeRegistration struct {
 type PodHealthDigest struct {
 	PodID                string   `json:"pod_id"`
 	RegionHint           string   `json:"region_hint"`
+	CoordinatorEndpoint  string   `json:"coordinator_endpoint,omitempty"` // public URL clients use to reach this coordinator
 	ServableModelIDs     []string `json:"servable_model_ids"`
 	AggregateHealthScore float64  `json:"aggregate_health_score"` // 0.0–1.0
 	NodeCountApprox      int      `json:"node_count_approx"`
+	TotalMemoryGB        float64  `json:"total_memory_gb"`        // sum of declared committed memory across live nodes
+	AggregateToksPerSec  float64  `json:"aggregate_toks_per_sec"` // sum of measured tok/s across live nodes
 }
 
 // DirectoryQuery is sent by a node or pod coordinator to the directory.

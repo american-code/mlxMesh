@@ -34,7 +34,9 @@ type Config struct {
 	RefreshInterval      time.Duration // how often to re-register and refresh manifest
 	BenchInterval        time.Duration // how often to re-run benchmark and submit result (0 = disabled)
 	CapacityPct          float64       // memory contribution cap (0.0–1.0)
-	GeographicHint  string
+	GeographicHint       string
+	GeoLat               float64 // approximate latitude; 0 = not declared
+	GeoLng               float64 // approximate longitude; 0 = not declared
 }
 
 func DefaultConfig() Config {
@@ -78,6 +80,8 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	if cfg.GeographicHint != "" {
 		opts.GeographicHint = cfg.GeographicHint
 	}
+	opts.GeoLat = cfg.GeoLat
+	opts.GeoLng = cfg.GeoLng
 
 	// Initial registration.
 	manifest, err := capability.AssembleManifest(ctx, exo, pub, opts)

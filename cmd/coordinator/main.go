@@ -30,7 +30,7 @@ func main() {
 }
 
 func rootCmd() *cobra.Command {
-	var listenAddr, podID, regionHint, directoryURL string
+	var listenAddr, podID, regionHint, directoryURL, publicURL string
 	var maxDispatchAttempts, directoryIntervalSec int
 
 	cmd := &cobra.Command{
@@ -43,13 +43,14 @@ and routes inference jobs to the best available node.
 Nodes register with: oim node start --coordinator http://<this-host>:<port>
 Optionally report aggregate health to a directory with --directory.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCoordinator(listenAddr, podID, regionHint, directoryURL,
+			return runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL,
 				maxDispatchAttempts, time.Duration(directoryIntervalSec)*time.Second)
 		},
 	}
 	cmd.Flags().StringVar(&listenAddr, "listen", ":9000", "Address to listen on")
 	cmd.Flags().StringVar(&podID, "pod-id", "pod-local", "Unique identifier for this pod")
 	cmd.Flags().StringVar(&regionHint, "region", "us", "Geographic region hint (us/eu/apac)")
+	cmd.Flags().StringVar(&publicURL, "public-url", "", "Public URL clients use to reach this coordinator (reported to directory)")
 	cmd.Flags().IntVar(&maxDispatchAttempts, "max-attempts", 3, "Max nodes to try per fast-lane dispatch")
 	cmd.Flags().StringVar(&directoryURL, "directory", "", "Directory server URL for pod discovery registration (empty = disabled)")
 	cmd.Flags().IntVar(&directoryIntervalSec, "directory-interval", 60, "Seconds between directory health-digest reports")
@@ -79,7 +80,7 @@ func (s *settlementRecordStore) store(r map[string]any) {
 	s.records = append(s.records, r)
 }
 
-func runCoordinator(listenAddr, podID, regionHint, directoryURL string, maxAttempts int, directoryInterval time.Duration) error {
+func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL string, maxAttempts int, directoryInterval time.Duration) error {
 	registry := coordinator.NewNodeRegistry()
 	assignments := coordinator.NewAssignmentStore()
 	measurements := coordinator.NewMeasurementStore()
@@ -365,10 +366,40 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL string, maxAttem
 
 	// --- Pod health ---
 
+	// GET /nodes — per-node snapshot for dashboards and network graph rendering.
+	// Returns live and recently-stale nodes with memory, tok/s, models, and endpoint.
+	mux.HandleFunc("GET /nodes", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"pod_id":  podID,
+			"region":  regionHint,
+			"nodes":   registry.Snapshot(),
+		})
+	})
+
 	// GET /health — PodHealthDigest for directory layer and monitoring.
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		digest := registry.HealthDigest(podID, regionHint)
+		digest := registry.HealthDigest(podID, regionHint, publicURL)
 		writeJSON(w, http.StatusOK, digest)
+	})
+
+	// GET / — index for browsers and health checkers hitting the root.
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		digest := registry.HealthDigest(podID, regionHint, publicURL)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"service": "oim-coordinator",
+			"pod_id":  podID,
+			"region":  regionHint,
+			"health":  digest,
+			"endpoints": []string{
+				"GET  /health",
+				"GET  /nodes",
+				"POST /nodes/register",
+				"POST /v1/chat/completions",
+				"GET  /users/{id}/balance",
+				"POST /users/{id}/startup-grant",
+				"POST /settlement/records",
+			},
+		})
 	})
 
 	ln, err := net.Listen("tcp", listenAddr)
@@ -376,7 +407,7 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL string, maxAttem
 		return fmt.Errorf("listen on %s: %w", listenAddr, err)
 	}
 
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{Handler: corsMiddleware(mux)}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -386,7 +417,7 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL string, maxAttem
 	if directoryURL != "" {
 		resolver := directory.NewCentralizedResolver([]string{directoryURL})
 		go func() {
-			reportToDirectory(resolver, registry, podID, regionHint)
+			reportToDirectory(resolver, registry, podID, regionHint, publicURL)
 			ticker := time.NewTicker(directoryInterval)
 			defer ticker.Stop()
 			for {
@@ -394,7 +425,7 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL string, maxAttem
 				case <-done:
 					return
 				case <-ticker.C:
-					reportToDirectory(resolver, registry, podID, regionHint)
+					reportToDirectory(resolver, registry, podID, regionHint, publicURL)
 				}
 			}
 		}()
@@ -417,8 +448,8 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL string, maxAttem
 	return nil
 }
 
-func reportToDirectory(resolver *directory.CentralizedResolver, registry *coordinator.NodeRegistry, podID, regionHint string) {
-	digest := registry.HealthDigest(podID, regionHint)
+func reportToDirectory(resolver *directory.CentralizedResolver, registry *coordinator.NodeRegistry, podID, regionHint, publicURL string) {
+	digest := registry.HealthDigest(podID, regionHint, publicURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := resolver.RegisterPod(ctx, digest); err != nil {
@@ -426,6 +457,19 @@ func reportToDirectory(resolver *directory.CentralizedResolver, registry *coordi
 	} else {
 		log.Printf("[coordinator] reported to directory: pod=%s models=%v", podID, digest.ServableModelIDs)
 	}
+}
+
+func corsMiddleware(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -70,6 +70,19 @@ func (s *PodStore) AllPodIDs() []string {
 	return result
 }
 
+// AllPods returns the full health digest for every live pod, suitable for topology responses.
+func (s *PodStore) AllPods() []protocol.PodHealthDigest {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []protocol.PodHealthDigest
+	for _, e := range s.pods {
+		if time.Since(e.lastSeen) <= s.podTTL {
+			result = append(result, e.digest)
+		}
+	}
+	return result
+}
+
 // LiveCount returns the number of live pods.
 func (s *PodStore) LiveCount() int {
 	s.mu.RLock()

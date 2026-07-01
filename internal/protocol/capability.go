@@ -51,6 +51,8 @@ type CapabilityManifest struct {
 	DeclaredMemoryGB     float64            `json:"declared_memory_gb"`
 	DeclaredMemoryCapPct float64            `json:"declared_memory_cap_pct"`
 	GeographicHint       string             `json:"geographic_hint,omitempty"`
+	GeoLat               float64            `json:"geo_lat,omitempty"` // approximate latitude; 0 = not declared
+	GeoLng               float64            `json:"geo_lng,omitempty"` // approximate longitude; 0 = not declared
 	Models               []ModelCapability  `json:"models"`
 	MeasuredSignature    *MeasuredSignature `json:"measured_signature,omitempty"`
 	ReachabilityEndpoint string             `json:"reachability_endpoint"`

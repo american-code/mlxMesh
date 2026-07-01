@@ -160,7 +160,7 @@ func nodeStatusCmd() *cobra.Command {
 
 func nodeStartCmd() *cobra.Command {
 	var coordinatorURL, listenAddr, geoHint, exoURL, reachabilityEndpoint string
-	var capPct float64
+	var capPct, geoLat, geoLng float64
 	var refreshSec int
 
 	cmd := &cobra.Command{
@@ -189,6 +189,8 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 				RefreshInterval:      time.Duration(refreshSec) * time.Second,
 				CapacityPct:          capPct,
 				GeographicHint:       geoHint,
+				GeoLat:               geoLat,
+				GeoLng:               geoLng,
 			}
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -205,6 +207,8 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 	cmd.Flags().Float64Var(&capPct, "cap", 0.5, "Memory contribution cap (0.0–1.0)")
 	cmd.Flags().IntVar(&refreshSec, "refresh-interval", 30, "Manifest refresh interval in seconds")
 	cmd.Flags().StringVar(&geoHint, "region", "", "Geographic region hint (us/eu/apac); defaults to auto-detect")
+	cmd.Flags().Float64Var(&geoLat, "lat", 0, "Approximate latitude of this node (for dashboard mapping; 0 = not declared)")
+	cmd.Flags().Float64Var(&geoLng, "lng", 0, "Approximate longitude of this node (for dashboard mapping; 0 = not declared)")
 	return cmd
 }
 

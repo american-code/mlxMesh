@@ -117,12 +117,42 @@ func runDirectory(listenAddr, peerURL string, podTTL time.Duration) error {
 		})
 	})
 
+	// GET /topology — full pod graph for dashboards: all live pods with aggregate stats
+	// and coordinator URLs so clients can drill into per-node detail.
+	mux.HandleFunc("GET /topology", func(w http.ResponseWriter, r *http.Request) {
+		pods := store.AllPods()
+		if pods == nil {
+			pods = []protocol.PodHealthDigest{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"pods":       pods,
+			"pod_count":  len(pods),
+			"queried_at": time.Now().UTC().Format(time.RFC3339),
+		})
+	})
+
+	// GET / — index for browsers and health checkers hitting the root.
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"service":   "oim-directory",
+			"status":    "ok",
+			"pod_count": store.LiveCount(),
+			"endpoints": []string{
+				"GET  /health",
+				"GET  /topology",
+				"GET  /pods?model_id=<id>",
+				"POST /pods/register",
+				"POST /gossip/digest",
+			},
+		})
+	})
+
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", listenAddr, err)
 	}
 
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{Handler: corsMiddleware(mux)}
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -138,6 +168,19 @@ func runDirectory(listenAddr, peerURL string, podTTL time.Duration) error {
 		return err
 	}
 	return nil
+}
+
+func corsMiddleware(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

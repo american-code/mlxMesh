@@ -287,7 +287,7 @@ func TestHealthDigest(t *testing.T) {
 		}
 	}
 
-	digest := r.HealthDigest("pod-us-1", "us")
+	digest := r.HealthDigest("pod-us-1", "us", "")
 	if digest.PodID != "pod-us-1" {
 		t.Errorf("pod_id mismatch")
 	}

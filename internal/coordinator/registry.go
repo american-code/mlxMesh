@@ -126,12 +126,15 @@ func (r *NodeRegistry) ClaimedSignature(nodeID string) (*protocol.MeasuredSignat
 
 // HealthDigest returns the aggregate pod health for the directory layer.
 // Deliberately aggregate-only — individual node data never leaves the pod (proposal §7.1).
-func (r *NodeRegistry) HealthDigest(podID, regionHint string) protocol.PodHealthDigest {
+// coordinatorEndpoint is the public URL clients should use to reach this coordinator;
+// pass empty string to omit it from the digest.
+func (r *NodeRegistry) HealthDigest(podID, regionHint, coordinatorEndpoint string) protocol.PodHealthDigest {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	modelSet := map[string]bool{}
 	liveCount := 0
 	totalTPS := 0.0
+	totalMemGB := 0.0
 	for _, e := range r.entries {
 		if !e.isLive() {
 			continue
@@ -143,6 +146,7 @@ func (r *NodeRegistry) HealthDigest(podID, regionHint string) protocol.PodHealth
 		if e.manifest.MeasuredSignature != nil {
 			totalTPS += e.manifest.MeasuredSignature.TokensPerSecDecode
 		}
+		totalMemGB += e.manifest.DeclaredMemoryGB * e.manifest.DeclaredMemoryCapPct
 	}
 	models := make([]string, 0, len(modelSet))
 	for m := range modelSet {
@@ -150,16 +154,72 @@ func (r *NodeRegistry) HealthDigest(podID, regionHint string) protocol.PodHealth
 	}
 	health := 0.0
 	if liveCount > 0 && totalTPS > 0 {
-		// Normalize: 100 tok/s per node → health score 1.0
 		health = min(1.0, totalTPS/float64(liveCount)/100.0)
 	}
 	return protocol.PodHealthDigest{
 		PodID:                podID,
 		RegionHint:           regionHint,
+		CoordinatorEndpoint:  coordinatorEndpoint,
 		ServableModelIDs:     models,
 		AggregateHealthScore: health,
 		NodeCountApprox:      liveCount,
+		TotalMemoryGB:        totalMemGB,
+		AggregateToksPerSec:  totalTPS,
 	}
+}
+
+// NodeSnapshot is a dashboard-friendly view of one live node's state.
+type NodeSnapshot struct {
+	NodeID               string                     `json:"node_id"`
+	Status               string                     `json:"status"` // "live" | "stale" | "unreachable"
+	GeographicHint       string                     `json:"geographic_hint"`
+	GeoLat               float64                    `json:"geo_lat,omitempty"` // 0 = not declared
+	GeoLng               float64                    `json:"geo_lng,omitempty"` // 0 = not declared
+	ReachabilityEndpoint string                     `json:"reachability_endpoint"`
+	DeclaredMemoryGB     float64                    `json:"declared_memory_gb"`
+	CommittedMemoryGB    float64                    `json:"committed_memory_gb"` // declared * cap_pct
+	Models               []protocol.ModelCapability `json:"models"`
+	MeasuredToksPerSec   float64                    `json:"measured_toks_per_sec"` // 0 if not yet benchmarked
+	HasSecureEnclave     bool                       `json:"has_secure_enclave"`
+	IsCluster            bool                       `json:"is_cluster"`
+	ClusterDeviceCount   *int                       `json:"cluster_device_count,omitempty"`
+	LastSeenAt           string                     `json:"last_seen_at"`
+}
+
+// Snapshot returns a point-in-time view of all registered nodes (live and recently stale).
+func (r *NodeRegistry) Snapshot() []NodeSnapshot {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]NodeSnapshot, 0, len(r.entries))
+	for _, e := range r.entries {
+		status := "live"
+		if e.unreachable {
+			status = "unreachable"
+		} else if !e.isLive() {
+			status = "stale"
+		}
+		tps := 0.0
+		if e.manifest.MeasuredSignature != nil {
+			tps = e.manifest.MeasuredSignature.TokensPerSecDecode
+		}
+		out = append(out, NodeSnapshot{
+			NodeID:               e.manifest.NodeID,
+			Status:               status,
+			GeographicHint:       e.manifest.GeographicHint,
+			GeoLat:               e.manifest.GeoLat,
+			GeoLng:               e.manifest.GeoLng,
+			ReachabilityEndpoint: e.manifest.ReachabilityEndpoint,
+			DeclaredMemoryGB:     e.manifest.DeclaredMemoryGB,
+			CommittedMemoryGB:    e.manifest.DeclaredMemoryGB * e.manifest.DeclaredMemoryCapPct,
+			Models:               e.manifest.Models,
+			MeasuredToksPerSec:   tps,
+			HasSecureEnclave:     e.manifest.HasSecureEnclave,
+			IsCluster:            e.manifest.IsCluster,
+			ClusterDeviceCount:   e.manifest.ClusterDeviceCount,
+			LastSeenAt:           e.lastSeen.UTC().Format("2006-01-02T15:04:05Z"),
+		})
+	}
+	return out
 }
 
 // VerifiedCapacityScore sums the measured TPS of all live nodes whose submitted benchmark

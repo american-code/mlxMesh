@@ -75,6 +75,7 @@ func infrastructure(w *os.File) {
       - --listen=:9000
       - --pod-id=pod-us
       - --region=us
+      - --public-url=http://localhost:9000
       - --directory=http://directory:9100
       - --directory-interval=15
     ports:
@@ -97,6 +98,7 @@ func infrastructure(w *os.File) {
       - --listen=:9001
       - --pod-id=pod-eu
       - --region=eu
+      - --public-url=http://localhost:9001
       - --directory=http://directory:9100
       - --directory-interval=15
     ports:
@@ -126,7 +128,8 @@ func region(w *os.File, regionName, coordinatorSvc, coordinatorPort string, coun
 		nodePort := port
 		port++
 
-		memGB, latMS, models, capPct := nodeProfile(regionName, i)
+		memGB, latMS, models, capPct, tps := nodeProfile(regionName, i)
+		lat, lng := geoForNode(regionName, i)
 
 		// stub-exo service
 		fmt.Fprintf(w, `
@@ -150,6 +153,8 @@ func region(w *os.File, regionName, coordinatorSvc, coordinatorPort string, coun
 		fmt.Fprintf(w, `  %s:
     <<: *oim
     hostname: %s
+    environment:
+      OIM_INITIAL_TPS: "%.1f"
     command:
       - /usr/local/bin/oim
       - node
@@ -160,6 +165,8 @@ func region(w *os.File, regionName, coordinatorSvc, coordinatorPort string, coun
       - --reachability-endpoint=http://%s:%d
       - --region=%s
       - --cap=%.1f
+      - --lat=%.4f
+      - --lng=%.4f
     ports:
       - "%d:%d"
     depends_on:
@@ -168,12 +175,14 @@ func region(w *os.File, regionName, coordinatorSvc, coordinatorPort string, coun
       %s:
         condition: service_healthy
 `, nodeSvc, nodeSvc,
+			tps,
 			coordinatorSvc, coordinatorPort,
 			nodePort,
 			exoSvc,
 			nodeSvc, nodePort,
 			regionName,
 			capPct,
+			lat, lng,
 			nodePort, nodePort,
 			coordinatorSvc,
 			exoSvc)
@@ -181,9 +190,53 @@ func region(w *os.File, regionName, coordinatorSvc, coordinatorPort string, coun
 	return port
 }
 
-// nodeProfile returns (memGB, latencyMs, modelList, capPct) for a given node.
+// geoCoord holds an approximate data-center location.
+type geoCoord struct{ lat, lng float64 }
+
+// regionCoords are real-ish data-center cities for each region.
+// Nodes cycle through them with small per-node jitter so they don't stack on a map.
+var regionCoords = map[string][]geoCoord{
+	"us": {
+		{39.04, -77.49},  // Ashburn, VA (AWS us-east-1)
+		{45.52, -122.86}, // Hillsboro, OR (AWS us-west-2)
+		{37.34, -121.89}, // San Jose, CA
+		{29.42, -98.49},  // San Antonio, TX
+		{39.96, -82.99},  // Columbus, OH (AWS us-east-2)
+		{41.26, -95.86},  // Council Bluffs, IA (Google)
+		{33.19, -80.01},  // Moncks Corner, SC (AWS)
+		{40.76, -111.89}, // Salt Lake City, UT
+		{41.88, -87.63},  // Chicago, IL
+		{33.75, -84.39},  // Atlanta, GA
+	},
+	"eu": {
+		{50.11, 8.68},  // Frankfurt, DE
+		{52.37, 4.90},  // Amsterdam, NL
+		{53.34, -6.27}, // Dublin, IE
+		{48.86, 2.35},  // Paris, FR
+		{51.51, -0.13}, // London, UK
+		{59.33, 18.07}, // Stockholm, SE
+		{40.42, -3.70}, // Madrid, ES
+		{52.23, 21.01}, // Warsaw, PL
+		{50.85, 4.35},  // Brussels, BE
+	},
+}
+
+// geoForNode returns a lat/lng for the node with small per-index jitter.
+func geoForNode(region string, idx int) (float64, float64) {
+	coords := regionCoords[region]
+	if len(coords) == 0 {
+		return 0, 0
+	}
+	c := coords[idx%len(coords)]
+	// ±0.15° jitter so nodes at the same city don't perfectly overlap
+	jitterLat := float64((idx/len(coords))%3-1) * 0.15
+	jitterLng := float64((idx/len(coords)+1)%3-1) * 0.15
+	return c.lat + jitterLat, c.lng + jitterLng
+}
+
+// nodeProfile returns (memGB, latencyMs, modelList, capPct, toksPerSec) for a given node.
 // Varies deterministically by region and index to simulate heterogeneous hardware.
-func nodeProfile(region string, idx int) (int, int, string, float64) {
+func nodeProfile(region string, idx int) (int, int, string, float64, float64) {
 	// Memory tiers cycling through nodes: small → medium → large → medium → small …
 	memTiers := []int{12, 16, 24, 32, 48, 64, 32, 24, 16}
 	memGB := memTiers[idx%len(memTiers)]
@@ -215,7 +268,11 @@ func nodeProfile(region string, idx int) (int, int, string, float64) {
 		capPct = 0.50
 	}
 
-	return memGB, baseLat, models, capPct
+	// Simulated tok/s scaled to memory tier with per-node jitter.
+	tpsBase := map[int]float64{12: 18, 16: 28, 24: 45, 32: 62, 48: 95, 64: 140}
+	tps := tpsBase[memGB] + float64((idx%4)*3) // ±9 tok/s jitter
+
+	return memGB, baseLat, models, capPct, tps
 }
 
 func footer(w *os.File) {
