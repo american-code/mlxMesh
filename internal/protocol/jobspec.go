@@ -32,6 +32,14 @@ type JobSpec struct {
 	Recurrence           *RecurrenceSpec `json:"recurrence,omitempty"`
 	RedundancyDepth      int             `json:"redundancy_depth"`
 	PayloadRef           string          `json:"payload_ref"`
+
+	// Parallel processing controls — all opt-in, all default to zero/false.
+	// Existing single-node job specs require no changes.
+	// None of these fields are valid on fast-lane jobs; Validate() enforces this.
+	AllowDecomposition         bool `json:"allow_decomposition,omitempty"`
+	AllowDocumentSplitting     bool `json:"allow_document_splitting,omitempty"`
+	RequireDeterministicOutput bool `json:"require_deterministic_output,omitempty"` // enforces temperature=0; required for parallel checksum verification
+	MaxParallelNodes           int  `json:"max_parallel_nodes,omitempty"`            // ceiling on concurrent node usage; 0 treated as 1
 }
 
 // Validate rejects specs that violate the dual-lane contract.
@@ -46,6 +54,19 @@ func (s *JobSpec) Validate() error {
 		return fmt.Errorf(
 			"HIGH_REQUIRES_ATTESTATION job requires redundancy_depth >= 1: " +
 				"a single attestation-capable node failure must not silently drop a sensitive job",
+		)
+	}
+	// Parallel processing is strictly background-lane only.
+	// Autoregressive generation cannot be parallelised mid-sequence — token N
+	// depends on all prior tokens, so document splitting produces incoherent
+	// half-contexts. Decomposition at the coordinator level has the same problem
+	// for interactive generation. This is a hard architectural constraint, not a
+	// policy decision.
+	if s.Lane == JobLaneFast && (s.AllowDecomposition || s.AllowDocumentSplitting) {
+		return fmt.Errorf(
+			"fast-lane job %q cannot enable decomposition or document splitting: "+
+				"autoregressive generation cannot be parallelised mid-sequence",
+			s.JobID,
 		)
 	}
 	return nil

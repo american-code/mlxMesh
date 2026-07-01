@@ -52,3 +52,26 @@ export async function saveLocalConfig(cfg: NodeConfig): Promise<{ status: string
   if (!res.ok) throw new Error(`Config save returned ${res.status}`)
   return res.json()
 }
+
+export async function generateApiKey(
+  coordinatorURL: string,
+  userId: string,
+): Promise<{ api_key: string; user_id: string; note: string }> {
+  const res = await fetch(`${coordinatorURL}/users/${userId}/api-key`, { method: 'POST' })
+  if (!res.ok) throw new Error(`Key generation returned ${res.status}`)
+  return res.json()
+}
+
+export async function checkApiKeyExists(
+  coordinatorURL: string,
+  userId: string,
+): Promise<{ exists: boolean }> {
+  const res = await fetch(`${coordinatorURL}/users/${userId}/api-key`)
+  if (!res.ok) throw new Error(`Key check returned ${res.status}`)
+  return res.json()
+}
+
+export async function revokeApiKey(coordinatorURL: string, userId: string): Promise<void> {
+  const res = await fetch(`${coordinatorURL}/users/${userId}/api-key`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`Key revoke returned ${res.status}`)
+}

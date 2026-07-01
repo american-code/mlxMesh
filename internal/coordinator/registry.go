@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/open-inference-mesh/oim/internal/bench"
@@ -25,6 +26,7 @@ type nodeEntry struct {
 	publicKey   []byte
 	lastSeen    time.Time
 	unreachable bool
+	inFlight    int32 // atomic — jobs currently dispatched to this node
 }
 
 func (e *nodeEntry) isLive() bool {
@@ -134,6 +136,69 @@ func (r *NodeRegistry) Candidates(modelID, quantization string) ([]protocol.Capa
 	return out, nil
 }
 
+// NodeWithLoad pairs a node's capability manifest with its current in-flight job count.
+type NodeWithLoad struct {
+	Manifest protocol.CapabilityManifest
+	InFlight int32
+}
+
+// CandidatesWithLoad is like Candidates but includes the live in-flight counter for each node.
+// The router uses this to score nodes by both throughput and current load.
+func (r *NodeRegistry) CandidatesWithLoad(modelID, quantization string) ([]NodeWithLoad, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []NodeWithLoad
+	for _, e := range r.entries {
+		if !e.isLive() {
+			continue
+		}
+		if !hasModel(e.manifest, modelID, quantization) {
+			continue
+		}
+		out = append(out, NodeWithLoad{
+			Manifest: e.manifest,
+			InFlight: atomic.LoadInt32(&e.inFlight),
+		})
+	}
+	return out, nil
+}
+
+// IncrInFlight atomically increments the in-flight job counter for a node.
+func (r *NodeRegistry) IncrInFlight(nodeID string) {
+	r.mu.RLock()
+	e, ok := r.entries[nodeID]
+	r.mu.RUnlock()
+	if ok {
+		atomic.AddInt32(&e.inFlight, 1)
+	}
+}
+
+// DecrInFlight atomically decrements the in-flight job counter (floors at 0).
+func (r *NodeRegistry) DecrInFlight(nodeID string) {
+	r.mu.RLock()
+	e, ok := r.entries[nodeID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+	if atomic.AddInt32(&e.inFlight, -1) < 0 {
+		atomic.StoreInt32(&e.inFlight, 0)
+	}
+}
+
+// TotalInFlight returns the sum of in-flight jobs across all live nodes.
+func (r *NodeRegistry) TotalInFlight() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var total int32
+	for _, e := range r.entries {
+		if e.isLive() {
+			total += atomic.LoadInt32(&e.inFlight)
+		}
+	}
+	return int(total)
+}
+
 // ClaimedSignature returns the MeasuredSignature from a node's registered manifest,
 // or (nil, nil) if the node registered without a benchmark. Returns error if node unknown.
 func (r *NodeRegistry) ClaimedSignature(nodeID string) (*protocol.MeasuredSignature, error) {
@@ -206,6 +271,7 @@ type NodeSnapshot struct {
 	IsCluster            bool                       `json:"is_cluster"`
 	ClusterDeviceCount   *int                       `json:"cluster_device_count,omitempty"`
 	LastSeenAt           string                     `json:"last_seen_at"`
+	InFlightJobs         int                        `json:"in_flight_jobs"` // currently dispatched jobs
 }
 
 // Snapshot returns a point-in-time view of all registered nodes (live and recently stale).
@@ -239,6 +305,7 @@ func (r *NodeRegistry) Snapshot() []NodeSnapshot {
 			IsCluster:            e.manifest.IsCluster,
 			ClusterDeviceCount:   e.manifest.ClusterDeviceCount,
 			LastSeenAt:           e.lastSeen.UTC().Format("2006-01-02T15:04:05Z"),
+			InFlightJobs:         int(atomic.LoadInt32(&e.inFlight)),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })

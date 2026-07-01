@@ -21,6 +21,16 @@ export interface NodeSnapshot {
   is_cluster: boolean
   cluster_device_count?: number
   last_seen_at: string
+  in_flight_jobs: number
+}
+
+export interface PodMetrics {
+  queue_depth: number
+  queue_capacity: number
+  backpressure_pct: number
+  total_in_flight: number
+  nodes_live?: number
+  nodes_total?: number
 }
 
 export interface PodHealthDigest {
@@ -44,6 +54,7 @@ export interface NodesResponse {
   pod_id: string
   region: string
   nodes: NodeSnapshot[]
+  metrics?: PodMetrics
 }
 
 export type NodeStatus = 'live' | 'degraded' | 'stale' | 'unreachable'

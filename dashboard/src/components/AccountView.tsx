@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import type { Balance } from '../types'
-import { fetchBalance, claimStartupGrant } from '../api'
+import { fetchBalance, claimStartupGrant, generateApiKey, checkApiKeyExists, revokeApiKey } from '../api'
 
 // ── Persistent anonymous user ID ───────────────────────────────────────────
 
@@ -97,6 +97,196 @@ interface Props {
   coordinatorURL: string | null
 }
 
+// ── API Key panel ─────────────────────────────────────────────────────────────
+
+const API_KEY_STORAGE = 'oim_api_key'
+
+function ApiKeyPanel({ coordinatorURL, userId }: { coordinatorURL: string | null; userId: string }) {
+  const [storedKey, setStoredKey]   = useState<string | null>(() => localStorage.getItem(API_KEY_STORAGE))
+  const [serverHas, setServerHas]   = useState<boolean | null>(null)
+  const [generating, setGenerating] = useState(false)
+  const [revoking, setRevoking]     = useState(false)
+  const [copied, setCopied]         = useState(false)
+  const [msg, setMsg]               = useState<string | null>(null)
+  const [revealed, setRevealed]     = useState(false)
+
+  const checkServer = useCallback(async () => {
+    if (!coordinatorURL) return
+    try {
+      const r = await checkApiKeyExists(coordinatorURL, userId)
+      setServerHas(r.exists)
+      // If server no longer has a key but we have one stored, clear it
+      if (!r.exists) {
+        localStorage.removeItem(API_KEY_STORAGE)
+        setStoredKey(null)
+      }
+    } catch { /* coordinator may be offline */ }
+  }, [coordinatorURL, userId])
+
+  useEffect(() => { checkServer() }, [checkServer])
+
+  async function handleGenerate() {
+    if (!coordinatorURL) return
+    setGenerating(true)
+    setMsg(null)
+    try {
+      const r = await generateApiKey(coordinatorURL, userId)
+      localStorage.setItem(API_KEY_STORAGE, r.api_key)
+      setStoredKey(r.api_key)
+      setServerHas(true)
+      setRevealed(true)
+      setMsg('Key generated — copy it now, it will be masked after you leave this page.')
+    } catch (e) {
+      setMsg(`Error: ${(e as Error).message}`)
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  async function handleRevoke() {
+    if (!coordinatorURL) return
+    setRevoking(true)
+    setMsg(null)
+    try {
+      await revokeApiKey(coordinatorURL, userId)
+      localStorage.removeItem(API_KEY_STORAGE)
+      setStoredKey(null)
+      setServerHas(false)
+      setRevealed(false)
+      setMsg('Key revoked.')
+    } catch (e) {
+      setMsg(`Error: ${(e as Error).message}`)
+    } finally {
+      setRevoking(false)
+    }
+  }
+
+  async function handleCopy() {
+    if (!storedKey) return
+    await navigator.clipboard.writeText(storedKey)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  const displayKey = storedKey
+    ? (revealed ? storedKey : storedKey.slice(0, 8) + '••••••••••••••••••••••••••••••••')
+    : null
+
+  return (
+    <div style={{
+      background: '#161b22', border: '1px solid #21262d',
+      borderRadius: 10, padding: '20px 24px', marginBottom: 20,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>API Key</div>
+          <div style={{ color: '#7d8590', fontSize: 12 }}>
+            Use with{' '}
+            <code style={{ color: '#79c0ff', background: '#1c2128', padding: '1px 5px', borderRadius: 3 }}>
+              Authorization: Bearer oim_xxx
+            </code>
+            {' '}to submit inference jobs
+          </div>
+        </div>
+        {serverHas !== null && (
+          <span style={{
+            background: serverHas ? '#3fb95018' : '#f8514918',
+            border: `1px solid ${serverHas ? '#3fb95040' : '#f8514940'}`,
+            color: serverHas ? '#3fb950' : '#7d8590',
+            fontSize: 11, fontWeight: 700, padding: '3px 9px', borderRadius: 5,
+          }}>
+            {serverHas ? 'Active' : 'No key'}
+          </span>
+        )}
+      </div>
+
+      {displayKey && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            background: '#0d1117', border: '1px solid #30363d',
+            borderRadius: 6, padding: '8px 12px',
+          }}>
+            <code style={{
+              flex: 1, fontFamily: 'monospace', fontSize: 12,
+              color: '#e6edf3', wordBreak: 'break-all', letterSpacing: '0.02em',
+            }}>
+              {displayKey}
+            </code>
+            <button onClick={() => setRevealed(v => !v)} style={microBtn}>
+              {revealed ? 'Hide' : 'Show'}
+            </button>
+            <button onClick={handleCopy} style={{ ...microBtn, color: copied ? '#3fb950' : '#e6edf3' }}>
+              {copied ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
+          {!revealed && (
+            <div style={{ color: '#484f58', fontSize: 11, marginTop: 5 }}>
+              Key is stored in localStorage. Click Show to reveal, or generate a new one (replaces this key).
+            </div>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: msg ? 10 : 0 }}>
+        <button
+          onClick={handleGenerate}
+          disabled={generating || !coordinatorURL}
+          style={btnStyle('#238636', '#2ea043', generating || !coordinatorURL)}
+        >
+          {generating ? 'Generating…' : serverHas ? 'Regenerate key' : 'Generate API key'}
+        </button>
+        {serverHas && (
+          <button
+            onClick={handleRevoke}
+            disabled={revoking}
+            style={btnStyle('#f8514918', '#f8514944', revoking)}
+          >
+            {revoking ? 'Revoking…' : 'Revoke'}
+          </button>
+        )}
+      </div>
+
+      {msg && (
+        <div style={{
+          marginTop: 10, padding: '8px 12px', borderRadius: 6, fontSize: 12,
+          background: msg.startsWith('Error') ? '#f8514918' : '#3fb95018',
+          border: `1px solid ${msg.startsWith('Error') ? '#f8514940' : '#3fb95040'}`,
+          color: msg.startsWith('Error') ? '#f85149' : '#3fb950',
+        }}>{msg}</div>
+      )}
+
+      {!coordinatorURL && (
+        <div style={{ color: '#7d8590', fontSize: 12, marginTop: 10 }}>
+          Connect to a coordinator to manage API keys.
+        </div>
+      )}
+
+      <div style={{ marginTop: 16, borderTop: '1px solid #21262d', paddingTop: 14 }}>
+        <div style={{ color: '#7d8590', fontSize: 12, marginBottom: 8, fontWeight: 600 }}>Usage</div>
+        <pre style={{
+          background: '#0d1117', border: '1px solid #30363d', borderRadius: 6,
+          padding: '10px 14px', fontSize: 11, color: '#e6edf3', margin: 0, overflowX: 'auto',
+        }}>{`curl https://<coordinator>/v1/chat/completions \\
+  -H "Authorization: Bearer ${storedKey ?? 'oim_your_key_here'}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model": "llama-3.2-3b", "messages": [{"role": "user", "content": "Hello"}]}'`}</pre>
+        <div style={{ color: '#484f58', fontSize: 11, marginTop: 8 }}>
+          Your user ID is included automatically — no X-OIM-User-ID header needed when using an API key.
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const microBtn: React.CSSProperties = {
+  background: '#1c2128', border: '1px solid #30363d',
+  color: '#e6edf3', borderRadius: 5, padding: '3px 9px',
+  cursor: 'pointer', fontSize: 11, whiteSpace: 'nowrap',
+}
+
+// ── Account View ───────────────────────────────────────────────────────────────
+
 export function AccountView({ coordinatorURL }: Props) {
   const [userId] = useState(getOrCreateUserId)
   const [balance, setBalance] = useState<Balance | null>(null)
@@ -142,40 +332,40 @@ export function AccountView({ coordinatorURL }: Props) {
   const b = balance ?? { grant_balance: 0, earned_balance: 0, total: 0 }
 
   return (
-    <div style={{ maxWidth: 680, margin: '32px auto', padding: '0 24px' }}>
+    <div style={{ maxWidth: 780, margin: '32px auto', padding: '0 24px' }}>
 
       {/* ── Identity ── */}
       <div style={{
         background: '#161b22', border: '1px solid #21262d',
         borderRadius: 10, padding: '20px 24px', marginBottom: 20,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
           <div>
-            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Node Identity</div>
+            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Account Identity</div>
             <div style={{ color: '#7d8590', fontSize: 12 }}>
-              Anonymous · proof-of-node
+              Anonymous · device-local UUID · used for credit accounting and API key binding
             </div>
-          </div>
-          <div style={{
-            background: '#3fb95018', border: '1px solid #3fb95040',
-            borderRadius: 6, padding: '3px 10px',
-            color: '#3fb950', fontSize: 12, fontWeight: 600,
-          }}>
-            M5 Preview
           </div>
         </div>
         <div style={{
           background: '#0d1117', border: '1px solid #30363d',
           borderRadius: 6, padding: '10px 14px',
-          fontFamily: 'monospace', fontSize: 12, color: '#7d8590',
-          wordBreak: 'break-all', letterSpacing: '0.02em',
+          fontFamily: 'monospace', fontSize: 13, color: '#e6edf3',
+          wordBreak: 'break-all', letterSpacing: '0.02em', userSelect: 'all',
         }}>
           {userId}
         </div>
         <div style={{ color: '#484f58', fontSize: 11, marginTop: 8 }}>
-          Stored locally · never sent to a third party · tied to your contributing node
+          Stored in localStorage · pass as{' '}
+          <code style={{ color: '#79c0ff' }}>--user-id {userId.slice(0, 8)}…</code>
+          {' '}when running{' '}
+          <code style={{ color: '#79c0ff' }}>oim node start</code>
+          {' '}to attribute earnings to this account
         </div>
       </div>
+
+      {/* ── API Key ── */}
+      <ApiKeyPanel coordinatorURL={coordinatorURL} userId={userId} />
 
       {/* ── Credit Gauge ── */}
       <div style={{
@@ -251,6 +441,8 @@ export function AccountView({ coordinatorURL }: Props) {
         <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 14 }}>How credits work</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <InfoRow icon="⚡" text="Run inference on the mesh → earn credits proportional to tokens delivered and verified" />
+          <InfoRow icon="🔑" text="Generate an API key above — use it as Authorization: Bearer oim_xxx when submitting jobs. Your user ID is implicit; no extra header needed." />
+          <InfoRow icon="🖥" text={`Link your node to this account: oim node start --user-id ${userId.slice(0,8)}… — every token served credits this balance`} />
           <InfoRow icon="🔒" text="Measurement is cryptographically signed — credits reflect actual throughput, not self-declared specs" />
           <InfoRow icon="🎁" text="Startup grant lets you use the network before you've contributed — sized to real job costs, not an arbitrary number" />
           <InfoRow icon="⚖️" text="Spend credits to submit your own jobs. No native token. No external conversion needed." />
@@ -295,6 +487,6 @@ function btnStyle(bg: string, border: string, disabled: boolean): React.CSSPrope
     background: bg, border: `1px solid ${border}`,
     color: disabled ? '#484f58' : '#e6edf3',
     borderRadius: 6, padding: '6px 14px', cursor: disabled ? 'not-allowed' : 'pointer',
-    fontSize: 13, transition: 'opacity 0.15s',
+    fontSize: 13, transition: 'all 0.15s', fontWeight: 500,
   }
 }

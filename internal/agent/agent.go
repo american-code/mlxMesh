@@ -38,6 +38,7 @@ type Config struct {
 	CapacityPct          float64       // memory contribution cap (0.0–1.0)
 	DeclaredMemoryGB     float64       // when > 0, overrides governor.TotalRAMGB() for simulation
 	AllowedModels        []string      // empty = all downloaded Exo models; non-empty = allowlist
+	UserID               string        // when set, earned credits from this node's work go to this user account
 	GeographicHint       string
 	GeoLat               float64 // approximate latitude; 0 = not declared
 	GeoLng               float64 // approximate longitude; 0 = not declared
@@ -94,7 +95,7 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("assemble manifest: %w", err)
 	}
-	if err := register(ctx, cfg.CoordinatorURL, priv, pub, manifest); err != nil {
+	if err := register(ctx, cfg.CoordinatorURL, cfg.UserID, priv, pub, manifest); err != nil {
 		return fmt.Errorf("initial registration failed: %w", err)
 	}
 	log.Printf("[agent] registered with coordinator %s as node %s", cfg.CoordinatorURL, manifest.NodeID)
@@ -139,7 +140,7 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 			}
 			if err := refresh(ctx, cfg.CoordinatorURL, nodeID, fresh); err != nil {
 				log.Printf("[agent] refresh error (will retry): %v", err)
-				if regErr := register(ctx, cfg.CoordinatorURL, priv, pub, fresh); regErr != nil {
+				if regErr := register(ctx, cfg.CoordinatorURL, cfg.UserID, priv, pub, fresh); regErr != nil {
 					log.Printf("[agent] re-registration also failed: %v", regErr)
 				}
 			}
@@ -258,9 +259,10 @@ func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct flo
 		}
 
 		latencyMs := float64(time.Since(start).Milliseconds())
+		tokensDelivered := extractTokenCount(result)
 		go func() {
 			// Non-blocking outcome report; ignore error — reporting failure must not disrupt the job.
-			if err := ReportJobOutcome(context.Background(), coordinatorURL, nodeID, spec.JobID, execErr == nil, latencyMs); err != nil {
+			if err := ReportJobOutcome(context.Background(), coordinatorURL, nodeID, spec.JobID, execErr == nil, latencyMs, tokensDelivered); err != nil {
 				log.Printf("[agent] report outcome: %v", err)
 			}
 		}()
@@ -293,7 +295,7 @@ func agentCORS(h http.Handler) http.Handler {
 }
 
 // register signs the manifest and POSTs it to the coordinator's /nodes/register endpoint.
-func register(ctx context.Context, coordinatorURL string, priv, pub []byte, manifest *protocol.CapabilityManifest) error {
+func register(ctx context.Context, coordinatorURL, userID string, priv, pub []byte, manifest *protocol.CapabilityManifest) error {
 	payload, err := manifest.Bytes()
 	if err != nil {
 		return fmt.Errorf("serialize manifest: %w", err)
@@ -306,6 +308,7 @@ func register(ctx context.Context, coordinatorURL string, priv, pub []byte, mani
 		Manifest:  *manifest,
 		PublicKey: pub,
 		Signature: sig,
+		UserID:    userID,
 	}
 	return postJSON(ctx, coordinatorURL+"/nodes/register", reg)
 }
@@ -341,6 +344,22 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// extractTokenCount reads completion_tokens from an Exo response.
+// Returns 0 when the field is absent (stub-exo may not populate it).
+func extractTokenCount(result map[string]any) int {
+	if result == nil {
+		return 0
+	}
+	usage, _ := result["usage"].(map[string]any)
+	if usage == nil {
+		return 0
+	}
+	if n, ok := usage["completion_tokens"].(float64); ok && n > 0 {
+		return int(n)
+	}
+	return 0
 }
 
 // resolveReachabilityEndpoint converts a listen address like ":8765" to a full URL

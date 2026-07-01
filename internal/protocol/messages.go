@@ -2,10 +2,13 @@ package protocol
 
 // NodeRegistration is sent from node agent → pod coordinator on join or refresh.
 // PublicKey is required for the coordinator to verify the signature and derive node_id.
+// UserID is optional: when set, earned credits from this node's inference work are
+// attributed to that user account. If omitted, the node_id itself is used as the account key.
 type NodeRegistration struct {
 	Manifest  CapabilityManifest `json:"manifest"`
 	PublicKey []byte             `json:"public_key"` // Ed25519 public key
 	Signature []byte             `json:"signature"`  // Ed25519 over Manifest.Bytes()
+	UserID    string             `json:"user_id,omitempty"`
 }
 
 // PodHealthDigest is sent pod coordinator → directory (and directory ↔ directory gossip).

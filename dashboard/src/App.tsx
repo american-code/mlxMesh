@@ -7,6 +7,7 @@ import { GeoNetworkGraph } from './components/GeoNetworkGraph'
 import { NodeDetail } from './components/NodeDetail'
 import { AccountView } from './components/AccountView'
 import { NodeSetupView } from './components/NodeSetupView'
+import { BackpressurePanel } from './components/BackpressurePanel'
 import type { NodeSnapshot, PodHealthDigest } from './types'
 import {
   computeNodeStatus, STATUS_COLORS, STATUS_LABELS,
@@ -32,6 +33,14 @@ export default function App() {
   const offlineCount  = allNodes.filter(n => ['stale', 'unreachable'].includes(computeNodeStatus(n))).length
   const totalTps      = allNodes.reduce((s, n) => s + n.measured_toks_per_sec, 0)
   const totalMem      = allNodes.reduce((s, n) => s + n.committed_memory_gb, 0)
+
+  const metricsPerPod = podNodes.map(p => p.metrics)
+  const validMetrics  = metricsPerPod.filter(m => m !== null)
+  const totalQueued   = validMetrics.reduce((s, m) => s + m!.queue_depth, 0)
+  const totalInFlight = validMetrics.reduce((s, m) => s + m!.total_in_flight, 0)
+  const avgBackpressure = validMetrics.length > 0
+    ? validMetrics.reduce((s, m) => s + m!.backpressure_pct, 0) / validMetrics.length
+    : 0
 
   return (
     <div style={{ minHeight: '100vh', background: '#0d1117' }}>
@@ -88,6 +97,22 @@ export default function App() {
           <HeaderStat label="Throughput" value={`${Math.round(totalTps).toLocaleString()} t/s`} />
           <HeaderStat label="Committed"  value={formatMem(totalMem)} />
           <HeaderStat label="Regions"    value={String(pods.length)} />
+          {validMetrics.length > 0 && (
+            <>
+              <div style={{ width: 1, height: 20, background: '#30363d' }} />
+              <HeaderStat
+                label="Queued"
+                value={String(totalQueued)}
+                color={totalQueued > 0 ? '#d29922' : '#7d8590'}
+              />
+              <HeaderStat
+                label="In-flight"
+                value={String(totalInFlight)}
+                color={totalInFlight > 0 ? '#58a6ff' : '#7d8590'}
+              />
+              <BackpressurePill pct={avgBackpressure} />
+            </>
+          )}
           <div style={{ width: 1, height: 20, background: '#30363d' }} />
           <button onClick={refresh} style={{
             background: '#1c2128', border: '1px solid #30363d', color: '#e6edf3',
@@ -136,6 +161,14 @@ export default function App() {
             <WorldMap nodes={allNodes} selected={selected} onNodeClick={setSelected} />
           )}
         </section>
+
+        {/* ── Backpressure panel — queue depth and in-flight across all coordinators ── */}
+        {pods.length > 0 && (
+          <BackpressurePanel
+            pods={pods}
+            metricsPerPod={metricsPerPod}
+          />
+        )}
 
         {/* ── Pod summary cards — one per coordinator, any count ── */}
         {podNodes.length > 0 && (
@@ -188,6 +221,25 @@ function HeaderStat({ label, value, color }: { label: string; value: string; col
       <div style={{ color: color ?? '#e6edf3', fontSize: 15, fontWeight: 700, fontVariantNumeric: 'tabular-nums', lineHeight: 1.2 }}>
         {value}
       </div>
+    </div>
+  )
+}
+
+function BackpressurePill({ pct }: { pct: number }) {
+  const color = pct >= 70 ? '#f85149' : pct >= 30 ? '#d29922' : '#3fb950'
+  const label = pct >= 70 ? 'High load' : pct >= 30 ? 'Moderate' : 'Normal'
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 6,
+      background: `${color}12`,
+      border: `1px solid ${color}40`,
+      borderRadius: 6, padding: '3px 10px',
+    }}>
+      <div style={{ width: 7, height: 7, borderRadius: '50%', background: color }} />
+      <span style={{ color, fontSize: 12, fontWeight: 600 }}>{label}</span>
+      <span style={{ color: `${color}99`, fontSize: 11, fontVariantNumeric: 'tabular-nums' }}>
+        {pct.toFixed(0)}%
+      </span>
     </div>
   )
 }

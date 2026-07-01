@@ -162,7 +162,7 @@ func nodeStatusCmd() *cobra.Command {
 }
 
 func nodeStartCmd() *cobra.Command {
-	var coordinatorURL, listenAddr, geoHint, exoURL, reachabilityEndpoint string
+	var coordinatorURL, listenAddr, geoHint, exoURL, reachabilityEndpoint, userID string
 	var capPct, geoLat, geoLng, declaredMemGB float64
 	var refreshSec int
 
@@ -222,6 +222,7 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 				CapacityPct:          capPct,
 				DeclaredMemoryGB:     declaredMemGB,
 				AllowedModels:        savedCfg.AllowedModels,
+				UserID:               userID,
 				GeographicHint:       geoHint,
 				GeoLat:               geoLat,
 				GeoLng:               geoLng,
@@ -244,6 +245,7 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 	cmd.Flags().Float64Var(&geoLat, "lat", 0, "Approximate latitude of this node (for dashboard mapping; 0 = not declared)")
 	cmd.Flags().Float64Var(&geoLng, "lng", 0, "Approximate longitude of this node (for dashboard mapping; 0 = not declared)")
 	cmd.Flags().Float64Var(&declaredMemGB, "declared-memory-gb", 0, "Override declared memory GB (0 = read from system; useful for simulation)")
+	cmd.Flags().StringVar(&userID, "user-id", "", "User account ID to attribute earned credits to (from your Account tab user ID)")
 	return cmd
 }
 

@@ -7,12 +7,15 @@ import (
 )
 
 // ReportJobOutcome posts a job completion record to the pod coordinator.
+// tokensDelivered is read from the Exo response usage field when available;
+// pass 0 when the node could not determine the count.
 // Non-fatal on error — reporting failure must not stop the agent.
-func ReportJobOutcome(ctx context.Context, coordinatorURL, nodeID, jobID string, success bool, latencyMs float64) error {
+func ReportJobOutcome(ctx context.Context, coordinatorURL, nodeID, jobID string, success bool, latencyMs float64, tokensDelivered int) error {
 	return postJSON(ctx, coordinatorURL+"/nodes/"+nodeID+"/job-outcome", map[string]any{
-		"job_id":     jobID,
-		"success":    success,
-		"latency_ms": latencyMs,
+		"job_id":           jobID,
+		"success":          success,
+		"latency_ms":       latencyMs,
+		"tokens_delivered": tokensDelivered,
 	})
 }
 

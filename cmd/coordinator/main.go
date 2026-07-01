@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -23,6 +25,60 @@ import (
 	"github.com/open-inference-mesh/oim/internal/protocol"
 	"github.com/open-inference-mesh/oim/internal/settlement"
 )
+
+// apiKeyStore maps generated oim_* API keys ↔ user IDs.
+// Both directions so we can look up by key (auth) and by user (revoke/check).
+type apiKeyStore struct {
+	mu      sync.RWMutex
+	byKey   map[string]string // oim_xxx → userID
+	byUser  map[string]string // userID → oim_xxx
+}
+
+func newAPIKeyStore() *apiKeyStore {
+	return &apiKeyStore{
+		byKey:  make(map[string]string),
+		byUser: make(map[string]string),
+	}
+}
+
+func (s *apiKeyStore) generate(userID string) (string, error) {
+	raw := make([]byte, 20)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	key := "oim_" + hex.EncodeToString(raw)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if old, ok := s.byUser[userID]; ok {
+		delete(s.byKey, old) // revoke existing key
+	}
+	s.byKey[key] = userID
+	s.byUser[userID] = key
+	return key, nil
+}
+
+func (s *apiKeyStore) lookup(key string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	uid, ok := s.byKey[key]
+	return uid, ok
+}
+
+func (s *apiKeyStore) revoke(userID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if key, ok := s.byUser[userID]; ok {
+		delete(s.byKey, key)
+		delete(s.byUser, userID)
+	}
+}
+
+func (s *apiKeyStore) exists(userID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.byUser[userID]
+	return ok
+}
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
@@ -89,6 +145,21 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 	ledger := settlement.NewLedger()
 	settlementRecords := &settlementRecordStore{}
 	capacitySrc := &podCapacitySource{registry: registry, measurements: measurements}
+	apiKeys := newAPIKeyStore()
+
+	// ctx is cancelled on SIGINT/SIGTERM to drain the job queue workers cleanly.
+	ctx, cancelCtx := context.WithCancel(context.Background())
+
+	// MQTT-style bounded job queue: callers with X-OIM-Queue: true are held here
+	// when all nodes are busy, rather than receiving an immediate 503.
+	jobQueue := coordinator.NewJobQueue(ctx,
+		coordinator.DefaultQueueCapacity,
+		coordinator.DefaultQueueWorkers,
+		registry, maxAttempts,
+	)
+
+	// nodeUsers maps node_id → user_id so earned credits reach the right account.
+	var nodeUsers sync.Map // string → string
 
 	// grantedUsers tracks which user IDs have claimed a startup grant this session.
 	// In-memory dedup only — resets on coordinator restart, which is fine for dev/sim.
@@ -114,7 +185,14 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 			writeErr(w, http.StatusForbidden, "signature verification failed")
 			return
 		}
-		log.Printf("[coordinator] registered node %s (%s)", reg.Manifest.NodeID, reg.Manifest.GeographicHint)
+		// Track node → user mapping for earnings attribution.
+		// Falls back to node_id as account key when no user_id provided.
+		earningsTarget := reg.Manifest.NodeID
+		if reg.UserID != "" {
+			earningsTarget = reg.UserID
+		}
+		nodeUsers.Store(reg.Manifest.NodeID, earningsTarget)
+		log.Printf("[coordinator] registered node %s (%s) earnings→%s", reg.Manifest.NodeID, reg.Manifest.GeographicHint, earningsTarget)
 		writeJSON(w, http.StatusOK, map[string]string{
 			"status":  "registered",
 			"node_id": reg.Manifest.NodeID,
@@ -213,8 +291,15 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 
 		result, err := coordinator.DispatchFastLane(r.Context(), job, req.Messages, registry, maxAttempts)
 		if err != nil {
-			writeErr(w, http.StatusServiceUnavailable, err.Error())
-			return
+			// X-OIM-Queue: true — hold the request in the coordinator queue instead of 503.
+			// Workers retry dispatch every ~400ms until a node accepts or the 30s timeout fires.
+			if r.Header.Get("X-OIM-Queue") == "true" {
+				result, err = jobQueue.Enqueue(r.Context(), job, req.Messages, coordinator.DefaultQueueTimeout)
+			}
+			if err != nil {
+				writeErr(w, http.StatusServiceUnavailable, err.Error())
+				return
+			}
 		}
 
 		// Debit after successful dispatch. Use actual completion_tokens from the response
@@ -297,20 +382,39 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 	})
 
 	// POST /nodes/{id}/job-outcome — node reports job completion.
-	// Foundation for M5 settlement; logged now, reconciled in settlement layer.
+	// When tokens_delivered > 0, credits the node's registered user at the moderate rate.
+	// This is the earning side of the credit ledger: node operators earn as they serve.
 	mux.HandleFunc("POST /nodes/{id}/job-outcome", func(w http.ResponseWriter, r *http.Request) {
 		nodeID := r.PathValue("id")
 		var outcome struct {
-			JobID     string  `json:"job_id"`
-			Success   bool    `json:"success"`
-			LatencyMs float64 `json:"latency_ms"`
+			JobID           string  `json:"job_id"`
+			Success         bool    `json:"success"`
+			LatencyMs       float64 `json:"latency_ms"`
+			TokensDelivered int     `json:"tokens_delivered"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&outcome); err != nil {
 			writeErr(w, http.StatusBadRequest, "parse outcome: "+err.Error())
 			return
 		}
-		log.Printf("[coordinator] job-outcome node=%s job=%s success=%v latency=%.0fms",
-			nodeID, outcome.JobID, outcome.Success, outcome.LatencyMs)
+		log.Printf("[coordinator] job-outcome node=%s job=%s success=%v latency=%.0fms tokens=%d",
+			nodeID, outcome.JobID, outcome.Success, outcome.LatencyMs, outcome.TokensDelivered)
+
+		if outcome.Success && outcome.TokensDelivered > 0 {
+			accountKey, _ := nodeUsers.Load(nodeID)
+			if accountKey == nil {
+				accountKey = nodeID // fallback: credit node_id directly
+			}
+			earned := float64(outcome.TokensDelivered) / 1000.0 * 1.0 // moderate rate
+			_ = ledger.CreditAccount(settlement.CreditEntry{
+				UserID:            accountKey.(string),
+				Origin:            settlement.CreditOriginEarnedContrib,
+				Amount:            earned,
+				GrantedOrEarnedAt: time.Now(),
+				SourceReference:   outcome.JobID,
+			})
+			log.Printf("[coordinator] earned user=%s node=%s tokens=%d credits=%.4f",
+				accountKey, nodeID, outcome.TokensDelivered, earned)
+		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "recorded"})
 	})
 
@@ -425,6 +529,63 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 		writeJSON(w, http.StatusOK, ledger.GetBalance(userID))
 	})
 
+	// POST /users/{id}/api-key — generate (or replace) a per-user API key.
+	// The key is returned ONCE here and never retrievable again; store it client-side.
+	// The key can be used in "Authorization: Bearer oim_xxx" instead of X-OIM-User-ID.
+	mux.HandleFunc("POST /users/{id}/api-key", func(w http.ResponseWriter, r *http.Request) {
+		userID := r.PathValue("id")
+		key, err := apiKeys.generate(userID)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "generate key: "+err.Error())
+			return
+		}
+		log.Printf("[coordinator] api-key generated user=%s", userID)
+		writeJSON(w, http.StatusOK, map[string]string{
+			"api_key": key,
+			"user_id": userID,
+			"note":    "store this key — it cannot be retrieved again",
+		})
+	})
+
+	// GET /users/{id}/api-key — check whether a key exists (does NOT return the key value).
+	mux.HandleFunc("GET /users/{id}/api-key", func(w http.ResponseWriter, r *http.Request) {
+		userID := r.PathValue("id")
+		writeJSON(w, http.StatusOK, map[string]any{
+			"user_id": userID,
+			"exists":  apiKeys.exists(userID),
+		})
+	})
+
+	// DELETE /users/{id}/api-key — revoke the current key. A new one can be generated.
+	mux.HandleFunc("DELETE /users/{id}/api-key", func(w http.ResponseWriter, r *http.Request) {
+		userID := r.PathValue("id")
+		apiKeys.revoke(userID)
+		log.Printf("[coordinator] api-key revoked user=%s", userID)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+	})
+
+	// --- Metrics ---
+
+	// GET /metrics — live queue depth, backpressure, and in-flight counters.
+	// Polled by the dashboard to render the backpressure panel.
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		snap := registry.Snapshot()
+		liveCount := 0
+		for _, n := range snap {
+			if n.Status == "live" {
+				liveCount++
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"queue_depth":      jobQueue.Depth(),
+			"queue_capacity":   jobQueue.Capacity(),
+			"backpressure_pct": jobQueue.BackpressurePct(),
+			"total_in_flight":  registry.TotalInFlight(),
+			"nodes_live":       liveCount,
+			"nodes_total":      len(snap),
+		})
+	})
+
 	// --- Pod health ---
 
 	// GET /nodes — per-node snapshot for dashboards and network graph rendering.
@@ -434,6 +595,12 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 			"pod_id": podID,
 			"region": regionHint,
 			"nodes":  registry.Snapshot(),
+			"metrics": map[string]any{
+				"queue_depth":      jobQueue.Depth(),
+				"queue_capacity":   jobQueue.Capacity(),
+				"backpressure_pct": jobQueue.BackpressurePct(),
+				"total_in_flight":  registry.TotalInFlight(),
+			},
 		})
 	})
 
@@ -458,7 +625,17 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 			case <-r.Context().Done():
 				return
 			case <-ticker.C:
-				snap := map[string]any{"pod_id": podID, "region": regionHint, "nodes": registry.Snapshot()}
+				snap := map[string]any{
+					"pod_id": podID,
+					"region": regionHint,
+					"nodes":  registry.Snapshot(),
+					"metrics": map[string]any{
+						"queue_depth":      jobQueue.Depth(),
+						"queue_capacity":   jobQueue.Capacity(),
+						"backpressure_pct": jobQueue.BackpressurePct(),
+						"total_in_flight":  registry.TotalInFlight(),
+					},
+				}
 				data, _ := json.Marshal(snap)
 				fmt.Fprintf(w, "data: %s\n\n", data)
 				flusher.Flush()
@@ -500,7 +677,7 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 
 	var handler http.Handler = mux
 	if apiKey != "" {
-		handler = authMiddleware(apiKey, mux)
+		handler = authMiddleware(apiKey, apiKeys, mux)
 		log.Printf("[coordinator] API key auth enabled for write operations")
 	}
 	srv := &http.Server{Handler: corsMiddleware(handler)}
@@ -530,11 +707,12 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 
 	go func() {
 		<-quit
+		cancelCtx() // stop job queue workers
 		close(done)
 		log.Println("[coordinator] shutting down")
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		srv.Shutdown(ctx)
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutCancel()
+		srv.Shutdown(shutCtx)
 	}()
 
 	log.Printf("[coordinator] pod=%s region=%s listening on %s", podID, regionHint, listenAddr)
@@ -558,21 +736,45 @@ func reportToDirectory(resolver *directory.CentralizedResolver, registry *coordi
 // authMiddleware requires a Bearer token for all write operations (POST, DELETE).
 // GET requests and CORS preflight are always open so the dashboard can read without auth.
 // /nodes/stream is also always open since EventSource cannot send Authorization headers.
-func authMiddleware(apiKey string, next http.Handler) http.Handler {
+// Two token forms are accepted:
+//   - The static admin key (--api-key flag) — grants full access, no user attribution
+//   - A per-user oim_* key (generated via POST /users/{id}/api-key) — the user ID is
+//     injected as X-OIM-User-ID so the credit gate can debit the right account
+func authMiddleware(adminKey string, keys *apiKeyStore, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Reads and preflight are open
 		if r.Method == http.MethodGet || r.Method == http.MethodOptions {
 			next.ServeHTTP(w, r)
 			return
 		}
-		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, "Bearer ") || strings.TrimPrefix(auth, "Bearer ") != apiKey {
+		auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if auth == "" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized: valid Bearer token required"})
+			json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized: Bearer token required"})
 			return
 		}
-		next.ServeHTTP(w, r)
+		// Static admin key — accepted as-is.
+		if auth == adminKey {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Per-user oim_* key — inject the user ID and allow.
+		if strings.HasPrefix(auth, "oim_") {
+			if uid, ok := keys.lookup(auth); ok {
+				// Synthetic header so the credit gate picks up the caller's identity
+				// without requiring the client to send X-OIM-User-ID separately.
+				if r.Header.Get("X-OIM-User-ID") == "" {
+					r = r.Clone(r.Context())
+					r.Header.Set("X-OIM-User-ID", uid)
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized: invalid or expired API key"})
 	})
 }
 
