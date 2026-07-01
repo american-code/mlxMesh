@@ -18,8 +18,9 @@ struct NetworkGraphView: View {
     private func placed(in size: CGSize) -> [PlacedNode] {
         let cx = size.width / 2, cy = size.height / 2
         let span = min(size.width, size.height)
-        let inner = Array(nodes.prefix(8))
-        let outer = Array(nodes.dropFirst(8))
+        let sorted = nodes.sorted { $0.nodeId < $1.nodeId }
+        let inner = Array(sorted.prefix(8))
+        let outer = Array(sorted.dropFirst(8))
 
         func ring(_ arr: [NodeSnapshot], r: CGFloat) -> [PlacedNode] {
             arr.enumerated().map { i, node in

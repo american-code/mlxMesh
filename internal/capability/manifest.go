@@ -33,14 +33,23 @@ func AssembleManifest(
 	if err != nil {
 		return nil, fmt.Errorf("read total RAM: %w", err)
 	}
+	if opts.DeclaredMemoryGB > 0 {
+		totalGB = opts.DeclaredMemoryGB
+	}
 
 	isCluster, deviceCount, err := DetectClusterNode(ctx, exo)
 	if err != nil {
 		// Non-fatal: default to single-node
 		isCluster = false
 	}
+	// Treat high-memory nodes as clusters even when topology detection is unavailable
+	// (common in simulated environments where Exo doesn't report multi-device peers).
+	if !isCluster && totalGB >= 128 {
+		isCluster = true
+		deviceCount = int(totalGB / 80) // rough device estimate: one ~80 GB GPU per device
+	}
 
-	models, err := buildModelList(ctx, exo)
+	models, err := buildModelList(ctx, exo, opts.AllowedModels)
 	if err != nil {
 		models = nil // exo not running — still build a valid manifest
 	}
@@ -72,6 +81,8 @@ func AssembleManifest(
 // Options holds operator-configured parameters for manifest assembly.
 type Options struct {
 	MemoryCapPct         float64
+	DeclaredMemoryGB     float64  // when > 0, overrides governor.TotalRAMGB() (useful for simulation)
+	AllowedModels        []string // empty = all downloaded Exo models; non-empty = allowlist
 	GeographicHint       string
 	GeoLat               float64 // approximate latitude; 0 = not declared
 	GeoLng               float64 // approximate longitude; 0 = not declared
@@ -131,15 +142,24 @@ func SaveBenchmarkResult(sig *protocol.MeasuredSignature) error {
 
 // --- private helpers ---
 
-func buildModelList(ctx context.Context, exo *exoadapter.Client) ([]protocol.ModelCapability, error) {
+func buildModelList(ctx context.Context, exo *exoadapter.Client, allowedModels []string) ([]protocol.ModelCapability, error) {
 	raw, err := exo.GetDownloadedModels(ctx)
 	if err != nil {
 		return nil, err
 	}
+
+	allowed := make(map[string]bool, len(allowedModels))
+	for _, id := range allowedModels {
+		allowed[id] = true
+	}
+
 	models := make([]protocol.ModelCapability, 0, len(raw))
 	for _, m := range raw {
 		modelID := stringField(m, "id", "model_id")
 		if modelID == "" {
+			continue
+		}
+		if len(allowed) > 0 && !allowed[modelID] {
 			continue
 		}
 		models = append(models, protocol.ModelCapability{

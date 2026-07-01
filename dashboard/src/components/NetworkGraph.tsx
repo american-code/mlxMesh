@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { NodeSnapshot } from '../types'
 import {
   computeNodeStatus, statusColor, memToRadius,
-  nodeLabel, formatTps, formatMem,
+  nodeLabel, formatTps, formatMem, isExoNode,
 } from '../utils'
 
 interface Props {
@@ -28,8 +28,9 @@ interface PlacedNode {
 }
 
 function placeNodes(nodes: NodeSnapshot[]): PlacedNode[] {
-  const inner = nodes.slice(0, INNER_CAP)
-  const outer = nodes.slice(INNER_CAP)
+  const sorted = [...nodes].sort((a, b) => a.node_id.localeCompare(b.node_id))
+  const inner = sorted.slice(0, INNER_CAP)
+  const outer = sorted.slice(INNER_CAP)
 
   const place = (arr: NodeSnapshot[], radius: number): PlacedNode[] =>
     arr.map((node, i) => {
@@ -103,6 +104,7 @@ export function NetworkGraph({ nodes, podId, region, selected, onNodeClick }: Pr
           const isSelected = selected?.node_id === node.node_id
           const isStale = status === 'stale'
           const isDead = status === 'unreachable'
+          const isExo = isExoNode(node)
 
           return (
             <g key={node.node_id}
@@ -118,21 +120,35 @@ export function NetworkGraph({ nodes, podId, region, selected, onNodeClick }: Pr
                   fill="none" stroke={color} strokeOpacity={0.2} strokeWidth={1.5}
                   className="pulse-ring" />
               )}
+              {/* Exo cluster orbit ring */}
+              {isExo && (
+                <circle cx={x} cy={y} r={r + 10}
+                  fill="none" stroke="#a371f7" strokeOpacity={0.7} strokeWidth={1.5}
+                  strokeDasharray="5 4" />
+              )}
               {/* Selection ring */}
               {isSelected && (
-                <circle cx={x} cy={y} r={r + 9}
+                <circle cx={x} cy={y} r={r + (isExo ? 14 : 9)}
                   fill="none" stroke={color} strokeOpacity={0.85} strokeWidth={2} />
               )}
               {/* Node body */}
               <circle cx={x} cy={y} r={r}
                 fill={color}
                 fillOpacity={isDead ? 0.2 : 0.85}
-                stroke={color}
-                strokeWidth={isDead || isStale ? 2 : 0}
+                stroke={isExo ? '#a371f7' : color}
+                strokeWidth={isDead || isStale ? 2 : isExo ? 2 : 0}
                 strokeDasharray={isStale ? '3 3' : undefined}
               />
+              {/* EXO label inside large nodes */}
+              {isExo && (
+                <text x={x} y={y + 1} textAnchor="middle" dominantBaseline="middle"
+                  fill="#a371f7" fontSize={8} fontWeight={700}
+                  style={{ pointerEvents: 'none', userSelect: 'none' }}>
+                  EXO
+                </text>
+              )}
               {/* Label below node */}
-              <text x={x} y={y + r + 12} textAnchor="middle"
+              <text x={x} y={y + r + (isExo ? 18 : 12)} textAnchor="middle"
                 fill="#7d8590" fontSize={9}
                 style={{ pointerEvents: 'none', userSelect: 'none' }}>
                 {nodeLabel(node)}

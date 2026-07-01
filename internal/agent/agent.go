@@ -21,7 +21,9 @@ import (
 	"github.com/open-inference-mesh/oim/internal/bench"
 	"github.com/open-inference-mesh/oim/internal/capability"
 	"github.com/open-inference-mesh/oim/internal/exoadapter"
+	"github.com/open-inference-mesh/oim/internal/governor"
 	"github.com/open-inference-mesh/oim/internal/jobrunner"
+	"github.com/open-inference-mesh/oim/internal/nodeconfig"
 	"github.com/open-inference-mesh/oim/internal/protocol"
 )
 
@@ -34,6 +36,8 @@ type Config struct {
 	RefreshInterval      time.Duration // how often to re-register and refresh manifest
 	BenchInterval        time.Duration // how often to re-run benchmark and submit result (0 = disabled)
 	CapacityPct          float64       // memory contribution cap (0.0–1.0)
+	DeclaredMemoryGB     float64       // when > 0, overrides governor.TotalRAMGB() for simulation
+	AllowedModels        []string      // empty = all downloaded Exo models; non-empty = allowlist
 	GeographicHint       string
 	GeoLat               float64 // approximate latitude; 0 = not declared
 	GeoLng               float64 // approximate longitude; 0 = not declared
@@ -76,6 +80,8 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 
 	opts := capability.DefaultOptions()
 	opts.MemoryCapPct = cfg.CapacityPct
+	opts.DeclaredMemoryGB = cfg.DeclaredMemoryGB
+	opts.AllowedModels = cfg.AllowedModels
 	opts.ReachabilityEndpoint = reachabilityEndpoint
 	if cfg.GeographicHint != "" {
 		opts.GeographicHint = cfg.GeographicHint
@@ -95,7 +101,7 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 
 	// Start HTTP server for job reception (non-blocking).
 	nodeID := manifest.NodeID
-	srv := buildJobServer(runner, cfg.CapacityPct, nodeID, cfg.CoordinatorURL)
+	srv := buildJobServer(runner, exo, cfg.CapacityPct, nodeID, cfg.CoordinatorURL, cfg.ExoURL)
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", listenAddr, err)
@@ -159,13 +165,61 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	}
 }
 
-// buildJobServer constructs the HTTP mux that accepts inference jobs from the coordinator.
-func buildJobServer(runner *jobrunner.Runner, capPct float64, nodeID, coordinatorURL string) *http.Server {
+// buildJobServer constructs the HTTP mux that accepts inference jobs from the coordinator
+// and exposes /detect + /config for the dashboard Node Setup tab.
+func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct float64, nodeID, coordinatorURL, exoURL string) *http.Server {
 	mux := http.NewServeMux()
 
 	// Health endpoint for coordinator liveness checks.
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	// Detection endpoint — called by the dashboard Node Setup tab to auto-populate
+	// machine specs, Exo status, and available models.
+	mux.HandleFunc("GET /detect", func(w http.ResponseWriter, r *http.Request) {
+		sysInfo, _ := governor.SystemInfo()
+		cfg, _ := nodeconfig.Load()
+		exoHealthy := exo.IsHealthy(r.Context())
+
+		var models []map[string]any
+		if exoHealthy {
+			raw, err := exo.GetDownloadedModels(r.Context())
+			if err == nil {
+				models = raw
+			}
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"node_id":           nodeID,
+			"platform":          sysInfo["platform"],
+			"is_apple_silicon":  sysInfo["is_apple_silicon"],
+			"total_ram_gb":      sysInfo["total_ram_gb"],
+			"available_ram_gb":  sysInfo["available_ram_gb"],
+			"used_pct":          sysInfo["used_pct"],
+			"has_secure_enclave": protocol.CheckSecureEnclaveAvailable(),
+			"is_foregrounded":   governor.IsForegrounded(),
+			"exo_healthy":       exoHealthy,
+			"exo_url":           exoURL,
+			"models":            models,
+			"config":            cfg,
+		})
+	})
+
+	// Config save endpoint — called by the dashboard Node Setup tab when the user
+	// saves their contributor settings. Written to ~/.config/oim/config.json and
+	// read on the next oim node start invocation.
+	mux.HandleFunc("POST /config", func(w http.ResponseWriter, r *http.Request) {
+		var cfg nodeconfig.Config
+		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := nodeconfig.Save(cfg); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "saved", "path": nodeconfig.ConfigPath()})
 	})
 
 	// OpenAI-compatible inference endpoint. The coordinator dispatches here.
@@ -218,7 +272,24 @@ func buildJobServer(runner *jobrunner.Runner, capPct float64, nodeID, coordinato
 		writeJSON(w, http.StatusOK, result)
 	})
 
-	return &http.Server{Handler: mux}
+	return &http.Server{Handler: agentCORS(mux)}
+}
+
+// agentCORS allows the local dashboard (any localhost origin) to call /detect and /config.
+func agentCORS(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 // register signs the manifest and POSTs it to the coordinator's /nodes/register endpoint.

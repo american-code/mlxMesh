@@ -1,33 +1,37 @@
 import { useState } from 'react'
 import { useTopology } from './hooks/useTopology'
-import { useNodes } from './hooks/useNodes'
+import { useAllNodes } from './hooks/useAllNodes'
 import { WorldMap } from './components/WorldMap'
 import { NetworkGraph } from './components/NetworkGraph'
+import { GeoNetworkGraph } from './components/GeoNetworkGraph'
 import { NodeDetail } from './components/NodeDetail'
+import { AccountView } from './components/AccountView'
+import { NodeSetupView } from './components/NodeSetupView'
 import type { NodeSnapshot, PodHealthDigest } from './types'
 import {
   computeNodeStatus, STATUS_COLORS, STATUS_LABELS,
   statusColor, formatTps, formatMem,
 } from './utils'
 
+type Tab = 'network' | 'account' | 'node'
+type GraphMode = 'hub' | 'geo'
+
 export default function App() {
   const { data: topology, error: topoError, lastUpdated, refresh } = useTopology()
   const [selected, setSelected] = useState<NodeSnapshot | null>(null)
+  const [tab, setTab] = useState<Tab>('network')
 
   const pods = topology?.pods ?? []
-  const usPod = pods.find(p => p.region_hint === 'us') ?? null
-  const euPod = pods.find(p => p.region_hint === 'eu') ?? null
 
-  const { nodes: usNodes } = useNodes(usPod?.coordinator_endpoint ?? null)
-  const { nodes: euNodes } = useNodes(euPod?.coordinator_endpoint ?? null)
+  // ── Dynamic: works for any number of pods/regions ──
+  const podNodes = useAllNodes(pods)
+  const allNodes = podNodes.flatMap(p => p.nodes)
 
-  const allNodes = [...usNodes, ...euNodes]
-
-  const liveCount    = allNodes.filter(n => computeNodeStatus(n) === 'live').length
+  const liveCount     = allNodes.filter(n => computeNodeStatus(n) === 'live').length
   const degradedCount = allNodes.filter(n => computeNodeStatus(n) === 'degraded').length
-  const offlineCount = allNodes.filter(n => ['stale', 'unreachable'].includes(computeNodeStatus(n))).length
-  const totalTps     = allNodes.reduce((s, n) => s + n.measured_toks_per_sec, 0)
-  const totalMem     = allNodes.reduce((s, n) => s + n.committed_memory_gb, 0)
+  const offlineCount  = allNodes.filter(n => ['stale', 'unreachable'].includes(computeNodeStatus(n))).length
+  const totalTps      = allNodes.reduce((s, n) => s + n.measured_toks_per_sec, 0)
+  const totalMem      = allNodes.reduce((s, n) => s + n.committed_memory_gb, 0)
 
   return (
     <div style={{ minHeight: '100vh', background: '#0d1117' }}>
@@ -47,6 +51,24 @@ export default function App() {
           <span style={{ fontWeight: 700, fontSize: 15, letterSpacing: '-0.01em' }}>
             OIM Control Center
           </span>
+          <div style={{
+            display: 'flex', background: '#1c2128',
+            border: '1px solid #30363d', borderRadius: 7,
+            padding: 2, gap: 2, marginLeft: 8,
+          }}>
+            {(['network', 'account', 'node'] as Tab[]).map(t => (
+              <button key={t} onClick={() => setTab(t)} style={{
+                background: tab === t ? '#2d333b' : 'transparent',
+                border: 'none', borderRadius: 5,
+                color: tab === t ? '#e6edf3' : '#7d8590',
+                padding: '3px 12px', cursor: 'pointer', fontSize: 12,
+                fontWeight: tab === t ? 600 : 400,
+                transition: 'all 0.15s',
+              }}>
+                {t === 'network' ? 'Network' : t === 'account' ? 'Account' : 'Node Setup'}
+              </button>
+            ))}
+          </div>
           {topoError && (
             <span style={{
               color: '#f85149', fontSize: 12,
@@ -59,12 +81,13 @@ export default function App() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 28 }}>
-          <HeaderStat label="Live" value={String(liveCount)} color="#3fb950" />
+          <HeaderStat label="Live"       value={String(liveCount)} color="#3fb950" />
           {degradedCount > 0 && <HeaderStat label="Degraded" value={String(degradedCount)} color="#d29922" />}
           {offlineCount  > 0 && <HeaderStat label="Offline"  value={String(offlineCount)}  color="#f85149" />}
           <div style={{ width: 1, height: 20, background: '#30363d' }} />
           <HeaderStat label="Throughput" value={`${Math.round(totalTps).toLocaleString()} t/s`} />
           <HeaderStat label="Committed"  value={formatMem(totalMem)} />
+          <HeaderStat label="Regions"    value={String(pods.length)} />
           <div style={{ width: 1, height: 20, background: '#30363d' }} />
           <button onClick={refresh} style={{
             background: '#1c2128', border: '1px solid #30363d', color: '#e6edf3',
@@ -78,9 +101,15 @@ export default function App() {
         </div>
       </header>
 
-      <main style={{ padding: '20px 24px', maxWidth: 1440, margin: '0 auto' }}>
+      {tab === 'account' && (
+        <AccountView coordinatorURL={pods[0]?.coordinator_endpoint ?? null} />
+      )}
 
-        {/* ── World map ── */}
+      {tab === 'node' && <NodeSetupView />}
+
+      <main style={{ padding: '20px 24px', maxWidth: 1440, margin: '0 auto', display: tab === 'network' ? 'block' : 'none' }}>
+
+        {/* ── World map — projection auto-fits wherever nodes actually are ── */}
         <section style={{
           background: '#161b22', border: '1px solid #21262d',
           borderRadius: 10, marginBottom: 20, overflow: 'hidden',
@@ -89,11 +118,18 @@ export default function App() {
             padding: '11px 16px', borderBottom: '1px solid #21262d',
             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
           }}>
-            <span style={{ fontWeight: 600, fontSize: 13 }}>Global Distribution</span>
+            <span style={{ fontWeight: 600, fontSize: 13 }}>
+              Global Distribution
+              {pods.length > 0 && (
+                <span style={{ color: '#7d8590', fontWeight: 400, marginLeft: 8 }}>
+                  {pods.length} region{pods.length !== 1 ? 's' : ''} · {allNodes.length} nodes
+                </span>
+              )}
+            </span>
             <StatusLegend />
           </div>
           {allNodes.length === 0 ? (
-            <div style={{ height: 280, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#7d8590', fontSize: 14 }}>
+            <div style={{ height: 220, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#7d8590', fontSize: 14 }}>
               Connecting to network…
             </div>
           ) : (
@@ -101,38 +137,38 @@ export default function App() {
           )}
         </section>
 
-        {/* ── Pod summary cards ── */}
-        {pods.length > 0 && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
-            {usPod && <PodCard pod={usPod} nodes={usNodes} />}
-            {euPod && <PodCard pod={euPod} nodes={euNodes} />}
+        {/* ── Pod summary cards — one per coordinator, any count ── */}
+        {podNodes.length > 0 && (
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+            gap: 16, marginBottom: 20,
+          }}>
+            {podNodes.map(({ pod, nodes }) => (
+              <PodCard key={pod.pod_id} pod={pod} nodes={nodes} />
+            ))}
           </div>
         )}
 
-        {/* ── Per-region network graphs ── */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-          {usPod && usNodes.length > 0 && (
-            <GraphCard title="US Region" podId={usPod.pod_id}>
-              <NetworkGraph
-                nodes={usNodes}
-                podId={usPod.pod_id}
-                region="us"
+        {/* ── Per-region network graphs — one per coordinator, any count ── */}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))',
+          gap: 16,
+        }}>
+          {podNodes
+            .filter(p => p.nodes.length > 0)
+            .map(({ pod, nodes }) => (
+              <GraphCard
+                key={pod.pod_id}
+                title={`${pod.region_hint.toUpperCase()} Region`}
+                podId={pod.pod_id}
+                nodes={nodes}
+                region={pod.region_hint}
                 selected={selected}
                 onNodeClick={setSelected}
               />
-            </GraphCard>
-          )}
-          {euPod && euNodes.length > 0 && (
-            <GraphCard title="EU Region" podId={euPod.pod_id}>
-              <NetworkGraph
-                nodes={euNodes}
-                podId={euPod.pod_id}
-                region="eu"
-                selected={selected}
-                onNodeClick={setSelected}
-              />
-            </GraphCard>
-          )}
+            ))}
         </div>
       </main>
 
@@ -176,7 +212,8 @@ function PodCard({ pod, nodes }: { pod: PodHealthDigest; nodes: NodeSnapshot[] }
     return acc
   }, {})
 
-  const healthPct = Math.round(pod.aggregate_health_score * 100)
+  const liveNodes  = nodes.filter(n => computeNodeStatus(n) === 'live').length
+  const healthPct  = Math.round(pod.aggregate_health_score * 100)
 
   return (
     <div style={{
@@ -193,15 +230,13 @@ function PodCard({ pod, nodes }: { pod: PodHealthDigest; nodes: NodeSnapshot[] }
         <HealthBadge score={healthPct} />
       </div>
 
-      {/* Stat row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 14 }}>
-        <MiniStat label="Nodes" value={String(pod.node_count_approx)} />
+        <MiniStat label="Nodes"  value={`${liveNodes}/${nodes.length}`} />
         <MiniStat label="Memory" value={formatMem(pod.total_memory_gb)} />
-        <MiniStat label="Tok/s" value={formatTps(pod.aggregate_toks_per_sec)} />
+        <MiniStat label="Tok/s"  value={formatTps(pod.aggregate_toks_per_sec)} />
         <MiniStat label="Models" value={String(pod.servable_model_ids?.length ?? 0)} />
       </div>
 
-      {/* Status breakdown bar */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {Object.entries(statusCounts).map(([s, count]) => (
           <div key={s} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -240,17 +275,86 @@ function MiniStat({ label, value }: { label: string; value: string }) {
   )
 }
 
-function GraphCard({ title, podId, children }: { title: string; podId: string; children: React.ReactNode }) {
+function GraphCard({
+  title, podId, nodes, region, selected, onNodeClick,
+}: {
+  title: string
+  podId: string
+  nodes: NodeSnapshot[]
+  region: string
+  selected: NodeSnapshot | null
+  onNodeClick: (n: NodeSnapshot) => void
+}) {
+  const [mode, setMode] = useState<GraphMode>('hub')
+
+  // Hub and geo graphs show only active nodes. Stale/unreachable nodes remain
+  // visible on the world map (as orange/red dots) for geographic awareness.
+  const activeNodes = nodes.filter(n => ['live', 'degraded'].includes(computeNodeStatus(n)))
+  const offlineCount = nodes.length - activeNodes.length
+
   return (
     <div style={{ background: '#161b22', border: '1px solid #21262d', borderRadius: 10, overflow: 'hidden' }}>
       <div style={{
         padding: '11px 16px', borderBottom: '1px solid #21262d',
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
       }}>
-        <span style={{ fontWeight: 600, fontSize: 13 }}>{title}</span>
-        <span style={{ color: '#7d8590', fontSize: 11 }}>{podId}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontWeight: 600, fontSize: 13 }}>{title}</span>
+          {offlineCount > 0 && (
+            <span style={{
+              fontSize: 10, fontWeight: 600,
+              color: '#f85149', background: '#f8514918',
+              border: '1px solid #f8514940',
+              padding: '1px 6px', borderRadius: 4,
+            }}>
+              {offlineCount} offline
+            </span>
+          )}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{
+            display: 'flex', background: '#0d1117',
+            border: '1px solid #30363d', borderRadius: 6,
+            padding: 2, gap: 1,
+          }}>
+            {(['hub', 'geo'] as GraphMode[]).map(m => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                title={m === 'hub' ? 'Snowflake layout' : 'Geographic KNN layout'}
+                style={{
+                  background: mode === m ? '#2d333b' : 'transparent',
+                  border: 'none', borderRadius: 4,
+                  color: mode === m ? '#e6edf3' : '#7d8590',
+                  padding: '2px 9px', cursor: 'pointer', fontSize: 11,
+                  fontWeight: mode === m ? 600 : 400,
+                  transition: 'all 0.12s',
+                }}
+              >
+                {m === 'hub' ? '⬡ Hub' : '⊕ Geo'}
+              </button>
+            ))}
+          </div>
+          <span style={{ color: '#7d8590', fontSize: 11 }}>{podId}</span>
+        </div>
       </div>
-      <div style={{ padding: '8px 12px' }}>{children}</div>
+      <div style={{ padding: '8px 12px' }}>
+        {mode === 'hub' ? (
+          <NetworkGraph
+            nodes={activeNodes}
+            podId={podId}
+            region={region}
+            selected={selected}
+            onNodeClick={onNodeClick}
+          />
+        ) : (
+          <GeoNetworkGraph
+            nodes={activeNodes}
+            selected={selected}
+            onNodeClick={onNodeClick}
+          />
+        )}
+      </div>
     </div>
   )
 }

@@ -39,8 +39,22 @@ declare module 'react-simple-maps' {
     onMouseMove?: (event: MouseEvent<SVGGElement>) => void
   }
 
+  interface LineProps {
+    from: [number, number]       // [longitude, latitude]
+    to: [number, number]         // [longitude, latitude]
+    stroke?: string
+    strokeWidth?: number
+    strokeOpacity?: number
+    strokeLinecap?: 'round' | 'butt' | 'square'
+    strokeDasharray?: string
+    fill?: string
+    className?: string
+    style?: CSSProperties
+  }
+
   export function ComposableMap(props: ComposableMapProps): JSX.Element
   export function Geographies(props: GeographiesProps): JSX.Element
   export function Geography(props: GeographyProps): JSX.Element
   export function Marker(props: MarkerProps): JSX.Element
+  export function Line(props: LineProps): JSX.Element
 }

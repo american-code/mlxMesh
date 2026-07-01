@@ -4,6 +4,7 @@ package coordinator
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -11,7 +12,13 @@ import (
 	"github.com/open-inference-mesh/oim/internal/protocol"
 )
 
-const livenessTTL = 90 * time.Second
+// livenessTTL must be > 1× RefreshInterval so a single slow heartbeat isn't a false stale,
+// but tight enough that a stopped node is visible within two polling cycles (~45s default).
+const livenessTTL = 45 * time.Second
+
+// evictionTTL is how long a stale/unreachable node stays in the registry before being purged.
+// This prevents unbounded memory growth; 5 min is long enough for transient reconnects.
+const evictionTTL = 5 * time.Minute
 
 type nodeEntry struct {
 	manifest    protocol.CapabilityManifest
@@ -32,7 +39,22 @@ type NodeRegistry struct {
 }
 
 func NewNodeRegistry() *NodeRegistry {
-	return &NodeRegistry{entries: make(map[string]*nodeEntry)}
+	r := &NodeRegistry{entries: make(map[string]*nodeEntry)}
+	go r.runEviction()
+	return r
+}
+
+func (r *NodeRegistry) runEviction() {
+	t := time.NewTicker(30 * time.Second)
+	for range t.C {
+		r.mu.Lock()
+		for id, e := range r.entries {
+			if time.Since(e.lastSeen) > evictionTTL {
+				delete(r.entries, id)
+			}
+		}
+		r.mu.Unlock()
+	}
 }
 
 // Register verifies the signature and node_id derivation before accepting.
@@ -219,6 +241,7 @@ func (r *NodeRegistry) Snapshot() []NodeSnapshot {
 			LastSeenAt:           e.lastSeen.UTC().Format("2006-01-02T15:04:05Z"),
 		})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
 	return out
 }
 

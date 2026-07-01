@@ -3,7 +3,7 @@ import Foundation
 enum NetworkClient {
     static var directoryURL = "http://localhost:9100"
 
-    private static let decoder: JSONDecoder = {
+    static let decoder: JSONDecoder = {
         let d = JSONDecoder()
         d.keyDecodingStrategy = .convertFromSnakeCase
         return d

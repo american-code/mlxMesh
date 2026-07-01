@@ -47,3 +47,34 @@ export interface NodesResponse {
 }
 
 export type NodeStatus = 'live' | 'degraded' | 'stale' | 'unreachable'
+
+export interface Balance {
+  grant_balance: number
+  earned_balance: number
+  total: number
+}
+
+export interface NodeConfig {
+  exo_url: string
+  memory_cap_pct: number
+  geographic_hint: string
+  reachability_endpoint: string
+  pod_endpoint: string
+  allowed_models: string[]
+  sensitivity_cap: string
+}
+
+export interface NodeDetection {
+  node_id: string
+  platform: string
+  is_apple_silicon: boolean
+  total_ram_gb: number
+  available_ram_gb: number
+  used_pct: number
+  has_secure_enclave: boolean
+  is_foregrounded: boolean
+  exo_healthy: boolean
+  exo_url: string
+  models: Array<{ id?: string; model_id?: string; [key: string]: unknown }>
+  config: NodeConfig
+}

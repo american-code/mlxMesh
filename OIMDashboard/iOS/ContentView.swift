@@ -47,6 +47,11 @@ struct ContentView: View {
             }
 
             NavigationStack {
+                AccountView()
+            }
+            .tabItem { Label("Account", systemImage: "person.circle.fill") }
+
+            NavigationStack {
                 SettingsView()
                     .navigationTitle("Settings")
             }
@@ -69,6 +74,7 @@ struct ContentView: View {
                     }
                 }
                 Section {
+                    Label("Account", systemImage: "person.circle.fill").tag("account")
                     Label("Settings", systemImage: "gear").tag("settings")
                 }
             }
@@ -85,6 +91,8 @@ struct ContentView: View {
         case "map":
             GlobalMapView(nodes: store.allNodes, selected: $selectedNode)
                 .ignoresSafeArea()
+        case "account":
+            AccountView()
         case "settings":
             SettingsView()
         case let str where str?.hasPrefix("region-") == true:

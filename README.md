@@ -18,6 +18,178 @@ Most distributed inference tools (e.g. [Exo](https://github.com/exo-explore/exo)
 
 ---
 
+## Submitting inference jobs
+
+The mesh is designed for **background inference jobs** — workloads where you need a response but not within interactive latency (think batch summarization, nightly report generation, embedding pipelines, async RAG retrieval). For real-time chat you still want a local Exo cluster; for deferred, cost-sensitive, or burst workloads you route to the mesh.
+
+### How a job enters the network
+
+```
+Your application
+       │
+       │  POST /v1/chat/completions   (OpenAI-compatible)
+       ▼
+Pod Coordinator (regional)
+       │
+       │  credit check → dispatch → node selection
+       ▼
+Node Agent (wrapping local Exo)
+       │
+       │  tokens stream back
+       ▼
+Your application
+```
+
+1. Your app checks the caller's credit balance (or the system does it automatically on submit).
+2. The coordinator selects a node via the fast-lane router (measured TPS, model availability, sensitivity tier).
+3. The node streams the response back through the coordinator.
+4. Credits are debited on completion, proportional to tokens delivered.
+
+### Submitting a job (OpenAI-compatible API)
+
+The coordinator exposes an OpenAI-compatible endpoint. Any SDK that speaks the OpenAI API works without modification.
+
+**cURL:**
+```bash
+curl https://<coordinator>/v1/chat/completions \
+  -H "Authorization: Bearer <your-api-key>" \
+  -H "X-OIM-User-ID: <user-uuid>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "llama-3.2-3b",
+    "messages": [{"role": "user", "content": "Summarize this document: ..."}],
+    "max_tokens": 2048,
+    "stream": false
+  }'
+```
+
+**Python (openai SDK):**
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://<coordinator>/v1",
+    api_key="<your-api-key>",
+)
+
+response = client.chat.completions.create(
+    model="llama-3.2-3b",
+    messages=[{"role": "user", "content": "Summarize this document: ..."}],
+)
+print(response.choices[0].message.content)
+```
+
+**JavaScript / TypeScript:**
+```ts
+import OpenAI from 'openai'
+
+const client = new OpenAI({
+  baseURL: 'https://<coordinator>/v1',
+  apiKey: '<your-api-key>',
+})
+
+const response = await client.chat.completions.create({
+  model: 'llama-3.2-3b',
+  messages: [{ role: 'user', content: 'Summarize this document: ...' }],
+})
+console.log(response.choices[0].message.content)
+```
+
+### Model parameter method
+
+Models are selected by `model` string in the request body. The coordinator resolves the model to available nodes, preferring nodes with a matching downloaded model and sufficient measured TPS.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `model` | string | Model ID as reported by Exo (e.g. `llama-3.2-3b`, `mlx-community/Llama-3.2-3B-Instruct-4bit`) |
+| `messages` | array | OpenAI-format message array (`role` + `content`) |
+| `stream` | boolean | Set `true` for streaming token output via SSE |
+| `max_tokens` | integer | Cap on output tokens; defaults to model's `max_context_tokens` |
+| `temperature` | float | Sampling temperature (0.0–2.0) |
+
+To discover which models are currently available on the mesh, query the directory:
+
+```bash
+curl https://<directory>/topology
+# Returns pod list with servable_model_ids per pod
+```
+
+### Credit / token validator — can this caller run a job?
+
+Before dispatching, the coordinator checks the caller's credit balance. The flow:
+
+```
+1. GET /users/{user_id}/balance
+   → { grant_balance, earned_balance, total }
+
+2. Estimate job cost:
+   cost_estimate = (max_tokens / 1000) * tier_rate
+   tier_rate: low=0.5, moderate=1.0, high_requires_attestation=5.0  (credits per 1k tokens)
+   → 100-credit startup grant ≈ 100 typical calls (2k tokens each, moderate tier)
+
+3. If total >= cost_estimate → dispatch
+   Else → 402 Payment Required  {"error": "insufficient_credits", "balance": ..., "required": ...}
+
+4. On completion: debit actual completion_tokens delivered (falls back to max_tokens if not reported)
+```
+
+To check balance programmatically before submitting:
+
+```bash
+curl https://<coordinator>/users/<user_id>/balance
+# { "grant_balance": 100.00, "earned_balance": 0.00, "total": 100.00 }
+```
+
+To claim the one-time startup grant (100 credits — enough for ~50,000 tokens at the default rate):
+
+```bash
+curl -X POST https://<coordinator>/users/<user_id>/startup-grant
+```
+
+### Hooking an application or service
+
+**Background job queue pattern** — enqueue a job, poll for completion:
+
+```python
+import httpx, time
+
+def run_mesh_job(prompt: str, user_id: str) -> str:
+    coordinator = "https://<coordinator>"
+    headers = {"Authorization": "Bearer <api-key>"}
+
+    # 1. Check credits
+    bal = httpx.get(f"{coordinator}/users/{user_id}/balance").json()
+    if bal["total"] < 0.01:
+        raise ValueError("Insufficient credits")
+
+    # 2. Submit job
+    resp = httpx.post(
+        f"{coordinator}/v1/chat/completions",
+        headers=headers,
+        json={"model": "llama-3.2-3b", "messages": [{"role": "user", "content": prompt}]},
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+```
+
+**Streaming pattern** — useful for long-running summarization where you want partial results:
+
+```python
+with httpx.stream("POST", f"{coordinator}/v1/chat/completions",
+    headers=headers,
+    json={"model": "llama-3.2-3b", "messages": [...], "stream": True},
+) as r:
+    for line in r.iter_lines():
+        if line.startswith("data: "):
+            chunk = json.loads(line[6:])
+            print(chunk["choices"][0]["delta"].get("content", ""), end="", flush=True)
+```
+
+**Webhook / async pattern** (planned Milestone 5) — submit a job with a `callback_url`; the coordinator POSTs the completed response to your endpoint when done. This is the target pattern for fire-and-forget batch pipelines.
+
+---
+
 ## Prerequisites
 
 | Requirement | Version |

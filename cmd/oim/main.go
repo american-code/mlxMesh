@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -18,6 +20,7 @@ import (
 	"github.com/open-inference-mesh/oim/internal/exoadapter"
 	"github.com/open-inference-mesh/oim/internal/governor"
 	"github.com/open-inference-mesh/oim/internal/identity"
+	"github.com/open-inference-mesh/oim/internal/nodeconfig"
 	"github.com/open-inference-mesh/oim/internal/protocol"
 )
 
@@ -160,7 +163,7 @@ func nodeStatusCmd() *cobra.Command {
 
 func nodeStartCmd() *cobra.Command {
 	var coordinatorURL, listenAddr, geoHint, exoURL, reachabilityEndpoint string
-	var capPct, geoLat, geoLng float64
+	var capPct, geoLat, geoLng, declaredMemGB float64
 	var refreshSec int
 
 	cmd := &cobra.Command{
@@ -172,6 +175,24 @@ its capability manifest every --refresh-interval seconds.
 
 Prerequisites: Exo must be running (oim node status to verify).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Load saved config and apply as defaults; CLI flags take precedence.
+			savedCfg, _ := nodeconfig.Load()
+			if !cmd.Flags().Changed("cap") && savedCfg.MemoryCapPct > 0 {
+				capPct = savedCfg.MemoryCapPct
+			}
+			if !cmd.Flags().Changed("region") && savedCfg.GeographicHint != "" {
+				geoHint = savedCfg.GeographicHint
+			}
+			if !cmd.Flags().Changed("coordinator") && savedCfg.PodEndpoint != "" {
+				coordinatorURL = savedCfg.PodEndpoint
+			}
+			if !cmd.Flags().Changed("reachability-endpoint") && savedCfg.ReachabilityEndpoint != "" {
+				reachabilityEndpoint = savedCfg.ReachabilityEndpoint
+			}
+			if !cmd.Flags().Changed("exo-url") && savedCfg.ExoURL != "" {
+				exoURL = savedCfg.ExoURL
+			}
+
 			priv, pub, err := identity.LoadOrCreate()
 			if err != nil {
 				return fmt.Errorf("load identity: %w", err)
@@ -181,6 +202,17 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 			fmt.Printf("Coordinator: %s\n", coordinatorURL)
 			fmt.Printf("Listening:   %s\n\n", listenAddr)
 
+			// Auto-detect coordinates when neither flag is set.
+			// Skipped in Docker (--lat/--lng always provided by gen-compose).
+			if geoLat == 0 && geoLng == 0 {
+				if lat, lng, err := detectGeoLocation(); err == nil {
+					geoLat, geoLng = lat, lng
+					fmt.Printf("Geo:         %.4f, %.4f (auto-detected)\n", geoLat, geoLng)
+				} else {
+					fmt.Printf("Geo:         not detected (%v)\n", err)
+				}
+			}
+
 			cfg := agent.Config{
 				CoordinatorURL:       coordinatorURL,
 				ExoURL:               exoURL,
@@ -188,6 +220,8 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 				ReachabilityEndpoint: reachabilityEndpoint,
 				RefreshInterval:      time.Duration(refreshSec) * time.Second,
 				CapacityPct:          capPct,
+				DeclaredMemoryGB:     declaredMemGB,
+				AllowedModels:        savedCfg.AllowedModels,
 				GeographicHint:       geoHint,
 				GeoLat:               geoLat,
 				GeoLng:               geoLng,
@@ -209,6 +243,7 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 	cmd.Flags().StringVar(&geoHint, "region", "", "Geographic region hint (us/eu/apac); defaults to auto-detect")
 	cmd.Flags().Float64Var(&geoLat, "lat", 0, "Approximate latitude of this node (for dashboard mapping; 0 = not declared)")
 	cmd.Flags().Float64Var(&geoLng, "lng", 0, "Approximate longitude of this node (for dashboard mapping; 0 = not declared)")
+	cmd.Flags().Float64Var(&declaredMemGB, "declared-memory-gb", 0, "Override declared memory GB (0 = read from system; useful for simulation)")
 	return cmd
 }
 
@@ -293,6 +328,36 @@ func benchCompareCmd() *cobra.Command {
 	}
 	cmd.Flags().Float64("tolerance", 0.20, "Allowed deviation from claimed performance (0.0–1.0)")
 	return cmd
+}
+
+// --- geo detection ---
+
+// detectGeoLocation calls ipapi.co to infer approximate coordinates from the node's public IP.
+// Used only when --lat/--lng are not provided. Times out after 3 s to avoid startup delay.
+func detectGeoLocation() (float64, float64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://ipapi.co/json/", nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	req.Header.Set("User-Agent", "oim-node/1.0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+	var data struct {
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return 0, 0, err
+	}
+	if data.Latitude == 0 && data.Longitude == 0 {
+		return 0, 0, fmt.Errorf("geo detection returned zero coordinates")
+	}
+	return data.Latitude, data.Longitude, nil
 }
 
 // --- display helpers ---
