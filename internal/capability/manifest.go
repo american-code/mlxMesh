@@ -37,16 +37,24 @@ func AssembleManifest(
 		totalGB = opts.DeclaredMemoryGB
 	}
 
-	isCluster, deviceCount, err := DetectClusterNode(ctx, exo)
+	cluster, err := DetectClusterNode(ctx, exo)
 	if err != nil {
 		// Non-fatal: default to single-node
-		isCluster = false
+		cluster = ClusterInfo{IsCluster: false, DeviceCount: 1}
 	}
 	// Treat high-memory nodes as clusters even when topology detection is unavailable
 	// (common in simulated environments where Exo doesn't report multi-device peers).
-	if !isCluster && totalGB >= 128 {
-		isCluster = true
-		deviceCount = int(totalGB / 80) // rough device estimate: one ~80 GB GPU per device
+	if !cluster.IsCluster && totalGB >= 128 {
+		cluster.IsCluster = true
+		cluster.DeviceCount = int(totalGB / 80) // rough device estimate: one ~80 GB GPU per device
+	}
+	// A real cluster's true capacity is the SUM across every device, not just
+	// this local machine's RAM — governor.TotalRAMGB() only ever sees the one
+	// machine oim node start is running on, so without this override a 3-device
+	// 80 GB cluster would under-report itself as whatever its single smallest
+	// (or just-happens-to-be-running-the-agent) member has.
+	if cluster.IsCluster && cluster.TotalMemGB > 0 {
+		totalGB = cluster.TotalMemGB
 	}
 
 	models, err := buildModelList(ctx, exo, opts.AllowedModels)
@@ -57,16 +65,59 @@ func AssembleManifest(
 	sig := loadLastSignature()
 
 	var dcPtr *int
-	if isCluster {
-		dcPtr = &deviceCount
+	if cluster.IsCluster {
+		dc := cluster.DeviceCount
+		dcPtr = &dc
+	}
+
+	// Never promise the mesh more than can be safely committed RIGHT NOW —
+	// the operator's chosen MemoryCapPct is a ceiling, never a guarantee.
+	// Clamped per-device (via cluster.SafeContributableGB, computed from live
+	// Exo nodeMemory.ramAvailable) so one device already under memory
+	// pressure can't be pushed further just because roomier devices sit
+	// alongside it in the same cluster — that's the whole point: the network
+	// defers to whichever machines actually have headroom. Re-evaluated on
+	// every call (every heartbeat), so contribution self-adjusts as real
+	// usage changes throughout the day, no operator action needed.
+	//
+	// Only applies with REAL per-device availability data. Two guards matter:
+	//   - cluster.TotalMemGB > 0 requires genuine Exo-reported cluster stats,
+	//     not the "high-memory nodes treated as clusters" heuristic a few
+	//     lines up (that path never learns SafeContributableGB and would
+	//     clamp everything to 0).
+	//   - opts.DeclaredMemoryGB <= 0 requires totalGB came from real system
+	//     detection, not a --declared-memory-gb override — comparing this
+	//     HOST's real governor.AvailableMemoryGB() against a fabricated
+	//     declared capacity (simulation/testing) is meaningless and would
+	//     zero out every simulated node's committed memory.
+	effectiveCapPct := opts.MemoryCapPct
+	switch {
+	case cluster.IsCluster && cluster.TotalMemGB > 0 && totalGB > 0:
+		if safeCapPct := cluster.SafeContributableGB / totalGB; safeCapPct < effectiveCapPct {
+			effectiveCapPct = safeCapPct
+		}
+	case !cluster.IsCluster && opts.DeclaredMemoryGB <= 0 && totalGB > 0:
+		if avail, availErr := governor.AvailableMemoryGB(); availErr == nil {
+			safe := avail - perDeviceReserveGB(totalGB)
+			if safe < 0 {
+				safe = 0
+			}
+			if safeCapPct := safe / totalGB; safeCapPct < effectiveCapPct {
+				effectiveCapPct = safeCapPct
+			}
+		}
+	}
+	if effectiveCapPct < 0 {
+		effectiveCapPct = 0
 	}
 
 	return &protocol.CapabilityManifest{
 		NodeID:               nodeID,
-		IsCluster:            isCluster,
+		IsCluster:            cluster.IsCluster,
 		ClusterDeviceCount:   dcPtr,
+		ClusterChipFamilies:  cluster.ChipFamilies,
 		DeclaredMemoryGB:     round2(totalGB),
-		DeclaredMemoryCapPct: opts.MemoryCapPct,
+		DeclaredMemoryCapPct: round2(effectiveCapPct),
 		GeographicHint:       opts.GeographicHint,
 		GeoLat:               opts.GeoLat,
 		GeoLng:               opts.GeoLng,
@@ -104,27 +155,164 @@ func DefaultOptions() Options {
 	}
 }
 
+// ClusterInfo summarizes an Exo instance's multi-device topology, when present.
+type ClusterInfo struct {
+	IsCluster    bool
+	DeviceCount  int
+	TotalMemGB   float64  // summed nodeMemory.ramTotal across every cluster device; 0 when not a cluster
+	ChipFamilies []string // one coarse chip family per device (e.g. "Apple M1") — no hostnames, no exact chip variant (Pro/Max/Ultra), no OS/model info
+	// SafeContributableGB is the sum, across every device, of that device's
+	// CURRENTLY free memory (Exo's nodeMemory.ramAvailable) minus a per-device
+	// safety reserve — never how much RAM a device HAS, but how much it can
+	// safely give up right now without starving its owner. A device already
+	// under memory pressure (e.g. a 16 GB MacBook Pro with only 2.5 GB free,
+	// sitting alongside two 32 GB Mac Studios with 15+ GB free each)
+	// contributes little or nothing here even though its TotalMemGB share is
+	// unchanged — this is what lets the network defer to the roomier devices
+	// instead of maxing out the tightest one.
+	SafeContributableGB float64
+	// TotalAvailableGB is the RAW sum of nodeMemory.ramAvailable across every
+	// device — before the safety reserve is subtracted. Informational only
+	// (e.g. dashboard display); SafeContributableGB is what routing math uses.
+	TotalAvailableGB float64
+}
+
+// PerDeviceReserveGB and PerDeviceReservePct define the safety margin every
+// device (cluster member or solo node) always keeps for its owner, regardless
+// of the operator's chosen memory-cap percentage — whichever floor is larger.
+// A flat GB floor alone would round to nothing on a huge device; a flat
+// percentage alone would be too aggressive on a small one, so both are kept
+// and the larger wins.
+const (
+	PerDeviceReserveGB  = 2.0
+	PerDeviceReservePct = 0.15
+)
+
+// perDeviceReserveGB returns how much of a device's memory must stay free for
+// its owner, never counted as contributable to the mesh.
+func perDeviceReserveGB(deviceTotalGB float64) float64 {
+	pct := deviceTotalGB * PerDeviceReservePct
+	if pct > PerDeviceReserveGB {
+		return pct
+	}
+	return PerDeviceReserveGB
+}
+
 // DetectClusterNode inspects Exo's /state to determine whether this Exo instance
 // is coordinating multiple physical devices. If so, the mesh sees it as ONE
-// cluster-node, not several independent nodes (proposal §6.4).
-func DetectClusterNode(ctx context.Context, exo *exoadapter.Client) (bool, int, error) {
+// cluster-node, not several independent nodes (proposal §6.4) — and that
+// cluster-node's declared memory and chip summary reflect every device in it,
+// not just whichever machine happens to be running the oim agent.
+//
+// Exo's /state reports device membership two different ways depending on
+// version/config: topology.nodes (observed in practice — a list that INCLUDES
+// self) or topology.peers (documented as EXCLUDING self, so +1 for self).
+// Getting this wrong either double-counts or under-counts devices, so the two
+// shapes are handled explicitly rather than treated as interchangeable.
+func DetectClusterNode(ctx context.Context, exo *exoadapter.Client) (ClusterInfo, error) {
+	solo := ClusterInfo{IsCluster: false, DeviceCount: 1}
+
 	state, err := exo.GetState(ctx)
 	if err != nil {
-		return false, 1, err
+		return solo, err
 	}
 	topology, _ := state["topology"].(map[string]any)
 	if topology == nil {
-		return false, 1, nil
+		return solo, nil
 	}
-	// Exo reports peer nodes in the topology; peers excludes self.
-	peers, _ := topology["peers"].([]any)
-	if len(peers) == 0 {
-		peers, _ = topology["nodes"].([]any)
+
+	var deviceIDs []string
+	if peers, _ := topology["peers"].([]any); len(peers) > 0 {
+		// peers excludes self — self's own device isn't identifiable from this
+		// list alone, so it's counted but not included in the chip/memory scan.
+		for _, p := range peers {
+			if id, ok := p.(string); ok {
+				deviceIDs = append(deviceIDs, id)
+			}
+		}
+		agg := aggregateClusterStats(state, deviceIDs)
+		agg.IsCluster = true
+		agg.DeviceCount = len(deviceIDs) + 1
+		return agg, nil
 	}
-	if len(peers) > 0 {
-		return true, len(peers) + 1, nil
+	if nodes, _ := topology["nodes"].([]any); len(nodes) > 0 {
+		// nodes includes self — no +1 needed, and self's stats are available
+		// for the memory/chip aggregation since its own ID is in the list.
+		for _, n := range nodes {
+			if id, ok := n.(string); ok {
+				deviceIDs = append(deviceIDs, id)
+			}
+		}
+		if len(deviceIDs) < 2 {
+			return solo, nil // a "cluster" of one is just a regular node
+		}
+		agg := aggregateClusterStats(state, deviceIDs)
+		agg.IsCluster = true
+		agg.DeviceCount = len(deviceIDs)
+		return agg, nil
 	}
-	return false, 1, nil
+	return solo, nil
+}
+
+// aggregateClusterStats sums nodeMemory.ramTotal/ramAvailable and collects
+// coarse chip families for the given device IDs from Exo's /state response.
+// Missing or malformed entries are skipped rather than failing the whole
+// aggregation — partial cluster stats are better than none when one device's
+// data is odd-shaped.
+func aggregateClusterStats(state map[string]any, deviceIDs []string) ClusterInfo {
+	nodeMemory, _ := state["nodeMemory"].(map[string]any)
+	nodeIdentities, _ := state["nodeIdentities"].(map[string]any)
+
+	var totalBytes, availableBytes, safeContributableBytes float64
+	var chipFamilies []string
+	for _, id := range deviceIDs {
+		if mem, ok := nodeMemory[id].(map[string]any); ok {
+			var deviceTotalBytes, deviceAvailableBytes float64
+			if ramTotal, ok := mem["ramTotal"].(map[string]any); ok {
+				if bytes, ok := ramTotal["inBytes"].(float64); ok {
+					deviceTotalBytes = bytes
+					totalBytes += bytes
+				}
+			}
+			if ramAvail, ok := mem["ramAvailable"].(map[string]any); ok {
+				if bytes, ok := ramAvail["inBytes"].(float64); ok {
+					deviceAvailableBytes = bytes
+					availableBytes += bytes
+				}
+			}
+			if deviceTotalBytes > 0 {
+				reserveBytes := perDeviceReserveGB(deviceTotalBytes/(1<<30)) * (1 << 30)
+				if safe := deviceAvailableBytes - reserveBytes; safe > 0 {
+					safeContributableBytes += safe
+				}
+			}
+		}
+		if ident, ok := nodeIdentities[id].(map[string]any); ok {
+			if chipID, ok := ident["chipId"].(string); ok && chipID != "" {
+				chipFamilies = append(chipFamilies, chipFamily(chipID))
+			}
+		}
+	}
+	return ClusterInfo{
+		TotalMemGB:          totalBytes / (1 << 30),
+		TotalAvailableGB:    availableBytes / (1 << 30),
+		SafeContributableGB: safeContributableBytes / (1 << 30),
+		ChipFamilies:        chipFamilies,
+	}
+}
+
+// chipFamily coarsens an exact chip identifier ("Apple M1 Max") down to its
+// silicon generation ("Apple M1") — dropping the Pro/Max/Ultra variant.
+// Deliberately coarser than what Exo reports: the dashboard can say "this
+// cluster has 3 Apple M1-class devices" without broadcasting exact chip
+// variants, and — separately, not handled by this function — never
+// broadcasts hostnames (Exo's nodeIdentities.friendlyName) or modelId at all.
+func chipFamily(chipID string) string {
+	words := strings.Fields(chipID)
+	if len(words) >= 2 {
+		return words[0] + " " + words[1] // "Apple M1 Max" -> "Apple M1"
+	}
+	return chipID
 }
 
 // SaveBenchmarkResult persists a MeasuredSignature for future manifest assemblies.

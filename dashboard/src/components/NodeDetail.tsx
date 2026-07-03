@@ -4,6 +4,27 @@ import {
   formatTps, formatMem, formatTime, nodeLabel,
 } from '../utils'
 
+// Summarizes cluster_chip_families into counted groups, e.g.
+// ["Apple M1", "Apple M1", "Apple M1 Pro"] -> "2× Apple M1, 1× Apple M1 Pro".
+// Coarse by design — the backend already strips hostnames and exact chip
+// variants before this ever reaches the dashboard.
+function summarizeChipFamilies(families: string[] | undefined): string | null {
+  if (!families || families.length === 0) return null
+  const counts = new Map<string, number>()
+  for (const f of families) counts.set(f, (counts.get(f) ?? 0) + 1)
+  return [...counts.entries()].map(([family, n]) => `${n}× ${family}`).join(', ')
+}
+
+// enclave_attested is coordinator-VERIFIED (a Secure Enclave-backed key
+// actually signed a fresh challenge); has_secure_enclave is self-declared by
+// the node and proves nothing on its own — surface both so a "claimed but
+// unverified" node reads differently from a genuinely attested one.
+function secureEnclaveMetaRow(node: NodeSnapshot): { value: string; valueColor?: string } {
+  if (node.enclave_attested) return { value: '✓ Verified', valueColor: '#3fb950' }
+  if (node.has_secure_enclave) return { value: 'Claimed, unverified', valueColor: '#d29922' }
+  return { value: 'Not available' }
+}
+
 interface Props {
   node: NodeSnapshot
   onClose: () => void
@@ -12,6 +33,7 @@ interface Props {
 export function NodeDetail({ node, onClose }: Props) {
   const status = computeNodeStatus(node)
   const color = statusColor(status)
+  const chipSummary = summarizeChipFamilies(node.cluster_chip_families)
 
   return (
     <div style={{
@@ -73,8 +95,13 @@ export function NodeDetail({ node, onClose }: Props) {
 
       {/* Metadata rows */}
       <div style={{ borderTop: '1px solid #21262d', paddingTop: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <MetaRow label="Secure Enclave" value={node.has_secure_enclave ? '✓ Available' : 'Not available'} valueColor={node.has_secure_enclave ? '#3fb950' : undefined} />
-        <MetaRow label="Cluster" value={node.is_cluster ? `Yes · ${node.cluster_device_count} devices` : 'Single device'} />
+        <MetaRow label="Secure Enclave" {...secureEnclaveMetaRow(node)} />
+        <MetaRow
+          label="Cluster"
+          value={node.is_cluster
+            ? `Yes · ${node.cluster_device_count} devices${chipSummary ? ` (${chipSummary})` : ''}`
+            : 'Single device'}
+        />
         <MetaRow label="Last seen" value={formatTime(node.last_seen_at)} />
         <MetaRow label="Endpoint" value={node.reachability_endpoint} mono />
         <MetaRow label="Node ID" value={node.node_id} mono small />

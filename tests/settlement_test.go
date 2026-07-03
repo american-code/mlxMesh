@@ -1,6 +1,9 @@
 package tests
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -304,6 +307,54 @@ func TestIssueStartupGrantScoreBasedAmount(t *testing.T) {
 	}
 }
 
+func TestIssueStartupGrantRejectsSecondClaim(t *testing.T) {
+	// A second claim for the same user must not credit again — dedup is
+	// checked against the ledger itself, not a separate in-memory set that
+	// would reset (and become farmable) on every coordinator restart.
+	l := settlement.NewLedger()
+	src := &stubCapacitySource{score: 0.0} // multiplier 1.0 → full grant
+	if _, err := settlement.IssueStartupGrant(l, "user-dup", "pod-us", src, settlement.DEFAULT_DECAY_STEPS); err != nil {
+		t.Fatalf("first IssueStartupGrant: %v", err)
+	}
+	_, err := settlement.IssueStartupGrant(l, "user-dup", "pod-us", src, settlement.DEFAULT_DECAY_STEPS)
+	if !errors.Is(err, settlement.ErrStartupGrantAlreadyClaimed) {
+		t.Fatalf("second claim: want ErrStartupGrantAlreadyClaimed, got %v", err)
+	}
+	bal := l.GetBalance("user-dup")
+	if bal.GrantBalance != settlement.BASE_GRANT_AMOUNT {
+		t.Errorf("grant_balance after duplicate claim attempt: want %.2f (unchanged), got %.2f", settlement.BASE_GRANT_AMOUNT, bal.GrantBalance)
+	}
+}
+
+func TestIssueStartupGrantDedupSurvivesRestart(t *testing.T) {
+	// Same check as above, but through a persistent ledger reopened to simulate
+	// a real coordinator restart — this is the exact scenario that used to let
+	// a user double their grant by bouncing the process.
+	dbPath := filepath.Join(t.TempDir(), "ledger.db")
+	src := &stubCapacitySource{score: 0.0}
+
+	l1, err := settlement.NewPersistentLedger(dbPath)
+	if err != nil {
+		t.Fatalf("NewPersistentLedger: %v", err)
+	}
+	if _, err := settlement.IssueStartupGrant(l1, "user-restart", "pod-us", src, settlement.DEFAULT_DECAY_STEPS); err != nil {
+		t.Fatalf("first IssueStartupGrant: %v", err)
+	}
+
+	l2, err := settlement.NewPersistentLedger(dbPath) // simulated restart
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	_, err = settlement.IssueStartupGrant(l2, "user-restart", "pod-us", src, settlement.DEFAULT_DECAY_STEPS)
+	if !errors.Is(err, settlement.ErrStartupGrantAlreadyClaimed) {
+		t.Fatalf("claim after restart: want ErrStartupGrantAlreadyClaimed, got %v", err)
+	}
+	bal := l2.GetBalance("user-restart")
+	if bal.GrantBalance != settlement.BASE_GRANT_AMOUNT {
+		t.Errorf("grant_balance after restart+reclaim: want %.2f (unchanged), got %.2f", settlement.BASE_GRANT_AMOUNT, bal.GrantBalance)
+	}
+}
+
 func TestGrantMultiplierStepsDownWithCapacity(t *testing.T) {
 	// Increasing simulated capacity drives the grant multiplier down (proposal §9.4).
 	l := settlement.NewLedger()
@@ -375,5 +426,85 @@ func TestVerifiedCapacityScoreCountsVerified(t *testing.T) {
 	want := 80.0*0.98 + 50.0*0.98
 	if score < want-0.001 || score > want+0.001 {
 		t.Errorf("verified capacity score: want %.4f, got %.4f", want, score)
+	}
+}
+
+// --- Ledger persistence tests ---
+
+func TestPersistentLedgerSurvivesRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "ledger.db")
+
+	l1, err := settlement.NewPersistentLedger(dbPath)
+	if err != nil {
+		t.Fatalf("NewPersistentLedger: %v", err)
+	}
+	if err := l1.CreditAccount(settlement.CreditEntry{
+		UserID: "alice", Origin: settlement.CreditOriginStartupGrant,
+		Amount: 100.0, GrantedOrEarnedAt: time.Now(), SourceReference: "test-grant",
+	}); err != nil {
+		t.Fatalf("CreditAccount: %v", err)
+	}
+	if ok := l1.DebitAccount("alice", 30.0, "job-1"); !ok {
+		t.Fatal("DebitAccount: expected success")
+	}
+	before := l1.GetBalance("alice")
+
+	// Simulate a coordinator restart: reopen the same DB file as a fresh Ledger.
+	l2, err := settlement.NewPersistentLedger(dbPath)
+	if err != nil {
+		t.Fatalf("reopen NewPersistentLedger: %v", err)
+	}
+	after := l2.GetBalance("alice")
+
+	if before.Total != 70.0 {
+		t.Errorf("pre-restart total: want 70.0, got %.2f", before.Total)
+	}
+	if after != before {
+		t.Errorf("balance did not survive restart: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestPersistentLedgerRejectsOverspendAfterRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "ledger.db")
+
+	l1, err := settlement.NewPersistentLedger(dbPath)
+	if err != nil {
+		t.Fatalf("NewPersistentLedger: %v", err)
+	}
+	if err := l1.CreditAccount(settlement.CreditEntry{
+		UserID: "bob", Origin: settlement.CreditOriginEarnedContrib,
+		Amount: 10.0, GrantedOrEarnedAt: time.Now(), SourceReference: "test-earn",
+	}); err != nil {
+		t.Fatalf("CreditAccount: %v", err)
+	}
+
+	l2, err := settlement.NewPersistentLedger(dbPath)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	// Balance persisted, so this must still be rejected as insufficient — not
+	// silently allowed because the in-memory view was reset.
+	if ok := l2.DebitAccount("bob", 50.0, "job-overspend"); ok {
+		t.Error("DebitAccount: expected rejection for amount exceeding restored balance")
+	}
+}
+
+func TestNewPersistentLedgerCreatesFileAndDir(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "ledger.db")
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Fatalf("precondition: db file should not exist yet")
+	}
+	l, err := settlement.NewPersistentLedger(dbPath)
+	if err != nil {
+		t.Fatalf("NewPersistentLedger: %v", err)
+	}
+	if err := l.CreditAccount(settlement.CreditEntry{
+		UserID: "carol", Origin: settlement.CreditOriginEarnedContrib,
+		Amount: 5.0, GrantedOrEarnedAt: time.Now(), SourceReference: "x",
+	}); err != nil {
+		t.Fatalf("CreditAccount: %v", err)
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Errorf("expected db file to exist after write: %v", err)
 	}
 }

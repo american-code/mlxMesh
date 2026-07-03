@@ -7,11 +7,13 @@
 //
 // Flags:
 //
-//	--us        number of regular US nodes   (default 22)
-//	--eu        number of regular EU nodes   (default 22)
-//	--exo-us    number of large exo clusters in US  (default 2)
-//	--exo-eu    number of large exo clusters in EU  (default 1)
-//	--base-port first host port allocated to node agents (default 8765)
+//	--us         number of regular US nodes   (default 22)
+//	--eu         number of regular EU nodes   (default 22)
+//	--exo-us     number of large exo clusters in US  (default 2)
+//	--exo-eu     number of large exo clusters in EU  (default 1)
+//	--base-port  first host port allocated to node agents (default 8765)
+//	--chaos-pct  per-heartbeat percent chance a node simulates downtime (default 6, 0 disables)
+//	--traffic    submit continuous simulated jobs against both coordinators (default true)
 package main
 
 import (
@@ -27,6 +29,8 @@ func main() {
 	exoUS      := flag.Int("exo-us",    2, "Number of large exo clusters in US (128/256 GB)")
 	exoEU      := flag.Int("exo-eu",    1, "Number of large exo clusters in EU (128/256 GB)")
 	basePort   := flag.Int("base-port", 8765, "First host port for node agents")
+	chaosPct   := flag.Float64("chaos-pct", 6, "Per-heartbeat percent chance a node simulates downtime (0 disables)")
+	traffic    := flag.Bool("traffic", true, "Include continuous traffic-generator services against both coordinators")
 	flag.Parse()
 
 	w := os.Stdout
@@ -35,8 +39,12 @@ func main() {
 	infrastructure(w)
 
 	port := *basePort
-	port = region(w, "us", "coordinator-us", "9000", *usCount, *exoUS, port)
-	region(w, "eu", "coordinator-eu", "9001", *euCount, *exoEU, port)
+	port = region(w, "us", "coordinator-us", "9000", *usCount, *exoUS, port, *chaosPct)
+	region(w, "eu", "coordinator-eu", "9001", *euCount, *exoEU, port, *chaosPct)
+
+	if *traffic {
+		trafficGenerators(w)
+	}
 
 	footer(w)
 }
@@ -119,8 +127,10 @@ func infrastructure(w *os.File) {
 
 // region writes stub-exo + node service pairs for one region.
 // exoCount large nodes (128/256 GB) come after the regular nodes.
+// chaosDowntimePct is the per-heartbeat percent chance each node simulates a
+// downtime window (0 disables it) — see agent.Config.ChaosDowntimePct.
 // Returns the next available host port.
-func region(w *os.File, regionName, coordinatorSvc, coordinatorPort string, count, exoCount, basePort int) int {
+func region(w *os.File, regionName, coordinatorSvc, coordinatorPort string, count, exoCount, basePort int, chaosDowntimePct float64) int {
 	total := count + exoCount
 	fmt.Fprintf(w, "\n  # ── %s nodes (%d regular + %d exo) %s\n",
 		strings.ToUpper(regionName), count, exoCount,
@@ -177,6 +187,7 @@ func region(w *os.File, regionName, coordinatorSvc, coordinatorPort string, coun
     hostname: %s
     environment:
       OIM_INITIAL_TPS: "%.1f"
+      OIM_CHAOS_DOWNTIME_PCT: "%.0f"
     command:
       - /usr/local/bin/oim
       - node
@@ -198,6 +209,7 @@ func region(w *os.File, regionName, coordinatorSvc, coordinatorPort string, coun
         condition: service_healthy
 `, nodeSvc, nodeSvc,
 			tps,
+			chaosDowntimePct,
 			coordinatorSvc, coordinatorPort,
 			nodePort,
 			exoSvc,
@@ -330,6 +342,38 @@ func exoProfile(region string, idx int) (int, int, string, float64, float64) {
 
 	capPct := 0.85 // exo clusters commit more capacity
 	return memGB, latMS, models, capPct, tps
+}
+
+// trafficGenerators writes two services that submit continuous simulated jobs
+// against coordinator-us and coordinator-eu, so the dashboard has live traffic
+// to render without a human manually running jobgen. Submitted anonymously
+// (no --user-id) — this is demo traffic, not real account activity.
+func trafficGenerators(w *os.File) {
+	fmt.Fprint(w, `
+  # ── Traffic generators (simulation only — anonymous, no credit accounting) ──
+
+  traffic-gen-us:
+    <<: *oim
+    entrypoint: ["/usr/local/bin/jobgen"]
+    command:
+      - --coordinator=http://coordinator-us:9000
+      - --interval=3
+      - --model=llama-3.2-3b
+    depends_on:
+      coordinator-us:
+        condition: service_healthy
+
+  traffic-gen-eu:
+    <<: *oim
+    entrypoint: ["/usr/local/bin/jobgen"]
+    command:
+      - --coordinator=http://coordinator-eu:9001
+      - --interval=3
+      - --model=llama-3.2-3b
+    depends_on:
+      coordinator-eu:
+        condition: service_healthy
+`)
 }
 
 func footer(w *os.File) {

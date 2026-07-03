@@ -37,3 +37,30 @@ body {
 .header-live {
   animation: header-pulse 2.2s ease-in-out infinite;
 }
+
+/* Active-route animation: a traveling dash shows a request moving through the
+   mesh. Fast-lane routes travel quickly and fade fast (interactive); background-
+   lane routes travel slowly and linger (batch/recurring) — the speed difference
+   IS the fast-vs-background distinction, since any node can serve either lane. */
+@keyframes route-travel {
+  to { stroke-dashoffset: -24; }
+}
+
+@keyframes route-fade {
+  0%   { opacity: 0; }
+  8%   { opacity: 1; }
+  82%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.route-fast {
+  animation: route-travel 0.6s linear infinite, route-fade 4s ease-in-out forwards;
+}
+
+.route-background {
+  animation: route-travel 2.4s linear infinite, route-fade 6s ease-in-out forwards;
+}
+
+.you-marker {
+  animation: pulse 1.6s ease-in-out infinite;
+}

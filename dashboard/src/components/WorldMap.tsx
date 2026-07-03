@@ -7,8 +7,8 @@ const GEO_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'
 // Auto-fit projection to the actual node bounding box.
 // Scale formula: empirically, scale=360 fits ~143° of longitude in 1080px.
 // Extends naturally: wider data → lower scale → zooms out to full world.
-function autoProjection(nodes: NodeSnapshot[]): { scale: number; center: [number, number] } {
-  const geo = nodes.filter(n => n.geo_lat !== 0 || n.geo_lng !== 0)
+function autoProjection(points: { geo_lat: number; geo_lng: number }[]): { scale: number; center: [number, number] } {
+  const geo = points.filter(n => n.geo_lat !== 0 || n.geo_lng !== 0)
   if (geo.length === 0) return { scale: 153, center: [0, 20] }
 
   const lats = geo.map(n => n.geo_lat)
@@ -26,10 +26,31 @@ function autoProjection(nodes: NodeSnapshot[]): { scale: number; center: [number
   return { scale: Math.max(scale, 130), center: [centerLng, centerLat] }
 }
 
+// ActiveRoute is rendered on top of the static topology when a query the
+// current browser session submitted gets a response. lane controls animation
+// speed/color — the visible distinction between fast and background traffic.
+// key must change per-request so React remounts the element and restarts the
+// travel/fade animation instead of reusing a finished one.
+export interface ActiveRoute {
+  key: string
+  fromLat: number
+  fromLng: number
+  toLat: number
+  toLng: number
+  lane: 'fast' | 'background'
+}
+
+export interface UserLocation {
+  lat: number
+  lng: number
+}
+
 interface Props {
   nodes: NodeSnapshot[]
   selected: NodeSnapshot | null
   onNodeClick: (node: NodeSnapshot) => void
+  userLocation?: UserLocation | null
+  activeRoute?: ActiveRoute | null
 }
 
 // ── KNN edge logic ─────────────────────────────────────────────────────────
@@ -71,10 +92,13 @@ function edgeColor(a: NodeSnapshot, b: NodeSnapshot): string {
 
 // ── Component ──────────────────────────────────────────────────────────────
 
-export function WorldMap({ nodes, selected, onNodeClick }: Props) {
+export function WorldMap({ nodes, selected, onNodeClick, userLocation, activeRoute }: Props) {
   const mapped = nodes.filter(n => n.geo_lat !== 0 || n.geo_lng !== 0)
   const edges  = buildKnnEdges(mapped, 3)
-  const { scale, center } = autoProjection(mapped)
+  const projectionPoints = userLocation
+    ? [...mapped, { geo_lat: userLocation.lat, geo_lng: userLocation.lng }]
+    : mapped
+  const { scale, center } = autoProjection(projectionPoints)
 
   return (
     <ComposableMap
@@ -115,6 +139,19 @@ export function WorldMap({ nodes, selected, onNodeClick }: Props) {
           strokeLinecap="round"
         />
       ))}
+
+      {/* "You" marker — the current browser's approximate location, shown only
+          when geolocation was granted. Never represents any other user. */}
+      {userLocation && (
+        <Marker coordinates={[userLocation.lng, userLocation.lat]}>
+          <circle r={9} fill="none" stroke="#e6edf3" strokeOpacity={0.5} strokeWidth={1.5} className="you-marker" />
+          <circle r={4} fill="#e6edf3" stroke="#0d1117" strokeWidth={1.2} />
+          <text y={-13} textAnchor="middle" fill="#e6edf3" fontSize={8} fontWeight={700}
+            style={{ pointerEvents: 'none', userSelect: 'none' }}>
+            YOU
+          </text>
+        </Marker>
+      )}
 
       {/* Node markers */}
       {mapped.map(node => {
@@ -169,6 +206,37 @@ export function WorldMap({ nodes, selected, onNodeClick }: Props) {
           </Marker>
         )
       })}
+
+      {/* Active route — drawn last so it renders on top of everything else.
+          Shows THIS browser's own most recent query only — never anyone else's
+          traffic; the coordinator only tells a requester which node served ITS
+          OWN request (privacy split, proposal §7.1). Fast lane travels quickly
+          and fades fast; background lane travels slowly and lingers — that
+          speed difference is the visible fast-vs-background distinction, since
+          any node can serve either lane. Glow layer underneath for visibility
+          against the dense static topology. */}
+      {activeRoute && (
+        <>
+          <Line
+            from={[activeRoute.fromLng, activeRoute.fromLat]}
+            to={[activeRoute.toLng, activeRoute.toLat]}
+            stroke={activeRoute.lane === 'background' ? '#d29922' : '#58a6ff'}
+            strokeWidth={6}
+            strokeOpacity={0.25}
+            strokeLinecap="round"
+          />
+          <Line
+            key={activeRoute.key}
+            from={[activeRoute.fromLng, activeRoute.fromLat]}
+            to={[activeRoute.toLng, activeRoute.toLat]}
+            stroke={activeRoute.lane === 'background' ? '#d29922' : '#58a6ff'}
+            strokeWidth={2.6}
+            strokeLinecap="round"
+            strokeDasharray="6 6"
+            className={activeRoute.lane === 'background' ? 'route-background' : 'route-fast'}
+          />
+        </>
+      )}
     </ComposableMap>
   )
 }

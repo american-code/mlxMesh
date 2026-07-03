@@ -1,4 +1,11 @@
 import type { TopologyResponse, NodesResponse, Balance, NodeDetection, NodeConfig } from './types'
+import { mineProofOfWork, DEFAULT_GRANT_POW_BITS } from './pow'
+
+export interface TestQueryResult {
+  content: string
+  servedByNodeId: string | null
+  lane: 'fast' | 'background' | null
+}
 
 const DIRECTORY = import.meta.env.VITE_DIRECTORY_URL ?? 'http://localhost:9100'
 
@@ -20,11 +27,21 @@ export async function fetchBalance(coordinatorURL: string, userId: string): Prom
   return res.json()
 }
 
+// Claiming a grant requires a proof-of-work nonce (Fable security review:
+// Sybil-farmable grants — user_id is a free client-generated UUID, so
+// per-user dedup alone doesn't stop minting unlimited disposable identities).
+// Mining runs synchronously on the main thread; the default 18-bit
+// difficulty typically resolves in well under a second.
 export async function claimStartupGrant(
   coordinatorURL: string,
   userId: string,
 ): Promise<{ amount: number; status?: string }> {
-  const res = await fetch(`${coordinatorURL}/users/${userId}/startup-grant`, { method: 'POST' })
+  const nonce = mineProofOfWork(userId, DEFAULT_GRANT_POW_BITS)
+  const res = await fetch(`${coordinatorURL}/users/${userId}/startup-grant`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nonce }),
+  })
   if (!res.ok) throw new Error(`Grant returned ${res.status}`)
   return res.json()
 }
@@ -74,4 +91,33 @@ export async function checkApiKeyExists(
 export async function revokeApiKey(coordinatorURL: string, userId: string): Promise<void> {
   const res = await fetch(`${coordinatorURL}/users/${userId}/api-key`, { method: 'DELETE' })
   if (!res.ok) throw new Error(`Key revoke returned ${res.status}`)
+}
+
+// submitTestQuery sends a real inference job through the mesh from the browser.
+// The response carries which node served it (oim_served_by_node_id) — that's
+// how the dashboard can light up a route for THIS request only, without the
+// coordinator broadcasting anyone else's routing to anyone (privacy split,
+// proposal §7.1: only the requester ever learns which node served them).
+export async function submitTestQuery(
+  coordinatorURL: string,
+  prompt: string,
+  model?: string,
+): Promise<TestQueryResult> {
+  const res = await fetch(`${coordinatorURL}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: model || undefined,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 256,
+    }),
+  })
+  if (!res.ok) throw new Error(`Query returned ${res.status}`)
+  const data = await res.json()
+  const content = data?.choices?.[0]?.message?.content ?? ''
+  return {
+    content,
+    servedByNodeId: data?.oim_served_by_node_id ?? null,
+    lane: data?.oim_lane ?? null,
+  }
 }

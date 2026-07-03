@@ -1,7 +1,9 @@
 package protocol
 
 import (
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -44,6 +46,21 @@ func VerifySignature(publicKey, payload, signature []byte) bool {
 		return false
 	}
 	return ed25519.Verify(ed25519.PublicKey(publicKey), payload, signature)
+}
+
+// VerifyP256Signature verifies a DER-encoded ECDSA-P256 signature over
+// SHA-256(payload). Used to check Secure Enclave attestation proofs — Apple's
+// Security framework only exposes Secure Enclave-backed keys as P-256, never
+// Ed25519, so this is a separate curve/verify path from VerifySignature.
+// rawPubKey is the X9.63 uncompressed point (0x04 || X || Y, 65 bytes).
+func VerifyP256Signature(rawPubKey, payload, derSignature []byte) bool {
+	x, y := elliptic.Unmarshal(elliptic.P256(), rawPubKey)
+	if x == nil {
+		return false
+	}
+	pub := &ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}
+	digest := sha256.Sum256(payload)
+	return ecdsa.VerifyASN1(pub, digest[:], derSignature)
 }
 
 // CheckSecureEnclaveAvailable returns true if this device has a Secure Enclave.

@@ -17,9 +17,13 @@ export interface NodeSnapshot {
   committed_memory_gb: number
   models: ModelCapability[]
   measured_toks_per_sec: number
-  has_secure_enclave: boolean
+  has_secure_enclave: boolean // self-declared by the node — informational only
+  enclave_attested: boolean // coordinator-verified Secure Enclave proof — trust this, not has_secure_enclave
   is_cluster: boolean
   cluster_device_count?: number
+  // One coarse chip family per cluster device (e.g. "Apple M1") — no hostnames,
+  // no exact chip variant. Empty/absent for non-cluster nodes.
+  cluster_chip_families?: string[]
   last_seen_at: string
   in_flight_jobs: number
 }
@@ -65,6 +69,20 @@ export interface Balance {
   total: number
 }
 
+// Schedule controls when this node contributes to the mesh. Mode 'window'
+// restricts sharing to a daily HH:MM-HH:MM local-time range (end < start
+// means it crosses midnight, e.g. "22:00"-"07:00" = overnight only),
+// optionally limited to specific weekdays. Empty/'always' mode shares
+// whenever the agent process is running — the pre-scheduler default.
+export interface Schedule {
+  mode: 'always' | 'window' | ''
+  daily_start: string // "HH:MM", 24-hour
+  daily_end: string // "HH:MM", 24-hour
+  days: string[] // lowercase 3-letter weekdays (mon..sun); empty = every day
+}
+
+export const DEFAULT_SCHEDULE: Schedule = { mode: 'always', daily_start: '22:00', daily_end: '07:00', days: [] }
+
 export interface NodeConfig {
   exo_url: string
   memory_cap_pct: number
@@ -73,6 +91,7 @@ export interface NodeConfig {
   pod_endpoint: string
   allowed_models: string[]
   sensitivity_cap: string
+  schedule: Schedule
 }
 
 export interface NodeDetection {
@@ -82,10 +101,20 @@ export interface NodeDetection {
   total_ram_gb: number
   available_ram_gb: number
   used_pct: number
+  is_cluster: boolean
+  cluster_device_count?: number
+  cluster_chip_families?: string[]
+  // Sum, across every cluster device (or this solo machine), of currently-free
+  // memory minus a per-device safety reserve — the mesh will never actually be
+  // given more than this, regardless of the memory-cap slider below. Devices
+  // already low on free memory (e.g. one machine near-full while others in
+  // the same cluster have headroom) contribute little or nothing here.
+  safe_contributable_gb: number
   has_secure_enclave: boolean
   is_foregrounded: boolean
   exo_healthy: boolean
   exo_url: string
   models: Array<{ id?: string; model_id?: string; [key: string]: unknown }>
   config: NodeConfig
+  schedule_active: boolean
 }

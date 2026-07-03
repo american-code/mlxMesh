@@ -27,6 +27,14 @@ type nodeEntry struct {
 	lastSeen    time.Time
 	unreachable bool
 	inFlight    int32 // atomic — jobs currently dispatched to this node
+
+	// enclaveAttested/enclavePublicKey are set ONLY by MarkEnclaveAttested,
+	// after the coordinator itself verifies a Secure Enclave proof — never
+	// from the client-submitted manifest, which is exactly what
+	// manifest.HasSecureEnclave is (self-declared, untrustworthy for gating).
+	// Reset to false on every re-registration; a node must re-attest.
+	enclaveAttested  bool
+	enclavePublicKey []byte
 }
 
 func (e *nodeEntry) isLive() bool {
@@ -99,6 +107,22 @@ func (r *NodeRegistry) Refresh(nodeID string, manifest protocol.CapabilityManife
 	return nil
 }
 
+// MarkEnclaveAttested records a coordinator-verified Secure Enclave proof for
+// nodeID. Callers MUST have already validated the attestation (see
+// VerifyEnclaveAttestation) — this method itself does no verification, it
+// only records the outcome.
+func (r *NodeRegistry) MarkEnclaveAttested(nodeID string, enclavePublicKey []byte) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.entries[nodeID]
+	if !ok {
+		return fmt.Errorf("node %s not registered", nodeID)
+	}
+	e.enclaveAttested = true
+	e.enclavePublicKey = enclavePublicKey
+	return nil
+}
+
 // MarkUnreachable is called by the router on failed dispatch — not just missed heartbeat.
 // The node must re-register or send a refresh to clear this flag.
 func (r *NodeRegistry) MarkUnreachable(nodeID string) {
@@ -140,6 +164,10 @@ func (r *NodeRegistry) Candidates(modelID, quantization string) ([]protocol.Capa
 type NodeWithLoad struct {
 	Manifest protocol.CapabilityManifest
 	InFlight int32
+	// EnclaveAttested is the coordinator-VERIFIED Secure Enclave proof status —
+	// never the client-declared Manifest.HasSecureEnclave. This is what
+	// routing gates must check for SensitivityHighRequiresAttestation jobs.
+	EnclaveAttested bool
 }
 
 // CandidatesWithLoad is like Candidates but includes the live in-flight counter for each node.
@@ -156,8 +184,9 @@ func (r *NodeRegistry) CandidatesWithLoad(modelID, quantization string) ([]NodeW
 			continue
 		}
 		out = append(out, NodeWithLoad{
-			Manifest: e.manifest,
-			InFlight: atomic.LoadInt32(&e.inFlight),
+			Manifest:        e.manifest,
+			InFlight:        atomic.LoadInt32(&e.inFlight),
+			EnclaveAttested: e.enclaveAttested,
 		})
 	}
 	return out, nil
@@ -197,6 +226,33 @@ func (r *NodeRegistry) TotalInFlight() int {
 		}
 	}
 	return int(total)
+}
+
+// PublicKey returns the Ed25519 public key captured at registration for nodeID.
+// Write-path requests (refresh, benchmark-result, job-outcome) must be signed with
+// this SAME keypair — never a key supplied in the request itself, which would let
+// anyone forge requests for a node they don't control.
+func (r *NodeRegistry) PublicKey(nodeID string) ([]byte, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.entries[nodeID]
+	if !ok {
+		return nil, false
+	}
+	return e.publicKey, true
+}
+
+// Manifest returns the currently registered CapabilityManifest for nodeID —
+// used to resolve a node ID (e.g. from ResolveForCycle's sticky-session pick)
+// to its live ReachabilityEndpoint before dispatching.
+func (r *NodeRegistry) Manifest(nodeID string) (protocol.CapabilityManifest, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.entries[nodeID]
+	if !ok {
+		return protocol.CapabilityManifest{}, false
+	}
+	return e.manifest, true
 }
 
 // ClaimedSignature returns the MeasuredSignature from a node's registered manifest,
@@ -267,9 +323,11 @@ type NodeSnapshot struct {
 	CommittedMemoryGB    float64                    `json:"committed_memory_gb"` // declared * cap_pct
 	Models               []protocol.ModelCapability `json:"models"`
 	MeasuredToksPerSec   float64                    `json:"measured_toks_per_sec"` // 0 if not yet benchmarked
-	HasSecureEnclave     bool                       `json:"has_secure_enclave"`
+	HasSecureEnclave     bool                       `json:"has_secure_enclave"`    // self-declared by the node — informational only
+	EnclaveAttested      bool                       `json:"enclave_attested"`      // coordinator-verified Secure Enclave proof — trust this for gating
 	IsCluster            bool                       `json:"is_cluster"`
 	ClusterDeviceCount   *int                       `json:"cluster_device_count,omitempty"`
+	ClusterChipFamilies  []string                   `json:"cluster_chip_families,omitempty"`
 	LastSeenAt           string                     `json:"last_seen_at"`
 	InFlightJobs         int                        `json:"in_flight_jobs"` // currently dispatched jobs
 }
@@ -302,8 +360,10 @@ func (r *NodeRegistry) Snapshot() []NodeSnapshot {
 			Models:               e.manifest.Models,
 			MeasuredToksPerSec:   tps,
 			HasSecureEnclave:     e.manifest.HasSecureEnclave,
+			EnclaveAttested:      e.enclaveAttested,
 			IsCluster:            e.manifest.IsCluster,
 			ClusterDeviceCount:   e.manifest.ClusterDeviceCount,
+			ClusterChipFamilies:  e.manifest.ClusterChipFamilies,
 			LastSeenAt:           e.lastSeen.UTC().Format("2006-01-02T15:04:05Z"),
 			InFlightJobs:         int(atomic.LoadInt32(&e.inFlight)),
 		})

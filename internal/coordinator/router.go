@@ -20,9 +20,13 @@ import (
 // Self-declared specs are never used — that is the tier-fraud mitigation point (proposal §9.2).
 // inFlight is the coordinator-observed concurrent job count for this node; each additional
 // in-flight job halves the node's effective score so the router naturally load-balances.
+// enclaveAttested must come from the registry's coordinator-VERIFIED status
+// (NodeWithLoad.EnclaveAttested), never from node.HasSecureEnclave — that field
+// is self-declared by the node and proves nothing (Fable security review:
+// self-declared attestation, unenforced privacy claims).
 // Returns -Inf for ineligible nodes (wrong sensitivity, missing model, price over ceiling).
-func ScoreForFastLane(node protocol.CapabilityManifest, job protocol.JobSpec, inFlight int32) float64 {
-	if job.Sensitivity == protocol.SensitivityHighRequiresAttestation && !node.HasSecureEnclave {
+func ScoreForFastLane(node protocol.CapabilityManifest, job protocol.JobSpec, inFlight int32, enclaveAttested bool) float64 {
+	if job.Sensitivity == protocol.SensitivityHighRequiresAttestation && !enclaveAttested {
 		return math.Inf(-1)
 	}
 	if !hasModel(node, job.ModelID, job.QuantizationRequired) {
@@ -64,7 +68,7 @@ func DispatchFastLane(
 	}
 	var ranked []scored
 	for _, n := range candidates {
-		s := ScoreForFastLane(n.Manifest, job, n.InFlight)
+		s := ScoreForFastLane(n.Manifest, job, n.InFlight, n.EnclaveAttested)
 		if !math.IsInf(s, -1) {
 			ranked = append(ranked, scored{s, n})
 		}
@@ -84,16 +88,28 @@ func DispatchFastLane(
 			registry.MarkUnreachable(r.node.Manifest.NodeID)
 			continue
 		}
+		// Tag the response with which node served it and on which lane, so a
+		// requester's own dashboard can draw its own request's route without the
+		// coordinator needing to broadcast per-job routing to anyone else — every
+		// caller sees only the answer to its own request (proposal §7.1 privacy split).
+		if result != nil {
+			result["oim_served_by_node_id"] = r.node.Manifest.NodeID
+			result["oim_lane"] = string(job.Lane)
+		}
 		return result, nil
 	}
 	return nil, fmt.Errorf("no eligible nodes available for job %s (tried %d)", job.JobID, attempted)
 }
 
 // BackgroundAssignment is the persisted sticky-session record for a recurring job.
+// JobSpec is stored alongside the node selection so /jobs/background/execute can
+// resolve routing (including whether decomposition applies) without the caller
+// re-sending the full spec on every recurrence cycle.
 type BackgroundAssignment struct {
-	JobID   string   `json:"job_id"`
-	Primary string   `json:"primary"`  // node_id
-	Backups []string `json:"backups"`  // ordered by preference
+	JobID   string           `json:"job_id"`
+	Primary string           `json:"primary"` // node_id
+	Backups []string         `json:"backups"` // ordered by preference
+	JobSpec protocol.JobSpec `json:"job_spec"`
 }
 
 // AssignBackgroundJob returns a persisted assignment with primary + backup nodes.
@@ -110,7 +126,7 @@ func AssignBackgroundJob(job protocol.JobSpec, registry *NodeRegistry) (*Backgro
 	}
 	var ranked []scored
 	for _, n := range candidates {
-		s := ScoreForFastLane(n.Manifest, job, n.InFlight)
+		s := ScoreForFastLane(n.Manifest, job, n.InFlight, n.EnclaveAttested)
 		if !math.IsInf(s, -1) {
 			ranked = append(ranked, scored{s, n})
 		}
@@ -130,6 +146,7 @@ func AssignBackgroundJob(job protocol.JobSpec, registry *NodeRegistry) (*Backgro
 		JobID:   job.JobID,
 		Primary: ranked[0].node.Manifest.NodeID,
 		Backups: backups,
+		JobSpec: job,
 	}, nil
 }
 
@@ -171,6 +188,23 @@ func (s *AssignmentStore) Get(jobID string) (*BackgroundAssignment, bool) {
 	defer s.mu.RUnlock()
 	a, ok := s.data[jobID]
 	return a, ok
+}
+
+// DispatchToResolvedNode dispatches a job to a specific, already-selected node.
+// Exported for /jobs/background/execute: unlike DispatchFastLane, the caller
+// has already resolved which node should handle this cycle via
+// ResolveForCycle (sticky-session) — this skips candidate scoring entirely and
+// just makes the call, incrementing/decrementing the node's in-flight counter
+// around it like every other dispatch path.
+func DispatchToResolvedNode(ctx context.Context, job protocol.JobSpec, messages []map[string]any, registry *NodeRegistry, nodeID, nodeEndpoint string) (map[string]any, error) {
+	registry.IncrInFlight(nodeID)
+	result, err := dispatchToNode(ctx, job, messages, nodeEndpoint)
+	registry.DecrInFlight(nodeID)
+	if err != nil {
+		registry.MarkUnreachable(nodeID)
+		return nil, err
+	}
+	return result, nil
 }
 
 // dispatchToNode makes a POST to the node's /v1/chat/completions endpoint and returns the response.
@@ -260,6 +294,23 @@ func RouteWithDecomposition(
 	if err != nil || len(candidates) == 0 {
 		return DispatchFastLane(ctx, job, messages, registry, maxAttempts)
 	}
+	// Same coordinator-verified-attestation gate as ScoreForFastLane, applied
+	// here too — decomposition sub-tasks fan out to multiple nodes, so a high-
+	// sensitivity job must never hand a shard to a node whose Secure Enclave
+	// claim hasn't actually been verified (defense in depth alongside the
+	// fast-lane/background-lane gate).
+	if job.Sensitivity == protocol.SensitivityHighRequiresAttestation {
+		attested := candidates[:0]
+		for _, c := range candidates {
+			if c.EnclaveAttested {
+				attested = append(attested, c)
+			}
+		}
+		candidates = attested
+		if len(candidates) == 0 {
+			return DispatchFastLane(ctx, job, messages, registry, maxAttempts)
+		}
+	}
 	podNodes := make([]protocol.CapabilityManifest, len(candidates))
 	for i, c := range candidates {
 		podNodes[i] = c.Manifest
@@ -285,25 +336,47 @@ func RouteWithDecomposition(
 		return DispatchFastLane(ctx, job, messages, registry, maxAttempts)
 	}
 
-	// Build MergeInputs. Parallel verification is applied only when the job opts in.
-	mergeInputs := make([]MergeInput, 0, len(subResults))
 	for i, res := range subResults {
 		if res == nil {
 			return nil, fmt.Errorf("RouteWithDecomposition job %s: sub-task %d returned nil", job.JobID, i)
 		}
-		passed := true
-		if ShouldUseParallelVerification(job, len(podNodes), 500) && i+1 < len(subResults) {
-			checkA, errA := ComputeOutputChecksum(res)
-			checkB, errB := ComputeOutputChecksum(subResults[i+1])
-			if errA == nil && errB == nil {
-				passed = (checkA == checkB)
-			}
+	}
+
+	// Parallel verification, when it applies, works by REPLICATION not comparison
+	// across siblings: sub-tasks are heterogeneous (schema-lookup vs anomaly-detection
+	// vs ...), so their checksums can never match each other — that pairing was the
+	// original bug here. Instead, spot-check ONE sampled sub-task by re-dispatching
+	// its identical request to a second, independent node and comparing those two
+	// results. A verified job means the mesh is producing deterministic output for
+	// this job right now; an unverified job must fail outright, never merge partial
+	// trust (per the "no silent low-quality response" constraint).
+	verificationPassed := true
+	estimatedInputTokens := estimateAnalyticalPromptTokens(analyticalTasks)
+	if ShouldUseParallelVerification(job, len(podNodes), estimatedInputTokens) && len(analyticalTasks) >= 1 && len(podNodes) >= 2 {
+		verifyIdx := 0 // sample the first sub-task; a future pass could randomize
+		// DispatchSubTasksInParallel assigns podNodes[i % len(podNodes)] as the primary
+		// node for sub-task i — the next node in the ring is guaranteed distinct from
+		// it as long as len(podNodes) >= 2, which is already gated above.
+		replicaNode := podNodes[(verifyIdx+1)%len(podNodes)]
+
+		replicaJob, replicaMessages := buildSubTaskJob(analyticalTasks[verifyIdx])
+		replicaResult, err := dispatchToNode(ctx, replicaJob, replicaMessages, replicaNode.ReachabilityEndpoint)
+		if err != nil {
+			verificationPassed = false // can't verify — fail closed, don't merge on faith
+		} else {
+			checkA, errA := ComputeOutputChecksum(subResults[verifyIdx])
+			checkB, errB := ComputeOutputChecksum(replicaResult)
+			verificationPassed = errA == nil && errB == nil && checkA == checkB
 		}
+	}
+
+	mergeInputs := make([]MergeInput, 0, len(subResults))
+	for i, res := range subResults {
 		mergeInputs = append(mergeInputs, MergeInput{
 			SubTaskID:          analyticalTasks[i].SubTaskID,
 			SubTaskType:        string(analyticalTasks[i].SubTaskType),
 			Result:             res,
-			VerificationPassed: passed,
+			VerificationPassed: verificationPassed,
 		})
 	}
 
@@ -375,18 +448,7 @@ func DispatchSubTasksInParallel(
 				return
 			}
 
-			// Build a scoped job spec for this sub-task.
-			subJob := protocol.JobSpec{
-				JobID:                  w.subTask.SubTaskID,
-				RequesterID:            w.subTask.ParentJobID,
-				ModelID:                w.subTask.ModelID,
-				Lane:                   protocol.JobLaneBackground,
-				AllowDecomposition:     false, // sub-tasks are never further decomposed
-				AllowDocumentSplitting: false,
-			}
-			subMessages := []map[string]any{
-				{"role": "user", "content": w.subTask.Prompt},
-			}
+			subJob, subMessages := buildSubTaskJob(w.subTask)
 			result, err := dispatchToNode(ctx, subJob, subMessages, w.node.ReachabilityEndpoint)
 			if err != nil {
 				errCh <- fmt.Errorf("sub-task %s: dispatch: %w", w.subTask.SubTaskID, err)
@@ -410,6 +472,36 @@ func DispatchSubTasksInParallel(
 		return nil, fmt.Errorf("DispatchSubTasksInParallel: %s", strings.Join(errs, "; "))
 	}
 	return results, nil
+}
+
+// estimateAnalyticalPromptTokens sums estimateTokens (splitter.go) across all
+// analytical sub-task prompts, giving ShouldUseParallelVerification a real size
+// signal instead of a hardcoded placeholder.
+func estimateAnalyticalPromptTokens(tasks []SubTask) int {
+	total := 0
+	for _, t := range tasks {
+		total += estimateTokens(t.Prompt)
+	}
+	return total
+}
+
+// buildSubTaskJob constructs the scoped JobSpec and message payload for dispatching
+// one decomposed sub-task. Shared by DispatchSubTasksInParallel's primary dispatch
+// and RouteWithDecomposition's verification replica dispatch — both must build the
+// identical request for a checksum comparison between them to mean anything.
+func buildSubTaskJob(t SubTask) (protocol.JobSpec, []map[string]any) {
+	subJob := protocol.JobSpec{
+		JobID:                  t.SubTaskID,
+		RequesterID:            t.ParentJobID,
+		ModelID:                t.ModelID,
+		Lane:                   protocol.JobLaneBackground,
+		AllowDecomposition:     false, // sub-tasks are never further decomposed
+		AllowDocumentSplitting: false,
+	}
+	subMessages := []map[string]any{
+		{"role": "user", "content": t.Prompt},
+	}
+	return subJob, subMessages
 }
 
 // WaitForDependencies blocks until all SubTaskIDs listed in subTask.DependsOn are

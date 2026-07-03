@@ -69,15 +69,19 @@ func rootCmd() *cobra.Command {
 token accounting, and earnings attribution. Run a local oim node agent
 (oim node start --user-id <id>) before using this tool to see earnings flow.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if userID == "" {
-				return fmt.Errorf("--user-id is required (copy your user ID from the Account tab)")
-			}
+			// --user-id is optional: omit it to submit anonymously (dev/simulation
+			// mode — the coordinator's credit gate only applies when a user ID is
+			// present). Pass one to see real earnings/debits flow through your account.
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
+			displayUser := userID
+			if displayUser == "" {
+				displayUser = "(anonymous — no credit accounting)"
+			}
 			fmt.Printf("\njobgen → %s\n", coordinatorURL)
-			fmt.Printf("User:   %s\n", userID)
+			fmt.Printf("User:   %s\n", displayUser)
 			fmt.Printf("Model:  %s (empty = coordinator decides)\n", model)
 			fmt.Printf("Rate:   1 job every %ds\n", intervalSec)
 			if count > 0 {
@@ -177,7 +181,7 @@ func submitJob(ctx context.Context, coordinator, userID, apiKey, model, promptLa
 	req.Header.Set("Content-Type", "application/json")
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
-	} else {
+	} else if userID != "" {
 		req.Header.Set("X-OIM-User-ID", userID)
 	}
 	if useQueue {

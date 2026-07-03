@@ -5,9 +5,12 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -28,10 +31,16 @@ import (
 
 // apiKeyStore maps generated oim_* API keys ↔ user IDs.
 // Both directions so we can look up by key (auth) and by user (revoke/check).
+//
+// db is nil for a pure in-memory store (tests, or a coordinator run without
+// --db-path) — behavior is identical to before persistence was added. When db
+// is set, keys survive a coordinator restart instead of silently invalidating
+// every user's saved key on every deploy.
 type apiKeyStore struct {
-	mu      sync.RWMutex
-	byKey   map[string]string // oim_xxx → userID
-	byUser  map[string]string // userID → oim_xxx
+	mu     sync.RWMutex
+	byKey  map[string]string // oim_xxx → userID
+	byUser map[string]string // userID → oim_xxx
+	db     *sql.DB
 }
 
 func newAPIKeyStore() *apiKeyStore {
@@ -39,6 +48,47 @@ func newAPIKeyStore() *apiKeyStore {
 		byKey:  make(map[string]string),
 		byUser: make(map[string]string),
 	}
+}
+
+// newPersistentAPIKeyStore opens (creating if needed) a SQLite-backed store at
+// dbPath and loads any previously issued keys. Uses its own connection to the
+// same file the ledger persists to — SQLite supports multiple connections to
+// one file, and keeping the two stores' schemas independent avoids coupling
+// this CLI-local type to the settlement package's tested constructor.
+func newPersistentAPIKeyStore(dbPath string) (*apiKeyStore, error) {
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("open api key db %s: %w", dbPath, err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS api_keys (user_id TEXT PRIMARY KEY, api_key TEXT NOT NULL UNIQUE)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate api_keys schema: %w", err)
+	}
+	s := &apiKeyStore{
+		byKey:  make(map[string]string),
+		byUser: make(map[string]string),
+		db:     db,
+	}
+	rows, err := db.Query(`SELECT user_id, api_key FROM api_keys`)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("load api_keys: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var userID, key string
+		if err := rows.Scan(&userID, &key); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("scan api_key row: %w", err)
+		}
+		s.byUser[userID] = key
+		s.byKey[key] = userID
+	}
+	if err := rows.Err(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("iterate api_keys: %w", err)
+	}
+	return s, nil
 }
 
 func (s *apiKeyStore) generate(userID string) (string, error) {
@@ -49,6 +99,13 @@ func (s *apiKeyStore) generate(userID string) (string, error) {
 	key := "oim_" + hex.EncodeToString(raw)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.db != nil {
+		// INSERT OR REPLACE keyed on user_id (PRIMARY KEY) atomically replaces
+		// any prior key for this user — same semantics as the in-memory revoke+set below.
+		if _, err := s.db.Exec(`INSERT OR REPLACE INTO api_keys (user_id, api_key) VALUES (?, ?)`, userID, key); err != nil {
+			return "", fmt.Errorf("persist api key: %w", err)
+		}
+	}
 	if old, ok := s.byUser[userID]; ok {
 		delete(s.byKey, old) // revoke existing key
 	}
@@ -67,6 +124,11 @@ func (s *apiKeyStore) lookup(key string) (string, bool) {
 func (s *apiKeyStore) revoke(userID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.db != nil {
+		if _, err := s.db.Exec(`DELETE FROM api_keys WHERE user_id = ?`, userID); err != nil {
+			log.Printf("[coordinator] revoke api key for %s: persist delete failed: %v", userID, err)
+		}
+	}
 	if key, ok := s.byUser[userID]; ok {
 		delete(s.byKey, key)
 		delete(s.byUser, userID)
@@ -87,8 +149,10 @@ func main() {
 }
 
 func rootCmd() *cobra.Command {
-	var listenAddr, podID, regionHint, directoryURL, publicURL, apiKey string
-	var maxDispatchAttempts, directoryIntervalSec int
+	var listenAddr, podID, regionHint, directoryURL, publicURL, apiKey, dbPath string
+	var maxDispatchAttempts, directoryIntervalSec, grantPoWBits int
+	var rateLimitRPS, rateLimitBurst, grantRateLimitPerHour float64
+	var corsOrigins []string
 
 	cmd := &cobra.Command{
 		Use:   "oim-coordinator",
@@ -100,8 +164,9 @@ and routes inference jobs to the best available node.
 Nodes register with: oim node start --coordinator http://<this-host>:<port>
 Optionally report aggregate health to a directory with --directory.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiKey,
-				maxDispatchAttempts, time.Duration(directoryIntervalSec)*time.Second)
+			return runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiKey, dbPath,
+				maxDispatchAttempts, time.Duration(directoryIntervalSec)*time.Second, rateLimitRPS, rateLimitBurst,
+				corsOrigins, grantPoWBits, grantRateLimitPerHour)
 		},
 	}
 	cmd.Flags().StringVar(&listenAddr, "listen", ":9000", "Address to listen on")
@@ -112,6 +177,12 @@ Optionally report aggregate health to a directory with --directory.`,
 	cmd.Flags().StringVar(&directoryURL, "directory", "", "Directory server URL for pod discovery registration (empty = disabled)")
 	cmd.Flags().IntVar(&directoryIntervalSec, "directory-interval", 60, "Seconds between directory health-digest reports")
 	cmd.Flags().StringVar(&apiKey, "api-key", "", "Bearer token required for write operations (empty = disabled)")
+	cmd.Flags().StringVar(&dbPath, "db-path", "", "SQLite file for the credit ledger and API keys (empty = in-memory only, resets on restart)")
+	cmd.Flags().Float64Var(&rateLimitRPS, "rate-limit-rps", 20.0, "Sustained requests per second allowed per client IP (0 disables rate limiting)")
+	cmd.Flags().Float64Var(&rateLimitBurst, "rate-limit-burst", 40.0, "Burst capacity per client IP on top of the sustained rate")
+	cmd.Flags().StringSliceVar(&corsOrigins, "cors-origin", nil, "Allowed browser origin(s) for CORS (repeatable or comma-separated; empty = allow any origin, dev-friendly default)")
+	cmd.Flags().IntVar(&grantPoWBits, "grant-pow-bits", settlement.DefaultGrantPoWBits, "Proof-of-work difficulty (leading zero bits) required to claim a startup grant; raises the cost of minting disposable user_ids to farm grants (0 disables)")
+	cmd.Flags().Float64Var(&grantRateLimitPerHour, "grant-rate-limit-per-hour", 6.0, "Startup-grant claims allowed per client IP per hour, independent of the general write-path rate limit (0 disables)")
 	return cmd
 }
 
@@ -138,17 +209,42 @@ func (s *settlementRecordStore) store(r map[string]any) {
 	s.records = append(s.records, r)
 }
 
-func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiKey string, maxAttempts int, directoryInterval time.Duration) error {
+func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiKey, dbPath string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64) error {
 	registry := coordinator.NewNodeRegistry()
 	assignments := coordinator.NewAssignmentStore()
 	measurements := coordinator.NewMeasurementStore()
-	ledger := settlement.NewLedger()
 	settlementRecords := &settlementRecordStore{}
 	capacitySrc := &podCapacitySource{registry: registry, measurements: measurements}
-	apiKeys := newAPIKeyStore()
+
+	// Registry/assignments stay in-memory: nodes self-heal via re-registration
+	// within one heartbeat interval of a restart, so persisting them buys little.
+	// The ledger and API keys are different — losing those on restart means real
+	// financial data loss and silently invalidating every user's saved key, so
+	// --db-path backs them with SQLite when set.
+	var ledger *settlement.Ledger
+	var apiKeys *apiKeyStore
+	if dbPath != "" {
+		var err error
+		ledger, err = settlement.NewPersistentLedger(dbPath)
+		if err != nil {
+			return fmt.Errorf("open persistent ledger: %w", err)
+		}
+		apiKeys, err = newPersistentAPIKeyStore(dbPath)
+		if err != nil {
+			return fmt.Errorf("open persistent api key store: %w", err)
+		}
+		log.Printf("[coordinator] persisting ledger + api keys to %s", dbPath)
+	} else {
+		ledger = settlement.NewLedger()
+		apiKeys = newAPIKeyStore()
+		log.Printf("[coordinator] --db-path not set: ledger and api keys are in-memory only and will reset on restart")
+	}
 
 	// ctx is cancelled on SIGINT/SIGTERM to drain the job queue workers cleanly.
+	// Also deferred here so an early return (e.g. net.Listen failure) can't leak it —
+	// cancelCtx is idempotent, so the later explicit call in the shutdown goroutine is safe.
 	ctx, cancelCtx := context.WithCancel(context.Background())
+	defer cancelCtx()
 
 	// MQTT-style bounded job queue: callers with X-OIM-Queue: true are held here
 	// when all nodes are busy, rather than receiving an immediate 503.
@@ -161,9 +257,12 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 	// nodeUsers maps node_id → user_id so earned credits reach the right account.
 	var nodeUsers sync.Map // string → string
 
-	// grantedUsers tracks which user IDs have claimed a startup grant this session.
-	// In-memory dedup only — resets on coordinator restart, which is fine for dev/sim.
-	var grantedUsers sync.Map
+	// Separate, much stricter bucket just for startup-grant claims — the general
+	// write-path limiter (constructed below, applied to the whole mux) is tuned
+	// for legitimate high-frequency node refreshes, not for "how many free
+	// credit grants can one IP mint per hour."
+	grantLimiter := coordinator.NewIPRateLimiter(grantRateLimitPerHour/3600.0, 2)
+	defer grantLimiter.Stop()
 
 	mux := http.NewServeMux()
 
@@ -199,19 +298,58 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 		})
 	})
 
-	// POST /nodes/{id}/refresh — updated CapabilityManifest
+	// POST /nodes/{id}/refresh — updated CapabilityManifest.
+	// Must be signed with the SAME keypair used at /nodes/register — an unsigned
+	// refresh would let anyone hijack a victim node's ReachabilityEndpoint or
+	// inflate its MeasuredSignature to win routing (Fable security review #2).
 	mux.HandleFunc("POST /nodes/{id}/refresh", func(w http.ResponseWriter, r *http.Request) {
 		nodeID := r.PathValue("id")
-		var manifest protocol.CapabilityManifest
-		if err := json.NewDecoder(r.Body).Decode(&manifest); err != nil {
-			writeErr(w, http.StatusBadRequest, "parse manifest: "+err.Error())
+		var req protocol.RefreshRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse refresh request: "+err.Error())
 			return
 		}
-		if err := registry.Refresh(nodeID, manifest); err != nil {
+		signingBytes, err := req.SigningBytes()
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "build signing bytes: "+err.Error())
+			return
+		}
+		if err := coordinator.VerifyNodeSignature(registry, nodeID, req.Timestamp, signingBytes, req.Signature); err != nil {
+			writeErr(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		if err := registry.Refresh(nodeID, req.Manifest); err != nil {
 			writeErr(w, http.StatusNotFound, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "refreshed"})
+	})
+
+	// POST /nodes/{id}/attest-enclave — proves possession of a Secure Enclave-backed
+	// signing key, replacing trust in the self-declared manifest.HasSecureEnclave
+	// boolean for SensitivityHighRequiresAttestation routing decisions (Fable
+	// security review: self-declared attestation, unenforced privacy claims).
+	// Must be signed with BOTH the enclave's own P-256 key (proves the key is real
+	// and usable right now) AND the node's registered Ed25519 identity key (proves
+	// this attestation is for the node that owns {id}, not an attacker's own enclave).
+	mux.HandleFunc("POST /nodes/{id}/attest-enclave", func(w http.ResponseWriter, r *http.Request) {
+		nodeID := r.PathValue("id")
+		var req protocol.EnclaveAttestationRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse attestation request: "+err.Error())
+			return
+		}
+		req.NodeID = nodeID
+		if err := coordinator.VerifyEnclaveAttestation(registry, req); err != nil {
+			writeErr(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		if err := registry.MarkEnclaveAttested(nodeID, req.EnclavePublicKey); err != nil {
+			writeErr(w, http.StatusNotFound, err.Error())
+			return
+		}
+		log.Printf("[coordinator] node %s: secure enclave attested", nodeID)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "attested"})
 	})
 
 	// DELETE /nodes/{id} — explicit deregister (optional; TTL handles stale nodes automatically)
@@ -365,35 +503,111 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 		})
 	})
 
+	// POST /jobs/background/execute — actually run one recurrence cycle of an
+	// assigned background job. /assign and /cycle only ever answered "which
+	// node," never dispatched anything — there was no coordinator-mediated
+	// execution path at all for background-lane jobs, which is why decomposition
+	// (allow_decomposition=true) was dormant code with nothing that could ever
+	// reach it. This endpoint closes that gap: it uses the JobSpec captured at
+	// /assign time, so callers only need to resend job_id + messages per cycle.
+	//
+	// Decomposition path: when the assigned job has AllowDecomposition=true,
+	// this routes through RouteWithDecomposition (splitting into sub-tasks,
+	// dispatching them in parallel, verifying, merging). Otherwise it dispatches
+	// once to whichever node ResolveForCycle picked for this cycle — the same
+	// single-node behavior a caller doing this by hand would have gotten before.
+	mux.HandleFunc("POST /jobs/background/execute", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			JobID    string           `json:"job_id"`
+			Messages []map[string]any `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse request: "+err.Error())
+			return
+		}
+		a, ok := assignments.Get(req.JobID)
+		if !ok {
+			writeErr(w, http.StatusNotFound, fmt.Sprintf("no assignment for job %s; call /jobs/background/assign first", req.JobID))
+			return
+		}
+
+		if a.JobSpec.AllowDecomposition {
+			result, err := coordinator.RouteWithDecomposition(r.Context(), a.JobSpec, req.Messages, registry, nil, maxAttempts, jobQueue)
+			if err != nil {
+				writeErr(w, http.StatusServiceUnavailable, err.Error())
+				return
+			}
+			log.Printf("[coordinator] background/execute job=%s via decomposition", req.JobID)
+			writeJSON(w, http.StatusOK, result)
+			return
+		}
+
+		nodeID, isCont, err := coordinator.ResolveForCycle(a, registry)
+		if err != nil {
+			writeErr(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		manifest, ok := registry.Manifest(nodeID)
+		if !ok {
+			writeErr(w, http.StatusServiceUnavailable, fmt.Sprintf("resolved node %s is no longer registered", nodeID))
+			return
+		}
+		result, err := coordinator.DispatchToResolvedNode(r.Context(), a.JobSpec, req.Messages, registry, nodeID, manifest.ReachabilityEndpoint)
+		if err != nil {
+			writeErr(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		log.Printf("[coordinator] background/execute job=%s node=%s continuation=%v", req.JobID, nodeID, isCont)
+		writeJSON(w, http.StatusOK, result)
+	})
+
 	// --- Reputation / verification ---
 
 	// POST /nodes/{id}/benchmark-result — node submits a fresh MeasuredSignature.
 	// Stored in MeasurementStore; used by VerifyTierClaim to detect fraud (proposal §8.2/9.2).
+	// Must be signed — an unsigned submission would let an attacker forge any
+	// node's measured throughput and defeat the fraud check that reconciles against it.
 	mux.HandleFunc("POST /nodes/{id}/benchmark-result", func(w http.ResponseWriter, r *http.Request) {
 		nodeID := r.PathValue("id")
-		var sig protocol.MeasuredSignature
-		if err := json.NewDecoder(r.Body).Decode(&sig); err != nil {
+		var req protocol.BenchmarkResultRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeErr(w, http.StatusBadRequest, "parse measurement: "+err.Error())
 			return
 		}
-		measurements.Store(nodeID, &sig)
-		log.Printf("[coordinator] node %s submitted benchmark: %.1f tok/s decode", nodeID, sig.TokensPerSecDecode)
+		signingBytes, err := req.SigningBytes()
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "build signing bytes: "+err.Error())
+			return
+		}
+		if err := coordinator.VerifyNodeSignature(registry, nodeID, req.Timestamp, signingBytes, req.Signature); err != nil {
+			writeErr(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		measurements.Store(nodeID, &req.Measured)
+		log.Printf("[coordinator] node %s submitted benchmark: %.1f tok/s decode", nodeID, req.Measured.TokensPerSecDecode)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "stored"})
 	})
 
 	// POST /nodes/{id}/job-outcome — node reports job completion.
 	// When tokens_delivered > 0, credits the node's registered user at the moderate rate.
 	// This is the earning side of the credit ledger: node operators earn as they serve.
+	// Must be signed — this is the credit-minting endpoint; an unsigned version lets
+	// anyone POST success:true with an inflated token count for any node_id and mint
+	// unlimited credits (Fable security review #1).
 	mux.HandleFunc("POST /nodes/{id}/job-outcome", func(w http.ResponseWriter, r *http.Request) {
 		nodeID := r.PathValue("id")
-		var outcome struct {
-			JobID           string  `json:"job_id"`
-			Success         bool    `json:"success"`
-			LatencyMs       float64 `json:"latency_ms"`
-			TokensDelivered int     `json:"tokens_delivered"`
-		}
+		var outcome protocol.JobOutcomeRequest
 		if err := json.NewDecoder(r.Body).Decode(&outcome); err != nil {
 			writeErr(w, http.StatusBadRequest, "parse outcome: "+err.Error())
+			return
+		}
+		signingBytes, err := outcome.SigningBytes()
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "build signing bytes: "+err.Error())
+			return
+		}
+		if err := coordinator.VerifyNodeSignature(registry, nodeID, outcome.Timestamp, signingBytes, outcome.Signature); err != nil {
+			writeErr(w, http.StatusUnauthorized, err.Error())
 			return
 		}
 		log.Printf("[coordinator] job-outcome node=%s job=%s success=%v latency=%.0fms tokens=%d",
@@ -468,9 +682,13 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 	// --- Settlement (proposal §9 and §10) ---
 
 	// POST /settlement/records — receive a signed settlement record from a node.
-	// Stores the record regardless of verification_result — failed-verification records
-	// are evidence for dispute resolution, not noise to be silently dropped (proposal §10).
-	// Credits the node's earned balance when verification_result is true.
+	// Stores the record regardless of verification_result OR signature validity —
+	// failed-verification and even forged records are evidence for dispute
+	// resolution, not noise to be silently dropped (proposal §10). But crediting
+	// only happens when the record's signature verifies against the claimed node's
+	// registered public key — otherwise anyone could POST a record with
+	// verification_result:true and mint credits for any node_id (Fable security
+	// review #1).
 	mux.HandleFunc("POST /settlement/records", func(w http.ResponseWriter, r *http.Request) {
 		var record map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&record); err != nil {
@@ -484,7 +702,13 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 				nodeID, _ := do["node_id"].(string)
 				totalValue, _ := do["total_value"].(float64)
 				recordID, _ := record["record_id"].(string)
-				if nodeID != "" && totalValue > 0 {
+
+				pubKey, known := registry.PublicKey(nodeID)
+				if !known {
+					log.Printf("[coordinator] settlement record %s: node %s not registered, refusing credit", recordID, nodeID)
+				} else if err := settlement.VerifySettlementRecord(record, pubKey); err != nil {
+					log.Printf("[coordinator] settlement record %s: signature invalid, refusing credit: %v", recordID, err)
+				} else if nodeID != "" && totalValue > 0 {
 					_ = ledger.CreditAccount(settlement.CreditEntry{
 						UserID:            nodeID,
 						Origin:            settlement.CreditOriginEarnedContrib,
@@ -501,10 +725,37 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 
 	// POST /users/{id}/startup-grant — issue a one-time bootstrap grant sized by pod verified capacity.
 	// The grant amount steps down as verified capacity grows (proposal §9.4, §11).
-	// Idempotent within a coordinator session: second claim returns already-claimed balance.
+	// Idempotent forever, not just "within a session" — dedup is checked against
+	// the ledger itself (see Ledger.ClaimStartupGrantOnce), so it survives a
+	// coordinator restart and can't be farmed by bouncing the process.
+	//
+	// Per-user dedup alone doesn't stop Sybil farming: user_id is a free,
+	// client-generated UUID (dashboard's getOrCreateUserId) — clearing
+	// localStorage mints a fresh "user" and a fresh grant at zero cost. Two
+	// independent mitigations close that gap (Fable security review, Sybil-farmable
+	// grants): a dedicated per-IP rate limit far stricter than the general
+	// write-path limiter, and a proof-of-work challenge that makes minting each
+	// claimable identity cost real wall-clock CPU time instead of being free.
 	mux.HandleFunc("POST /users/{id}/startup-grant", func(w http.ResponseWriter, r *http.Request) {
+		if !grantLimiter.Allow(clientIP(r)) {
+			writeErr(w, http.StatusTooManyRequests, "too many startup-grant claims from this address; try again later")
+			return
+		}
 		userID := r.PathValue("id")
-		if _, alreadyClaimed := grantedUsers.LoadOrStore(userID, true); alreadyClaimed {
+		var body struct {
+			Nonce uint64 `json:"nonce"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+			writeErr(w, http.StatusBadRequest, "parse request: "+err.Error())
+			return
+		}
+		if !settlement.VerifyProofOfWork(userID, body.Nonce, grantPoWBits) {
+			writeErr(w, http.StatusBadRequest, fmt.Sprintf(
+				"missing or insufficient proof of work: need sha256(user_id||nonce) with %d leading zero bits", grantPoWBits))
+			return
+		}
+		entry, err := settlement.IssueStartupGrant(ledger, userID, podID, capacitySrc, settlement.DEFAULT_DECAY_STEPS)
+		if errors.Is(err, settlement.ErrStartupGrantAlreadyClaimed) {
 			bal := ledger.GetBalance(userID)
 			writeJSON(w, http.StatusOK, map[string]any{
 				"amount": bal.GrantBalance,
@@ -512,9 +763,7 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 			})
 			return
 		}
-		entry, err := settlement.IssueStartupGrant(ledger, userID, podID, capacitySrc, settlement.DEFAULT_DECAY_STEPS)
 		if err != nil {
-			grantedUsers.Delete(userID) // allow retry if issue failed
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -662,6 +911,7 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 				"GET  /nodes",
 				"GET  /nodes/stream   (SSE push)",
 				"POST /nodes/register",
+				"POST /nodes/{id}/attest-enclave",
 				"POST /v1/chat/completions",
 				"GET  /users/{id}/balance",
 				"POST /users/{id}/startup-grant",
@@ -680,7 +930,12 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 		handler = authMiddleware(apiKey, apiKeys, mux)
 		log.Printf("[coordinator] API key auth enabled for write operations")
 	}
-	srv := &http.Server{Handler: corsMiddleware(handler)}
+	limiter := coordinator.NewIPRateLimiter(rateLimitRPS, rateLimitBurst)
+	defer limiter.Stop()
+	if rateLimitRPS > 0 {
+		log.Printf("[coordinator] rate limiting enabled: %.1f req/s per IP, burst %.0f", rateLimitRPS, rateLimitBurst)
+	}
+	srv := &http.Server{Handler: corsMiddleware(corsOrigins, rateLimitMiddleware(limiter, handler))}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -778,9 +1033,64 @@ func authMiddleware(adminKey string, keys *apiKeyStore, next http.Handler) http.
 	})
 }
 
-func corsMiddleware(h http.Handler) http.Handler {
+// rateLimitMiddleware enforces a per-client-IP token-bucket limit across every
+// endpoint except the SSE stream (a single long-lived connection, not a series
+// of discrete requests — counting it against the limiter would make it trip
+// immediately) and CORS preflight. Returns 429 with Retry-After when exceeded.
+func rateLimitMiddleware(limiter *coordinator.IPRateLimiter, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if r.Method == http.MethodOptions || r.URL.Path == "/nodes/stream" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !limiter.Allow(clientIP(r)) {
+			w.Header().Set("Retry-After", "1")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(w).Encode(map[string]string{"error": "rate limit exceeded, retry shortly"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// clientIP extracts the connecting peer's address, stripping the port.
+// Deliberately does NOT trust X-Forwarded-For — that header is
+// client-controlled and trusting it blindly would let anyone bypass the
+// limiter by sending a fresh fake IP on every request. Operators running
+// behind a real reverse proxy should terminate rate limiting there instead,
+// or extend this once a trusted-proxy allowlist is configured.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// corsMiddleware allows browser requests from allowedOrigins. An empty
+// allowedOrigins means "allow any origin" — the dev-friendly default so the
+// dashboard works out of the box without configuration. Operators serving
+// real user traffic should pass --cors-origin so a malicious page can't drive
+// a visitor's browser into hitting the coordinator with their session.
+func corsMiddleware(allowedOrigins []string, h http.Handler) http.Handler {
+	allowAll := len(allowedOrigins) == 0
+	allowed := make(map[string]bool, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		allowed[o] = true
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		switch {
+		case allowAll:
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		case origin != "" && allowed[origin]:
+			// Echo back the specific matched origin (not "*") — required for any
+			// future credentialed-request support and more correct than a wildcard
+			// even without it: it tells the browser exactly which origin was vetted.
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-OIM-User-ID")
 		if r.Method == http.MethodOptions {

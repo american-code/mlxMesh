@@ -1,13 +1,15 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useTopology } from './hooks/useTopology'
 import { useAllNodes } from './hooks/useAllNodes'
 import { WorldMap } from './components/WorldMap'
+import type { ActiveRoute, UserLocation } from './components/WorldMap'
 import { NetworkGraph } from './components/NetworkGraph'
 import { GeoNetworkGraph } from './components/GeoNetworkGraph'
 import { NodeDetail } from './components/NodeDetail'
 import { AccountView } from './components/AccountView'
 import { NodeSetupView } from './components/NodeSetupView'
 import { BackpressurePanel } from './components/BackpressurePanel'
+import { submitTestQuery } from './api'
 import type { NodeSnapshot, PodHealthDigest } from './types'
 import {
   computeNodeStatus, STATUS_COLORS, STATUS_LABELS,
@@ -22,6 +24,22 @@ export default function App() {
   const [selected, setSelected] = useState<NodeSnapshot | null>(null)
   const [tab, setTab] = useState<Tab>('network')
 
+  // "You" marker — approximate browser geolocation, requested once on mount.
+  // Silently absent if denied/unavailable; nothing else depends on it.
+  const [userLocation, setUserLocation] = useState<UserLocation | null>(null)
+  useEffect(() => {
+    if (!navigator.geolocation) return
+    navigator.geolocation.getCurrentPosition(
+      pos => setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => { /* denied or unavailable — no marker, route still works via nearest pod */ },
+      { timeout: 4000, maximumAge: 600_000 },
+    )
+  }, [])
+
+  // Active route — lights up only in response to a query THIS browser session
+  // submitted. Cleared automatically once its fade-out animation finishes.
+  const [activeRoute, setActiveRoute] = useState<ActiveRoute | null>(null)
+
   const pods = topology?.pods ?? []
 
   // ── Dynamic: works for any number of pods/regions ──
@@ -33,6 +51,45 @@ export default function App() {
   const offlineCount  = allNodes.filter(n => ['stale', 'unreachable'].includes(computeNodeStatus(n))).length
   const totalTps      = allNodes.reduce((s, n) => s + n.measured_toks_per_sec, 0)
   const totalMem      = allNodes.reduce((s, n) => s + n.committed_memory_gb, 0)
+
+  // Resolve a served node_id + this browser's own location (falling back to the
+  // nearest live node as a rough origin when geolocation was denied) into an
+  // ActiveRoute, and schedule it to clear once the fade-out animation finishes.
+  const lightUpRoute = useCallback((servedByNodeId: string | null, lane: 'fast' | 'background' | null) => {
+    if (!servedByNodeId) return
+    const servedNode = allNodes.find(n => n.node_id === servedByNodeId)
+    if (!servedNode || (servedNode.geo_lat === 0 && servedNode.geo_lng === 0)) return
+
+    // Without geolocation, approximate "where the query entered the mesh" as the
+    // centroid of the OTHER live nodes in the serving node's own pod/region —
+    // never the served node's own coordinates, which would draw a zero-length
+    // (invisible) line straight onto itself.
+    let origin = userLocation
+    if (!origin) {
+      const podGroup = podNodes.find(p => p.nodes.some(n => n.node_id === servedByNodeId))
+      const others = (podGroup?.nodes ?? [])
+        .filter(n => n.node_id !== servedByNodeId && (n.geo_lat !== 0 || n.geo_lng !== 0))
+      origin = others.length > 0
+        ? {
+            lat: others.reduce((s, n) => s + n.geo_lat, 0) / others.length,
+            lng: others.reduce((s, n) => s + n.geo_lng, 0) / others.length,
+          }
+        : { lat: servedNode.geo_lat + 3, lng: servedNode.geo_lng + 3 } // lone node in pod — small offset so the route is still visible
+    }
+    const route: ActiveRoute = {
+      key: `${servedByNodeId}-${Date.now()}`,
+      fromLat: origin.lat,
+      fromLng: origin.lng,
+      toLat: servedNode.geo_lat,
+      toLng: servedNode.geo_lng,
+      lane: lane === 'background' ? 'background' : 'fast',
+    }
+    setActiveRoute(route)
+    const fadeMs = route.lane === 'background' ? 6000 : 4000
+    setTimeout(() => {
+      setActiveRoute(current => (current?.key === route.key ? null : current))
+    }, fadeMs)
+  }, [allNodes, podNodes, userLocation])
 
   const metricsPerPod = podNodes.map(p => p.metrics)
   const validMetrics  = metricsPerPod.filter(m => m !== null)
@@ -151,15 +208,28 @@ export default function App() {
                 </span>
               )}
             </span>
-            <StatusLegend />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+              <RouteLegend />
+              <StatusLegend />
+            </div>
           </div>
           {allNodes.length === 0 ? (
             <div style={{ height: 220, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#7d8590', fontSize: 14 }}>
               Connecting to network…
             </div>
           ) : (
-            <WorldMap nodes={allNodes} selected={selected} onNodeClick={setSelected} />
+            <WorldMap
+              nodes={allNodes}
+              selected={selected}
+              onNodeClick={setSelected}
+              userLocation={userLocation}
+              activeRoute={activeRoute}
+            />
           )}
+          <TryTheMesh
+            coordinatorURL={pods[0]?.coordinator_endpoint ?? null}
+            onServed={lightUpRoute}
+          />
         </section>
 
         {/* ── Backpressure panel — queue depth and in-flight across all coordinators ── */}
@@ -244,6 +314,21 @@ function BackpressurePill({ pct }: { pct: number }) {
   )
 }
 
+function RouteLegend() {
+  return (
+    <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ width: 14, height: 2, background: '#58a6ff', borderRadius: 1 }} />
+        <span style={{ color: '#7d8590', fontSize: 12 }}>Fast query</span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ width: 14, height: 2, background: '#d29922', borderRadius: 1 }} />
+        <span style={{ color: '#7d8590', fontSize: 12 }}>Background job</span>
+      </div>
+    </div>
+  )
+}
+
 function StatusLegend() {
   return (
     <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
@@ -253,6 +338,87 @@ function StatusLegend() {
           <span style={{ color: '#7d8590', fontSize: 12 }}>{label}</span>
         </div>
       ))}
+    </div>
+  )
+}
+
+// ── Try the mesh — submits a real query and lights up the route it took ────
+// Only ever shows THIS browser's own request/response. onServed receives the
+// serving node_id + lane straight from the coordinator's response so App can
+// draw the route — nobody else's traffic is ever visible here.
+
+function TryTheMesh({
+  coordinatorURL, onServed,
+}: {
+  coordinatorURL: string | null
+  onServed: (servedByNodeId: string | null, lane: 'fast' | 'background' | null) => void
+}) {
+  const [prompt, setPrompt] = useState('What can this network do?')
+  const [sending, setSending] = useState(false)
+  const [reply, setReply] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleSend() {
+    if (!coordinatorURL || !prompt.trim() || sending) return
+    setSending(true)
+    setError(null)
+    setReply(null)
+    try {
+      // llama-3.2-3b is the one model every simulated node serves — a reasonable
+      // default so "Try the mesh" works without asking the user to pick a model
+      // they don't yet know is available.
+      const result = await submitTestQuery(coordinatorURL, prompt.trim(), 'llama-3.2-3b')
+      setReply(result.content || '(empty response)')
+      onServed(result.servedByNodeId, result.lane)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div style={{
+      padding: '12px 16px', borderTop: '1px solid #21262d',
+      display: 'flex', flexDirection: 'column', gap: 8,
+    }}>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <input
+          value={prompt}
+          onChange={e => setPrompt(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') handleSend() }}
+          placeholder="Ask the mesh something…"
+          disabled={!coordinatorURL}
+          style={{
+            flex: 1, background: '#0d1117', border: '1px solid #30363d',
+            borderRadius: 6, padding: '7px 12px', color: '#e6edf3', fontSize: 13,
+          }}
+        />
+        <button
+          onClick={handleSend}
+          disabled={!coordinatorURL || sending || !prompt.trim()}
+          style={{
+            background: '#238636', border: '1px solid #2ea043',
+            color: '#e6edf3', borderRadius: 6, padding: '7px 16px',
+            cursor: sending || !coordinatorURL ? 'not-allowed' : 'pointer',
+            fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap',
+          }}
+        >
+          {sending ? 'Sending…' : 'Try the mesh →'}
+        </button>
+      </div>
+      {!coordinatorURL && (
+        <span style={{ color: '#7d8590', fontSize: 12 }}>Connect to a coordinator to try a live query.</span>
+      )}
+      {error && <span style={{ color: '#f85149', fontSize: 12 }}>Error: {error}</span>}
+      {reply && (
+        <div style={{
+          background: '#0d1117', border: '1px solid #30363d', borderRadius: 6,
+          padding: '8px 12px', color: '#c9d1d9', fontSize: 12.5, lineHeight: 1.5,
+        }}>
+          {reply}
+        </div>
+      )}
     </div>
   )
 }

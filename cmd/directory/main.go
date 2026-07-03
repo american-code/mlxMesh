@@ -30,6 +30,7 @@ func main() {
 func rootCmd() *cobra.Command {
 	var listenAddr, peerURL string
 	var podTTLSec int
+	var corsOrigins []string
 
 	cmd := &cobra.Command{
 		Use:   "oim-directory",
@@ -42,16 +43,17 @@ individual node data, job payloads, or settlement data (proposal §7.1).
 Bootstrap-stage HA: run two instances with --peer pointing at each other.
 Each instance forwards received digests to its peer — one-hop only, no loops.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDirectory(listenAddr, peerURL, time.Duration(podTTLSec)*time.Second)
+			return runDirectory(listenAddr, peerURL, time.Duration(podTTLSec)*time.Second, corsOrigins)
 		},
 	}
 	cmd.Flags().StringVar(&listenAddr, "listen", ":9100", "Address to listen on")
 	cmd.Flags().StringVar(&peerURL, "peer", "", "Peer directory URL for bootstrap-stage HA (empty = standalone)")
 	cmd.Flags().IntVar(&podTTLSec, "pod-ttl", 120, "Seconds before a pod digest is considered stale")
+	cmd.Flags().StringSliceVar(&corsOrigins, "cors-origin", nil, "Allowed browser origin(s) for CORS (repeatable or comma-separated; empty = allow any origin, dev-friendly default)")
 	return cmd
 }
 
-func runDirectory(listenAddr, peerURL string, podTTL time.Duration) error {
+func runDirectory(listenAddr, peerURL string, podTTL time.Duration, corsOrigins []string) error {
 	store := directory.NewPodStore(podTTL)
 	gossip := directory.NewGossip(store, peerURL)
 
@@ -152,7 +154,7 @@ func runDirectory(listenAddr, peerURL string, podTTL time.Duration) error {
 		return fmt.Errorf("listen on %s: %w", listenAddr, err)
 	}
 
-	srv := &http.Server{Handler: corsMiddleware(mux)}
+	srv := &http.Server{Handler: corsMiddleware(corsOrigins, mux)}
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -170,9 +172,24 @@ func runDirectory(listenAddr, peerURL string, podTTL time.Duration) error {
 	return nil
 }
 
-func corsMiddleware(h http.Handler) http.Handler {
+// corsMiddleware allows browser requests from allowedOrigins. An empty
+// allowedOrigins means "allow any origin" — the dev-friendly default. Operators
+// exposing this directory to real user traffic should pass --cors-origin.
+func corsMiddleware(allowedOrigins []string, h http.Handler) http.Handler {
+	allowAll := len(allowedOrigins) == 0
+	allowed := make(map[string]bool, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		allowed[o] = true
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		switch {
+		case allowAll:
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		case origin != "" && allowed[origin]:
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == http.MethodOptions {

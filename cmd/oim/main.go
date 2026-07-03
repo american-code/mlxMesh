@@ -165,6 +165,9 @@ func nodeStartCmd() *cobra.Command {
 	var coordinatorURL, listenAddr, geoHint, exoURL, reachabilityEndpoint, userID string
 	var capPct, geoLat, geoLng, declaredMemGB float64
 	var refreshSec int
+	var attemptEnclaveAttestation bool
+	var scheduleMode, scheduleStart, scheduleEnd string
+	var scheduleDays []string
 
 	cmd := &cobra.Command{
 		Use:   "start",
@@ -193,6 +196,40 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 				exoURL = savedCfg.ExoURL
 			}
 
+			// Schedule flags write THROUGH to the same config file the dashboard
+			// saves to, rather than being threaded into agent.Config directly —
+			// the running agent re-reads the schedule from disk on every
+			// heartbeat tick (see agent.Run), so both configuration paths
+			// (CLI flags here, or the dashboard's Node Setup tab) converge on
+			// one live source of truth.
+			scheduleChanged := cmd.Flags().Changed("schedule-mode") ||
+				cmd.Flags().Changed("schedule-start") ||
+				cmd.Flags().Changed("schedule-end") ||
+				cmd.Flags().Changed("schedule-days")
+			if scheduleChanged {
+				sched := savedCfg.Schedule
+				if cmd.Flags().Changed("schedule-mode") {
+					sched.Mode = scheduleMode
+				}
+				if cmd.Flags().Changed("schedule-start") {
+					sched.DailyStart = scheduleStart
+				}
+				if cmd.Flags().Changed("schedule-end") {
+					sched.DailyEnd = scheduleEnd
+				}
+				if cmd.Flags().Changed("schedule-days") {
+					sched.Days = scheduleDays
+				}
+				savedCfg.Schedule = sched
+				if err := nodeconfig.Save(savedCfg); err != nil {
+					return fmt.Errorf("save schedule: %w", err)
+				}
+				fmt.Printf("Schedule:    mode=%s window=%s-%s days=%v\n", sched.Mode, sched.DailyStart, sched.DailyEnd, sched.Days)
+			} else if savedCfg.Schedule.Mode == nodeconfig.ScheduleModeWindow {
+				fmt.Printf("Schedule:    mode=%s window=%s-%s days=%v (from saved config)\n",
+					savedCfg.Schedule.Mode, savedCfg.Schedule.DailyStart, savedCfg.Schedule.DailyEnd, savedCfg.Schedule.Days)
+			}
+
 			priv, pub, err := identity.LoadOrCreate()
 			if err != nil {
 				return fmt.Errorf("load identity: %w", err)
@@ -213,19 +250,29 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 				}
 			}
 
+			// OIM_CHAOS_DOWNTIME_PCT is a simulation-only backdoor (mirrors OIM_INITIAL_TPS
+			// in capability.AssembleManifest) — percent chance per heartbeat this node
+			// simulates a downtime window. Never set on a real contributor node.
+			var chaosDowntimePct float64
+			if v := os.Getenv("OIM_CHAOS_DOWNTIME_PCT"); v != "" {
+				fmt.Sscanf(v, "%f", &chaosDowntimePct)
+			}
+
 			cfg := agent.Config{
-				CoordinatorURL:       coordinatorURL,
-				ExoURL:               exoURL,
-				ListenAddr:           listenAddr,
-				ReachabilityEndpoint: reachabilityEndpoint,
-				RefreshInterval:      time.Duration(refreshSec) * time.Second,
-				CapacityPct:          capPct,
-				DeclaredMemoryGB:     declaredMemGB,
-				AllowedModels:        savedCfg.AllowedModels,
-				UserID:               userID,
-				GeographicHint:       geoHint,
-				GeoLat:               geoLat,
-				GeoLng:               geoLng,
+				CoordinatorURL:            coordinatorURL,
+				ExoURL:                    exoURL,
+				ListenAddr:                listenAddr,
+				ReachabilityEndpoint:      reachabilityEndpoint,
+				RefreshInterval:           time.Duration(refreshSec) * time.Second,
+				CapacityPct:               capPct,
+				DeclaredMemoryGB:          declaredMemGB,
+				AllowedModels:             savedCfg.AllowedModels,
+				UserID:                    userID,
+				GeographicHint:            geoHint,
+				GeoLat:                    geoLat,
+				GeoLng:                    geoLng,
+				ChaosDowntimePct:          chaosDowntimePct,
+				AttemptEnclaveAttestation: attemptEnclaveAttestation,
 			}
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -246,6 +293,15 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 	cmd.Flags().Float64Var(&geoLng, "lng", 0, "Approximate longitude of this node (for dashboard mapping; 0 = not declared)")
 	cmd.Flags().Float64Var(&declaredMemGB, "declared-memory-gb", 0, "Override declared memory GB (0 = read from system; useful for simulation)")
 	cmd.Flags().StringVar(&userID, "user-id", "", "User account ID to attribute earned credits to (from your Account tab user ID)")
+	cmd.Flags().BoolVar(&attemptEnclaveAttestation, "attempt-enclave-attestation", false,
+		"Try to cryptographically prove Secure Enclave possession for high-sensitivity job eligibility. "+
+			"Off by default: this requires the binary to be code-signed with Apple Developer Program "+
+			"entitlements, which a plain 'go build' from source cannot satisfy. Safe to leave off — "+
+			"everything except SensitivityHighRequiresAttestation jobs works without it.")
+	cmd.Flags().StringVar(&scheduleMode, "schedule-mode", "", "Contribution schedule: 'always' (default) or 'window' (only share during --schedule-start/--schedule-end)")
+	cmd.Flags().StringVar(&scheduleStart, "schedule-start", "", "Window start, 24-hour HH:MM local time (e.g. 22:00). Only used with --schedule-mode window")
+	cmd.Flags().StringVar(&scheduleEnd, "schedule-end", "", "Window end, 24-hour HH:MM local time (e.g. 07:00). End < start means the window crosses midnight")
+	cmd.Flags().StringSliceVar(&scheduleDays, "schedule-days", nil, "Restrict the window to these weekdays (e.g. mon,tue,wed); empty = every day")
 	return cmd
 }
 

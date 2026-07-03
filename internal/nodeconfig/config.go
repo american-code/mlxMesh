@@ -21,6 +21,10 @@ type Config struct {
 	PodEndpoint          string   `json:"pod_endpoint"`
 	AllowedModels        []string `json:"allowed_models"` // empty = all
 	SensitivityCap       string   `json:"sensitivity_cap"`
+	// Schedule controls when this node contributes to the mesh. Zero value
+	// (Mode == "") behaves as ScheduleModeAlways — fully backward compatible
+	// with configs saved before this field existed.
+	Schedule Schedule `json:"schedule"`
 }
 
 func Default() Config {

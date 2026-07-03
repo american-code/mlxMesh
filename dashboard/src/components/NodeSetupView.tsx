@@ -1,6 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { NodeDetection, NodeConfig } from '../types'
+import type { NodeDetection, NodeConfig, Schedule } from '../types'
+import { DEFAULT_SCHEDULE } from '../types'
 import { fetchLocalDetect, saveLocalConfig } from '../api'
+
+const WEEKDAYS: Array<{ key: string; label: string }> = [
+  { key: 'mon', label: 'M' }, { key: 'tue', label: 'T' }, { key: 'wed', label: 'W' },
+  { key: 'thu', label: 'T' }, { key: 'fri', label: 'F' }, { key: 'sat', label: 'S' }, { key: 'sun', label: 'S' },
+]
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -177,6 +183,7 @@ export function NodeSetupView() {
   const [reach, setReach]       = useState('')
   const [allowedModels, setAllowedModels] = useState<Set<string>>(new Set())
   const [sensitivityCap, setSensitivityCap] = useState('moderate')
+  const [schedule, setSchedule] = useState<Schedule>(DEFAULT_SCHEDULE)
 
   const [saving, setSaving]     = useState(false)
   const [saveMsg, setSaveMsg]   = useState<string | null>(null)
@@ -195,6 +202,9 @@ export function NodeSetupView() {
       setCoordinator(c.pod_endpoint || '')
       setReach(c.reachability_endpoint || '')
       setSensitivityCap(c.sensitivity_cap || 'moderate')
+      if (c.schedule && c.schedule.mode) {
+        setSchedule({ ...DEFAULT_SCHEDULE, ...c.schedule })
+      }
       // Default: all models allowed (empty allowlist = all)
       const modelIds = (d.models ?? []).map(extractModelId).filter(Boolean)
       if (c.allowed_models && c.allowed_models.length > 0) {
@@ -223,6 +233,7 @@ export function NodeSetupView() {
       pod_endpoint: coordinator,
       allowed_models: [...allowedModels],
       sensitivity_cap: sensitivityCap,
+      schedule,
     }
     try {
       const r = await saveLocalConfig(cfg)
@@ -232,6 +243,13 @@ export function NodeSetupView() {
     } finally {
       setSaving(false)
     }
+  }
+
+  function toggleDay(day: string) {
+    setSchedule(prev => {
+      const has = prev.days.includes(day)
+      return { ...prev, days: has ? prev.days.filter(d => d !== day) : [...prev.days, day] }
+    })
   }
 
   function toggleModel(id: string) {
@@ -266,6 +284,8 @@ export function NodeSetupView() {
     `--region ${region}`,
     `--cap ${(capPct / 100).toFixed(2)}`,
     reach ? `--reachability-endpoint ${reach}` : '',
+    schedule.mode === 'window' ? `--schedule-mode window --schedule-start ${schedule.daily_start} --schedule-end ${schedule.daily_end}` : '',
+    schedule.mode === 'window' && schedule.days.length > 0 ? `--schedule-days ${schedule.days.join(',')}` : '',
   ].filter(Boolean).join(' \\\n  ')
 
   return (
@@ -369,7 +389,7 @@ export function NodeSetupView() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
                 <label style={{ fontSize: 13, fontWeight: 600 }}>Memory cap</label>
                 <span style={{ fontFamily: 'monospace', fontSize: 13, color: '#79c0ff' }}>
-                  {capPct}% — {committedGB.toFixed(1)} GB committed
+                  {capPct}% — {committedGB.toFixed(1)} GB requested
                 </span>
               </div>
               <input
@@ -380,10 +400,25 @@ export function NodeSetupView() {
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#484f58', marginTop: 3 }}>
                 <span>10% ({(detection.total_ram_gb * 0.1).toFixed(1)} GB)</span>
                 <span style={{ color: '#7d8590', fontSize: 11 }}>
-                  Actual cap = min({capPct}% × total, available). Never over-commits.
+                  Never maxes out any one device — see below.
                 </span>
                 <span>90% ({(detection.total_ram_gb * 0.9).toFixed(1)} GB)</span>
               </div>
+              {detection.safe_contributable_gb < committedGB - 0.5 ? (
+                <div style={{
+                  marginTop: 10, fontSize: 11, color: '#d29922',
+                  background: '#d2992212', border: '1px solid #d2992240',
+                  borderRadius: 6, padding: '7px 10px',
+                }}>
+                  Actually offered right now: <strong>{detection.safe_contributable_gb.toFixed(1)} GB</strong>, not {committedGB.toFixed(1)} GB —
+                  {detection.is_cluster ? ' one or more devices in your cluster are' : ' this machine is'} low on free memory.
+                  Each device always keeps its own safety margin; the mesh defers to whichever has headroom and this adjusts automatically as usage changes.
+                </div>
+              ) : (
+                <div style={{ marginTop: 10, fontSize: 11, color: '#3fb950' }}>
+                  ✓ Full {committedGB.toFixed(1)} GB is currently available to offer.
+                </div>
+              )}
             </div>
 
             {/* Region */}
@@ -427,6 +462,85 @@ export function NodeSetupView() {
                 How the coordinator sends jobs back to you. Leave blank for LAN; set to your public IP if behind NAT.
               </div>
             </FormRow>
+          </Section>
+
+          {/* Contribution schedule */}
+          <Section title="Contribution schedule">
+            <div style={{ display: 'flex', gap: 8, marginBottom: schedule.mode === 'window' ? 16 : 4 }}>
+              <ModeButton active={schedule.mode !== 'window'} onClick={() => setSchedule(s => ({ ...s, mode: 'always' }))}>
+                Always share
+              </ModeButton>
+              <ModeButton active={schedule.mode === 'window'} onClick={() => setSchedule(s => ({ ...s, mode: 'window' }))}>
+                Only during a window
+              </ModeButton>
+            </div>
+
+            {schedule.mode === 'window' ? (
+              <>
+                <div style={{ display: 'flex', gap: 12, marginBottom: 14 }}>
+                  <FormRow label="Window start">
+                    <input
+                      type="time" value={schedule.daily_start}
+                      onChange={e => setSchedule(s => ({ ...s, daily_start: e.target.value }))}
+                      style={inputStyle}
+                    />
+                  </FormRow>
+                  <FormRow label="Window end">
+                    <input
+                      type="time" value={schedule.daily_end}
+                      onChange={e => setSchedule(s => ({ ...s, daily_end: e.target.value }))}
+                      style={inputStyle}
+                    />
+                  </FormRow>
+                </div>
+                <div style={{ color: '#7d8590', fontSize: 11, marginBottom: 14 }}>
+                  {schedule.daily_end < schedule.daily_start
+                    ? `Overnight window — active ${schedule.daily_start} until ${schedule.daily_end} the next morning.`
+                    : `Active daily from ${schedule.daily_start} to ${schedule.daily_end}.`}
+                  {' '}Outside this window your machine is fully yours; the mesh will not use it.
+                </div>
+                <div style={{ marginBottom: 4 }}>
+                  <label style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 8 }}>
+                    Days ({schedule.days.length === 0 ? 'every day' : schedule.days.join(', ')})
+                  </label>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {WEEKDAYS.map(({ key, label }) => (
+                      <button
+                        key={key}
+                        onClick={() => toggleDay(key)}
+                        title={key}
+                        style={{
+                          width: 30, height: 30, borderRadius: 6,
+                          background: schedule.days.includes(key) ? '#3fb95022' : '#0d1117',
+                          border: `1px solid ${schedule.days.includes(key) ? '#3fb950' : '#30363d'}`,
+                          color: schedule.days.includes(key) ? '#3fb950' : '#7d8590',
+                          fontSize: 12, fontWeight: 700, cursor: 'pointer',
+                        }}
+                      >{label}</button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div style={{ color: '#7d8590', fontSize: 12 }}>
+                Your machine shares with the mesh anytime the node agent is running.
+              </div>
+            )}
+
+            {detection.config.schedule?.mode === schedule.mode
+              && detection.config.schedule?.daily_start === schedule.daily_start
+              && detection.config.schedule?.daily_end === schedule.daily_end && (
+              <div style={{
+                marginTop: 14, display: 'flex', alignItems: 'center', gap: 8,
+                fontSize: 12, color: detection.schedule_active ? '#3fb950' : '#d29922',
+              }}>
+                <div style={{
+                  width: 7, height: 7, borderRadius: '50%',
+                  background: detection.schedule_active ? '#3fb950' : '#d29922',
+                }} />
+                {detection.schedule_active ? 'Currently active — sharing with the mesh' : 'Currently paused — outside your scheduled window'}
+              </div>
+            )}
           </Section>
 
           {/* Generated CLI command */}
@@ -503,6 +617,21 @@ function DetectStat({ label, value, mono }: { label: string; value: string; mono
         fontFamily: mono ? 'monospace' : undefined,
       }}>{value}</div>
     </div>
+  )
+}
+
+function ModeButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        flex: 1, padding: '8px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+        cursor: 'pointer',
+        background: active ? '#3fb95022' : '#0d1117',
+        border: `1px solid ${active ? '#3fb950' : '#30363d'}`,
+        color: active ? '#3fb950' : '#7d8590',
+      }}
+    >{children}</button>
   )
 }
 

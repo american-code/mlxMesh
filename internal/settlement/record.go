@@ -52,6 +52,40 @@ func CreateSettlementRecord(divisionOrder map[string]any, verificationResult boo
 	}, nil
 }
 
+// VerifySettlementRecord checks record's signature against nodePublicKey by
+// reconstructing the exact settlementContent bytes CreateSettlementRecord signed.
+// Callers must look up nodePublicKey from the registry using division_order.node_id
+// — never trust a key embedded in the record itself. Does not consult
+// verification_result; a record with verification_result=false can still have a
+// valid signature (it's honest evidence of a failed check, not a forged record) —
+// callers decide separately whether a record is creditable.
+func VerifySettlementRecord(record map[string]any, nodePublicKey []byte) error {
+	divisionOrder, _ := record["division_order"].(map[string]any)
+	verificationResult, _ := record["verification_result"].(bool)
+	signedAt, _ := record["signed_at"].(string)
+	sigHex, _ := record["signature"].(string)
+	if divisionOrder == nil || signedAt == "" || sigHex == "" {
+		return fmt.Errorf("malformed settlement record: missing division_order, signed_at, or signature")
+	}
+	sig, err := hex.DecodeString(sigHex)
+	if err != nil {
+		return fmt.Errorf("decode signature: %w", err)
+	}
+	content := settlementContent{
+		DivisionOrder:      divisionOrder,
+		VerificationResult: verificationResult,
+		SignedAt:           signedAt,
+	}
+	contentBytes, err := json.Marshal(content)
+	if err != nil {
+		return fmt.Errorf("marshal record content: %w", err)
+	}
+	if !protocol.VerifySignature(nodePublicKey, contentBytes, sig) {
+		return fmt.Errorf("settlement record signature verification failed")
+	}
+	return nil
+}
+
 // PublishSettlementRecord POSTs the signed record to the pod coordinator.
 // This makes the record available to both parties for their own off-protocol payment step.
 // The protocol never custodies funds — publishing a record is not the same as moving money.

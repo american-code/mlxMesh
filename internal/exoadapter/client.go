@@ -41,11 +41,84 @@ func (c *Client) IsHealthy(ctx context.Context) bool {
 	return err == nil
 }
 
-// GetDownloadedModels calls GET /models?status=downloaded.
+// GetDownloadedModels returns models that are actually present on disk and ready
+// to serve right now — not Exo's full catalog of models it merely knows how to fetch.
 // Used by capability.go to auto-populate ModelCapability entries from what's
 // actually present, not what the operator hand-declares.
+//
+// Exo's ?downloaded=true query param does not reliably filter server-side across
+// versions (observed: returns the full catalog unfiltered), so this cross-checks
+// each candidate against /state's per-node download progress and excludes anything
+// that isn't fully downloaded. A node must never advertise a model it hasn't
+// actually pulled — that's the exact self-declared-vs-measured gap this protocol
+// exists to close (proposal §8.2/9.2), and it applies just as much to "do I have
+// this model" as it does to "how fast can I run it."
 func (c *Client) GetDownloadedModels(ctx context.Context) ([]map[string]any, error) {
-	return c.getJSON(ctx, "/models?status=downloaded")
+	catalog, err := c.getJSON(ctx, "/models?downloaded=true")
+	if err != nil {
+		return nil, err
+	}
+	state, err := c.GetState(ctx)
+	if err != nil {
+		// Can't cross-check download progress — fail closed (advertise nothing)
+		// rather than trust a catalog endpoint that may include undownloaded models.
+		return nil, fmt.Errorf("get state for download cross-check: %w", err)
+	}
+	incomplete := incompleteModelIDs(state)
+
+	out := make([]map[string]any, 0, len(catalog))
+	for _, m := range catalog {
+		id, _ := m["id"].(string)
+		if id == "" || incomplete[id] {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+// incompleteModelIDs walks /state's downloads map and returns the set of model IDs
+// that have an in-progress or not-yet-started download on any local node
+// (downloaded bytes < total bytes). Models absent from this set are either fully
+// downloaded or were never queued — GetDownloadedModels treats "not incomplete" as
+// the closest available signal to "ready to serve" without hand-parsing every
+// possible Exo download-state enum value.
+func incompleteModelIDs(state map[string]any) map[string]bool {
+	incomplete := make(map[string]bool)
+	downloads, _ := state["downloads"].(map[string]any)
+	for _, rawEntries := range downloads {
+		entries, _ := rawEntries.([]any)
+		for _, rawEntry := range entries {
+			entry, _ := rawEntry.(map[string]any)
+			for _, rawInner := range entry { // single key: status name (e.g. "DownloadPending")
+				inner, _ := rawInner.(map[string]any)
+				modelID := extractModelID(inner)
+				if modelID == "" {
+					continue
+				}
+				downloadedBytes := extractBytes(inner, "downloaded")
+				totalBytes := extractBytes(inner, "total")
+				if totalBytes <= 0 || downloadedBytes < totalBytes {
+					incomplete[modelID] = true
+				}
+			}
+		}
+	}
+	return incomplete
+}
+
+func extractModelID(inner map[string]any) string {
+	shardMeta, _ := inner["shardMetadata"].(map[string]any)
+	pipelineMeta, _ := shardMeta["PipelineShardMetadata"].(map[string]any)
+	modelCard, _ := pipelineMeta["modelCard"].(map[string]any)
+	id, _ := modelCard["modelId"].(string)
+	return id
+}
+
+func extractBytes(inner map[string]any, key string) float64 {
+	obj, _ := inner[key].(map[string]any)
+	n, _ := obj["inBytes"].(float64)
+	return n
 }
 
 // GetAllModels calls GET /models.
@@ -131,6 +204,11 @@ func (c *Client) RunChatCompletion(
 
 // --- HTTP helpers ---
 
+// getJSON handles both list response shapes Exo uses across its endpoints:
+// a bare JSON array (e.g. /models/search), and an OpenAI-style wrapper
+// {"object":"list","data":[...]} (e.g. /models, /v1/models). Guessing wrong on
+// either shape previously caused GetDownloadedModels to silently fail and every
+// node to register with models:null.
 func (c *Client) getJSON(ctx context.Context, path string) ([]map[string]any, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
@@ -145,11 +223,22 @@ func (c *Client) getJSON(ctx context.Context, path string) ([]map[string]any, er
 		b, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("GET %s HTTP %d: %s", path, resp.StatusCode, b)
 	}
-	var result []map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode %s: %w", path, err)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	return result, nil
+
+	var bare []map[string]any
+	if err := json.Unmarshal(raw, &bare); err == nil {
+		return bare, nil
+	}
+	var wrapped struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err != nil {
+		return nil, fmt.Errorf("decode %s (neither bare array nor {data:[]} shape): %w", path, err)
+	}
+	return wrapped.Data, nil
 }
 
 func (c *Client) getJSONObject(ctx context.Context, path string) (map[string]any, error) {

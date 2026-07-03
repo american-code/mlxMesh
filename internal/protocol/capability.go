@@ -36,7 +36,7 @@ type ModelCapability struct {
 type MeasuredSignature struct {
 	TokensPerSecDecode  float64 `json:"tokens_per_sec_decode"`
 	TokensPerSecPrefill float64 `json:"tokens_per_sec_prefill"`
-	MeasuredAt          string  `json:"measured_at"`        // ISO8601
+	MeasuredAt          string  `json:"measured_at"` // ISO8601
 	BenchmarkPromptID   string  `json:"benchmark_prompt_id"`
 	SampleCount         int     `json:"sample_count"`
 }
@@ -45,9 +45,14 @@ type MeasuredSignature struct {
 // on registration and each periodic refresh. Must reflect LIVE state —
 // never serve a stale cached manifest.
 type CapabilityManifest struct {
-	NodeID               string             `json:"node_id"`
-	IsCluster            bool               `json:"is_cluster"`
-	ClusterDeviceCount   *int               `json:"cluster_device_count,omitempty"`
+	NodeID             string `json:"node_id"`
+	IsCluster          bool   `json:"is_cluster"`
+	ClusterDeviceCount *int   `json:"cluster_device_count,omitempty"`
+	// ClusterChipFamilies is one coarse chip family per cluster device (e.g.
+	// "Apple M1") — deliberately excludes hostnames and exact chip variants
+	// (Pro/Max/Ultra) so a cluster's hardware summary doesn't broadcast what
+	// its operator named each machine. Empty for non-cluster nodes.
+	ClusterChipFamilies  []string           `json:"cluster_chip_families,omitempty"`
 	DeclaredMemoryGB     float64            `json:"declared_memory_gb"`
 	DeclaredMemoryCapPct float64            `json:"declared_memory_cap_pct"`
 	GeographicHint       string             `json:"geographic_hint,omitempty"`

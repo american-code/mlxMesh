@@ -1,9 +1,15 @@
 package settlement
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
+
+// ErrStartupGrantAlreadyClaimed is returned by IssueStartupGrant when userID
+// already has a startup-grant entry in the ledger. Callers should treat this
+// as "return the existing balance," not as a hard failure.
+var ErrStartupGrantAlreadyClaimed = errors.New("startup grant already claimed for this user")
 
 // CapacityThreshold is one step in the stepped grant decay function for a pod.
 type CapacityThreshold struct {
@@ -49,8 +55,10 @@ func CurrentGrantMultiplier(score float64, steps []CapacityThreshold) float64 {
 
 // IssueStartupGrant issues a one-time startup grant sized by the pod's current verified capacity.
 // Grant = BASE_GRANT_AMOUNT * CurrentGrantMultiplier(pod's verified capacity score).
-// Callers (signup flow) are responsible for ensuring this is called at most once per user_id —
-// this function does not deduplicate (identity dedup belongs with protocol/crypto, not settlement).
+// Dedup is enforced against the ledger itself (see Ledger.ClaimStartupGrantOnce) —
+// returns ErrStartupGrantAlreadyClaimed if userID already has a startup-grant
+// entry, so repeated claims (including across a coordinator restart, when the
+// ledger is persistent) can never mint more than one grant per user (proposal §9.4).
 func IssueStartupGrant(ledger *Ledger, userID, assignedPodID string, src NodeCapacitySource, steps []CapacityThreshold) (CreditEntry, error) {
 	if userID == "" {
 		return CreditEntry{}, fmt.Errorf("user_id is required")
@@ -64,8 +72,12 @@ func IssueStartupGrant(ledger *Ledger, userID, assignedPodID string, src NodeCap
 		GrantedOrEarnedAt: time.Now(),
 		SourceReference:   "startup_grant:" + assignedPodID,
 	}
-	if err := ledger.CreditAccount(entry); err != nil {
+	claimed, err := ledger.ClaimStartupGrantOnce(entry)
+	if err != nil {
 		return CreditEntry{}, fmt.Errorf("credit account: %w", err)
+	}
+	if !claimed {
+		return CreditEntry{}, ErrStartupGrantAlreadyClaimed
 	}
 	return entry, nil
 }
