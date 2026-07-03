@@ -6,6 +6,7 @@ package nodeconfig
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -55,6 +56,12 @@ func Load() (Config, error) {
 }
 
 func Save(cfg Config) error {
+	// Validate before persisting so a bad value is rejected at the write
+	// boundary (dashboard POST /config or CLI flags) instead of silently
+	// producing surprising runtime behavior later.
+	if err := Validate(cfg); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
 	path := ConfigPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err

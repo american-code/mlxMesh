@@ -1,14 +1,7 @@
 import SwiftUI
 
-// MARK: - Balance model
-
-struct Balance: Codable {
-    let grantBalance: Double
-    let earnedBalance: Double
-    let total: Double
-}
-
 // MARK: - Persistent anonymous user ID
+// (Balance model now lives in Shared/Models.swift — NetworkClient references it.)
 
 private let userIdKey = "oim_user_id"
 
@@ -210,9 +203,9 @@ struct AccountView: View {
         error = nil
         defer { loading = false }
         do {
-            let request = URLRequest(url: URL(string: "\(url)/users/\(userId)/balance")!)
-            let (data, _) = try await URLSession.shared.data(for: request)
-            balance = try NetworkClient.decoder.decode(Balance.self, from: data)
+            // Routed through NetworkClient so the coordinator's loopback host is
+            // rewritten to the reachable directory host on a physical device.
+            balance = try await NetworkClient.fetchBalance(coordinatorURL: url, userId: userId)
         } catch {
             self.error = error.localizedDescription
         }
@@ -223,7 +216,8 @@ struct AccountView: View {
         claiming = true
         defer { claiming = false }
         do {
-            var req = URLRequest(url: URL(string: "\(url)/users/\(userId)/startup-grant")!)
+            let base = NetworkClient.resolvedCoordinator(url)
+            var req = URLRequest(url: URL(string: "\(base)/users/\(userId)/startup-grant")!)
             req.httpMethod = "POST"
             let (_, _) = try await URLSession.shared.data(for: req)
             claimMsg = "Grant claimed successfully"

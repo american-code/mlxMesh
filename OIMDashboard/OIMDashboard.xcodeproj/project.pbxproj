@@ -1,0 +1,542 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		04B66F405D8B08B2DE22EBA0 /* TopologyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 079BB3368034DD3C9BD738C8 /* TopologyStore.swift */; };
+		082E4E9544607F81894DB9F0 /* NetworkGraphView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B2CCF1D9E228419A271419D /* NetworkGraphView.swift */; };
+		090646334E229530F14400A0 /* OIMDashboardApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10C3DFA53386C093446D3211 /* OIMDashboardApp.swift */; };
+		0B7CDC324F87697E7160F78A /* NetworkGraphView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B2CCF1D9E228419A271419D /* NetworkGraphView.swift */; };
+		0E182B36030FE827DDC2A568 /* OverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE6D8C75CFE1FFF59DB5A516 /* OverviewView.swift */; };
+		11441F887FC84DF719460E2F /* NetworkClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08CA2CAC31A57D3486DBC65 /* NetworkClient.swift */; };
+		1E63B07E27B4D863148F7169 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E755F2BF2DB1773E821A0030 /* SettingsView.swift */; };
+		2255A083CC3EE5DFB57A08C0 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7513586DABF50809E9929152 /* ContentView.swift */; };
+		3125B098FA9BC27735FC1EDC /* WatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B27F1F173A888210D3946460 /* WatchApp.swift */; };
+		3207AC90A9F13F61CDA6375A /* TopologyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 079BB3368034DD3C9BD738C8 /* TopologyStore.swift */; };
+		34D4DC464F5381BA7F5F84C0 /* TryMeshView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B02540EC8D8E38F0FB3136E /* TryMeshView.swift */; };
+		3BFF4065F430C0D7FADB6CAA /* RegionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4749A9A539DFA6EE6809EA77 /* RegionView.swift */; };
+		41E37DBFA4D32DE85DFC1179 /* TVApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 940809D7CDA2BF7315466231 /* TVApp.swift */; };
+		452AE6F16886829658C6349D /* TopologyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 079BB3368034DD3C9BD738C8 /* TopologyStore.swift */; };
+		505A94291E913CEB2DE09AB3 /* WatchContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBFCECC0DADDF1F9036C408B /* WatchContentView.swift */; };
+		54FBAB0D399F2702E9B3C14A /* NetworkClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08CA2CAC31A57D3486DBC65 /* NetworkClient.swift */; };
+		591AD7987E35789CDE516B21 /* StatusUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BF6727643E63881CD213C93 /* StatusUtils.swift */; };
+		5951B16D2B2239BE24DB543E /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 618F1FC2462FE9B9AA8443C2 /* Models.swift */; };
+		5BBA7D77AF572F77473FA7A3 /* NetworkGraphView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B2CCF1D9E228419A271419D /* NetworkGraphView.swift */; };
+		63741A38ACDCB3B67FFD9D86 /* StatusUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BF6727643E63881CD213C93 /* StatusUtils.swift */; };
+		892E70A622442DBD043BA482 /* GlobalMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03FC7C4990BDDE4D359DFF3F /* GlobalMapView.swift */; };
+		8D80D745BE934DB8FC37EFB4 /* NetworkLoadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA6A50343A5863880D34B35E /* NetworkLoadView.swift */; };
+		9A0FE3810D3A62714F6F0965 /* NetworkClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08CA2CAC31A57D3486DBC65 /* NetworkClient.swift */; };
+		9E1E1B615CEAC06C43ED3582 /* PodSummaryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01DF4999D87E576A76F5B57 /* PodSummaryView.swift */; };
+		A1F5DE9F693131DBDA68D94A /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 618F1FC2462FE9B9AA8443C2 /* Models.swift */; };
+		B6DFF17CDFB66131B8F71F31 /* NodeDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F693B9AB5F6EA3B48ED5ACD /* NodeDetailView.swift */; };
+		C7F20AA13F4DF2416BFA80A4 /* TVContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B632D992AE2016624F5130F /* TVContentView.swift */; };
+		DC88D80555CBCB60E80E98AA /* StatusUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BF6727643E63881CD213C93 /* StatusUtils.swift */; };
+		DD2D7D6F84F642694E8956ED /* AccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 729D1EBBD268BD9AEEEF31FF /* AccountView.swift */; };
+		FCDDB98C47B1D0E772EF68A5 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 618F1FC2462FE9B9AA8443C2 /* Models.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		03FC7C4990BDDE4D359DFF3F /* GlobalMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalMapView.swift; sourceTree = "<group>"; };
+		079BB3368034DD3C9BD738C8 /* TopologyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TopologyStore.swift; sourceTree = "<group>"; };
+		08F8B2ED44ABE851C2FF4D57 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		0B2CCF1D9E228419A271419D /* NetworkGraphView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkGraphView.swift; sourceTree = "<group>"; };
+		10C3DFA53386C093446D3211 /* OIMDashboardApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OIMDashboardApp.swift; sourceTree = "<group>"; };
+		2B632D992AE2016624F5130F /* TVContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVContentView.swift; sourceTree = "<group>"; };
+		4749A9A539DFA6EE6809EA77 /* RegionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegionView.swift; sourceTree = "<group>"; };
+		618F1FC2462FE9B9AA8443C2 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		6B02540EC8D8E38F0FB3136E /* TryMeshView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TryMeshView.swift; sourceTree = "<group>"; };
+		729D1EBBD268BD9AEEEF31FF /* AccountView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountView.swift; sourceTree = "<group>"; };
+		7513586DABF50809E9929152 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		7BF6727643E63881CD213C93 /* StatusUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusUtils.swift; sourceTree = "<group>"; };
+		8EEFFD745DCB9D26863DA4AC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		8F693B9AB5F6EA3B48ED5ACD /* NodeDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeDetailView.swift; sourceTree = "<group>"; };
+		940809D7CDA2BF7315466231 /* TVApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVApp.swift; sourceTree = "<group>"; };
+		9515D5561CD4915256D06792 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		97E79085F54D07D0DEFCF815 /* OIMDashboard.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OIMDashboard.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B08CA2CAC31A57D3486DBC65 /* NetworkClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkClient.swift; sourceTree = "<group>"; };
+		B27F1F173A888210D3946460 /* WatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchApp.swift; sourceTree = "<group>"; };
+		BA6A50343A5863880D34B35E /* NetworkLoadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkLoadView.swift; sourceTree = "<group>"; };
+		BE6D8C75CFE1FFF59DB5A516 /* OverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewView.swift; sourceTree = "<group>"; };
+		BFFDE4AD9A2F2CC5A35131AC /* OIMDashboardWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OIMDashboardWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C01DF4999D87E576A76F5B57 /* PodSummaryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PodSummaryView.swift; sourceTree = "<group>"; };
+		C1F6B6EB8E86CB12F34EA6A0 /* OIMDashboardTV.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OIMDashboardTV.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		DBFCECC0DADDF1F9036C408B /* WatchContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchContentView.swift; sourceTree = "<group>"; };
+		E755F2BF2DB1773E821A0030 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		146D3DBB72BD878127C9531B = {
+			isa = PBXGroup;
+			children = (
+				B51E007E0355F9D7BC118166 /* iOS */,
+				6780A28B2D718351E622F1B7 /* Shared */,
+				C9885C02CCDB67C1FDB01E13 /* tvOS */,
+				6A815B196CA387F9F2DCAE79 /* watchOS */,
+				254FB4D0C001DCC8EBC16E0A /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		254FB4D0C001DCC8EBC16E0A /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				97E79085F54D07D0DEFCF815 /* OIMDashboard.app */,
+				C1F6B6EB8E86CB12F34EA6A0 /* OIMDashboardTV.app */,
+				BFFDE4AD9A2F2CC5A35131AC /* OIMDashboardWatch.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		6780A28B2D718351E622F1B7 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				618F1FC2462FE9B9AA8443C2 /* Models.swift */,
+				B08CA2CAC31A57D3486DBC65 /* NetworkClient.swift */,
+				0B2CCF1D9E228419A271419D /* NetworkGraphView.swift */,
+				7BF6727643E63881CD213C93 /* StatusUtils.swift */,
+				079BB3368034DD3C9BD738C8 /* TopologyStore.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		6A815B196CA387F9F2DCAE79 /* watchOS */ = {
+			isa = PBXGroup;
+			children = (
+				9515D5561CD4915256D06792 /* Info.plist */,
+				B27F1F173A888210D3946460 /* WatchApp.swift */,
+				DBFCECC0DADDF1F9036C408B /* WatchContentView.swift */,
+			);
+			path = watchOS;
+			sourceTree = "<group>";
+		};
+		B51E007E0355F9D7BC118166 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				729D1EBBD268BD9AEEEF31FF /* AccountView.swift */,
+				7513586DABF50809E9929152 /* ContentView.swift */,
+				03FC7C4990BDDE4D359DFF3F /* GlobalMapView.swift */,
+				08F8B2ED44ABE851C2FF4D57 /* Info.plist */,
+				BA6A50343A5863880D34B35E /* NetworkLoadView.swift */,
+				8F693B9AB5F6EA3B48ED5ACD /* NodeDetailView.swift */,
+				10C3DFA53386C093446D3211 /* OIMDashboardApp.swift */,
+				BE6D8C75CFE1FFF59DB5A516 /* OverviewView.swift */,
+				C01DF4999D87E576A76F5B57 /* PodSummaryView.swift */,
+				4749A9A539DFA6EE6809EA77 /* RegionView.swift */,
+				E755F2BF2DB1773E821A0030 /* SettingsView.swift */,
+				6B02540EC8D8E38F0FB3136E /* TryMeshView.swift */,
+			);
+			path = iOS;
+			sourceTree = "<group>";
+		};
+		C9885C02CCDB67C1FDB01E13 /* tvOS */ = {
+			isa = PBXGroup;
+			children = (
+				8EEFFD745DCB9D26863DA4AC /* Info.plist */,
+				940809D7CDA2BF7315466231 /* TVApp.swift */,
+				2B632D992AE2016624F5130F /* TVContentView.swift */,
+			);
+			path = tvOS;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		0C9D8FF5AC8EF15DEC1A9320 /* OIMDashboardWatch */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 90F839AFE7106EC46B2ADA8E /* Build configuration list for PBXNativeTarget "OIMDashboardWatch" */;
+			buildPhases = (
+				5B32D129EAC709D2E89F83C9 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OIMDashboardWatch;
+			packageProductDependencies = (
+			);
+			productName = OIMDashboardWatch;
+			productReference = BFFDE4AD9A2F2CC5A35131AC /* OIMDashboardWatch.app */;
+			productType = "com.apple.product-type.application";
+		};
+		7A3DF80A524980D488FEFDD1 /* OIMDashboardTV */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CB6D2ACF3B1E3F129619CB58 /* Build configuration list for PBXNativeTarget "OIMDashboardTV" */;
+			buildPhases = (
+				118198BDFCF27CED8A66C9E7 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OIMDashboardTV;
+			packageProductDependencies = (
+			);
+			productName = OIMDashboardTV;
+			productReference = C1F6B6EB8E86CB12F34EA6A0 /* OIMDashboardTV.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E0AF9724DF7DF279133823BB /* OIMDashboard */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2FD903D153F2553767E944FB /* Build configuration list for PBXNativeTarget "OIMDashboard" */;
+			buildPhases = (
+				FD57DF244D6519B409842B66 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OIMDashboard;
+			packageProductDependencies = (
+			);
+			productName = OIMDashboard;
+			productReference = 97E79085F54D07D0DEFCF815 /* OIMDashboard.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		71ADB52B7E2C7A41E3F9621B /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+			};
+			buildConfigurationList = 4EA0136AACE3B318CD0AC09A /* Build configuration list for PBXProject "OIMDashboard" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 146D3DBB72BD878127C9531B;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 254FB4D0C001DCC8EBC16E0A /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				E0AF9724DF7DF279133823BB /* OIMDashboard */,
+				7A3DF80A524980D488FEFDD1 /* OIMDashboardTV */,
+				0C9D8FF5AC8EF15DEC1A9320 /* OIMDashboardWatch */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		118198BDFCF27CED8A66C9E7 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5951B16D2B2239BE24DB543E /* Models.swift in Sources */,
+				11441F887FC84DF719460E2F /* NetworkClient.swift in Sources */,
+				5BBA7D77AF572F77473FA7A3 /* NetworkGraphView.swift in Sources */,
+				591AD7987E35789CDE516B21 /* StatusUtils.swift in Sources */,
+				41E37DBFA4D32DE85DFC1179 /* TVApp.swift in Sources */,
+				C7F20AA13F4DF2416BFA80A4 /* TVContentView.swift in Sources */,
+				3207AC90A9F13F61CDA6375A /* TopologyStore.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5B32D129EAC709D2E89F83C9 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1F5DE9F693131DBDA68D94A /* Models.swift in Sources */,
+				54FBAB0D399F2702E9B3C14A /* NetworkClient.swift in Sources */,
+				082E4E9544607F81894DB9F0 /* NetworkGraphView.swift in Sources */,
+				63741A38ACDCB3B67FFD9D86 /* StatusUtils.swift in Sources */,
+				452AE6F16886829658C6349D /* TopologyStore.swift in Sources */,
+				3125B098FA9BC27735FC1EDC /* WatchApp.swift in Sources */,
+				505A94291E913CEB2DE09AB3 /* WatchContentView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FD57DF244D6519B409842B66 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DD2D7D6F84F642694E8956ED /* AccountView.swift in Sources */,
+				2255A083CC3EE5DFB57A08C0 /* ContentView.swift in Sources */,
+				892E70A622442DBD043BA482 /* GlobalMapView.swift in Sources */,
+				FCDDB98C47B1D0E772EF68A5 /* Models.swift in Sources */,
+				9A0FE3810D3A62714F6F0965 /* NetworkClient.swift in Sources */,
+				0B7CDC324F87697E7160F78A /* NetworkGraphView.swift in Sources */,
+				8D80D745BE934DB8FC37EFB4 /* NetworkLoadView.swift in Sources */,
+				B6DFF17CDFB66131B8F71F31 /* NodeDetailView.swift in Sources */,
+				090646334E229530F14400A0 /* OIMDashboardApp.swift in Sources */,
+				0E182B36030FE827DDC2A568 /* OverviewView.swift in Sources */,
+				9E1E1B615CEAC06C43ED3582 /* PodSummaryView.swift in Sources */,
+				3BFF4065F430C0D7FADB6CAA /* RegionView.swift in Sources */,
+				1E63B07E27B4D863148F7169 /* SettingsView.swift in Sources */,
+				DC88D80555CBCB60E80E98AA /* StatusUtils.swift in Sources */,
+				04B66F405D8B08B2DE22EBA0 /* TopologyStore.swift in Sources */,
+				34D4DC464F5381BA7F5F84C0 /* TryMeshView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		5807552331F368678EA514DB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME = LaunchImage;
+				DEVELOPMENT_TEAM = WXDFFW3882;
+				INFOPLIST_FILE = tvOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.openinferencemesh.app.tv;
+				SDKROOT = appletvos;
+				TARGETED_DEVICE_FAMILY = 3;
+				TVOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Release;
+		};
+		59B7354C4F2BCE2E941BD6F2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+		6C80D6A010B0F399A0218A0F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				DEVELOPMENT_TEAM = WXDFFW3882;
+				INFOPLIST_FILE = watchOS/Info.plist;
+				PRODUCT_BUNDLE_IDENTIFIER = com.openinferencemesh.app.watchkitapp;
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Release;
+		};
+		A38252D7E6FE4BCBB3381FBF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		C06FA3A8CD22122934CE98F4 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME = LaunchImage;
+				DEVELOPMENT_TEAM = WXDFFW3882;
+				INFOPLIST_FILE = tvOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.openinferencemesh.app.tv;
+				SDKROOT = appletvos;
+				TARGETED_DEVICE_FAMILY = 3;
+				TVOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Debug;
+		};
+		CED07653C58E939EF919CB84 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = WXDFFW3882;
+				INFOPLIST_FILE = iOS/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.openinferencemesh.app;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+			};
+			name = Release;
+		};
+		D1B010F0A47B9316153F3522 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = WXDFFW3882;
+				INFOPLIST_FILE = iOS/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.openinferencemesh.app;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+			};
+			name = Debug;
+		};
+		D8BC35012DBE7AC4852D1C16 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				DEVELOPMENT_TEAM = WXDFFW3882;
+				INFOPLIST_FILE = watchOS/Info.plist;
+				PRODUCT_BUNDLE_IDENTIFIER = com.openinferencemesh.app.watchkitapp;
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		2FD903D153F2553767E944FB /* Build configuration list for PBXNativeTarget "OIMDashboard" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D1B010F0A47B9316153F3522 /* Debug */,
+				CED07653C58E939EF919CB84 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		4EA0136AACE3B318CD0AC09A /* Build configuration list for PBXProject "OIMDashboard" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				59B7354C4F2BCE2E941BD6F2 /* Debug */,
+				A38252D7E6FE4BCBB3381FBF /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		90F839AFE7106EC46B2ADA8E /* Build configuration list for PBXNativeTarget "OIMDashboardWatch" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D8BC35012DBE7AC4852D1C16 /* Debug */,
+				6C80D6A010B0F399A0218A0F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		CB6D2ACF3B1E3F129619CB58 /* Build configuration list for PBXNativeTarget "OIMDashboardTV" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C06FA3A8CD22122934CE98F4 /* Debug */,
+				5807552331F368678EA514DB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 71ADB52B7E2C7A41E3F9621B /* Project object */;
+}

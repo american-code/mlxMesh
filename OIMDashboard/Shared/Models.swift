@@ -35,7 +35,7 @@ struct ModelCapability: Codable, Hashable {
     let isMoe: Bool
 }
 
-struct PodHealthDigest: Codable, Identifiable {
+struct PodHealthDigest: Codable, Identifiable, Hashable {
     let podId: String
     let regionHint: String
     let coordinatorEndpoint: String
@@ -69,4 +69,12 @@ struct NodesResponse: Codable {
     let region: String
     let nodes: [NodeSnapshot]
     let metrics: PodMetrics?
+}
+
+// Balance lives in Shared (not the iOS-only AccountView) because NetworkClient,
+// which is shared across all platform targets, references it in fetchBalance.
+struct Balance: Codable {
+    let grantBalance: Double
+    let earnedBalance: Double
+    let total: Double
 }

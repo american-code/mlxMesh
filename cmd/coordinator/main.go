@@ -40,6 +40,7 @@ import (
 
 	"github.com/open-inference-mesh/oim/internal/coordinator"
 	"github.com/open-inference-mesh/oim/internal/directory"
+	"github.com/open-inference-mesh/oim/internal/httpmw"
 	"github.com/open-inference-mesh/oim/internal/protocol"
 	"github.com/open-inference-mesh/oim/internal/settlement"
 )
@@ -950,7 +951,7 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 	if rateLimitRPS > 0 {
 		log.Printf("[coordinator] rate limiting enabled: %.1f req/s per IP, burst %.0f", rateLimitRPS, rateLimitBurst)
 	}
-	srv := &http.Server{Handler: corsMiddleware(corsOrigins, rateLimitMiddleware(limiter, handler))}
+	srv := &http.Server{Handler: httpmw.SecurityHeaders(corsMiddleware(corsOrigins, rateLimitMiddleware(limiter, handler)))}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

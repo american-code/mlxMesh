@@ -33,6 +33,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/open-inference-mesh/oim/internal/directory"
+	"github.com/open-inference-mesh/oim/internal/httpmw"
 	"github.com/open-inference-mesh/oim/internal/protocol"
 )
 
@@ -169,7 +170,7 @@ func runDirectory(listenAddr, peerURL string, podTTL time.Duration, corsOrigins 
 		return fmt.Errorf("listen on %s: %w", listenAddr, err)
 	}
 
-	srv := &http.Server{Handler: corsMiddleware(corsOrigins, mux)}
+	srv := &http.Server{Handler: httpmw.SecurityHeaders(corsMiddleware(corsOrigins, mux))}
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	go func() {

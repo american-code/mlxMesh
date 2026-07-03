@@ -23,6 +23,16 @@ struct OverviewView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .shadow(radius: 4)
 
+                // Try the mesh — interactive live query
+                if !store.pods.isEmpty {
+                    TryMeshView()
+                }
+
+                // Network Load — queue / in-flight / backpressure
+                if !store.metricsByPod.isEmpty {
+                    NetworkLoadView()
+                }
+
                 // Pod cards
                 LazyVGrid(columns: columns, spacing: 16) {
                     ForEach(store.pods) { pod in

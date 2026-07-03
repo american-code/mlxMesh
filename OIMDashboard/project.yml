@@ -19,12 +19,13 @@ targets:
   OIMDashboard:
     type: application
     platform: iOS
-    deploymentTarget: "17.0"
-    sources:
-      - path: Shared
-        group: Shared
-      - path: iOS
-        group: iOS
+    deploymentTarget: "26.0"
+    # NOTE: sources are listed as bare paths, NOT as "- path: X / group: X".
+    # The explicit per-source `group:` key combined with options.createIntermediateGroups
+    # sends XcodeGen 2.45.x into a pathological code path that spins CPU for 10+ minutes
+    # and never finishes generating. createIntermediateGroups already groups by directory,
+    # so the explicit group: keys were redundant anyway. Keep this inline form.
+    sources: [Shared, iOS]
     info:
       path: iOS/Info.plist
       properties:
@@ -50,12 +51,8 @@ targets:
   OIMDashboardWatch:
     type: application
     platform: watchOS
-    deploymentTarget: "10.0"
-    sources:
-      - path: Shared
-        group: Shared
-      - path: watchOS
-        group: watchOS
+    deploymentTarget: "26.0"
+    sources: [Shared, watchOS]
     info:
       path: watchOS/Info.plist
       properties:
@@ -71,12 +68,8 @@ targets:
   OIMDashboardTV:
     type: application
     platform: tvOS
-    deploymentTarget: "17.0"
-    sources:
-      - path: Shared
-        group: Shared
-      - path: tvOS
-        group: tvOS
+    deploymentTarget: "26.0"
+    sources: [Shared, tvOS]
     info:
       path: tvOS/Info.plist
       properties:

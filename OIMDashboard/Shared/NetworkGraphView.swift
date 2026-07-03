@@ -22,15 +22,18 @@ struct NetworkGraphView: View {
         let inner = Array(sorted.prefix(8))
         let outer = Array(sorted.dropFirst(8))
 
+        // Types are annotated explicitly throughout: the original one-liner mixed
+        // CGFloat (cx/cy/r) with Double (cos/sin/.pi) in a single expression, which
+        // forced Swift into an overload search so large it hit "unable to type-check
+        // this expression in reasonable time" — the root cause of multi-minute (or
+        // failed) builds. Splitting into typed steps makes inference trivial.
         func ring(_ arr: [NodeSnapshot], r: CGFloat) -> [PlacedNode] {
-            arr.enumerated().map { i, node in
-                let angle = Double(i) / Double(arr.count) * .pi * 2 - .pi / 2
-                return PlacedNode(
-                    node: node,
-                    x: cx + r * cos(angle),
-                    y: cy + r * sin(angle),
-                    radius: node.graphRadius
-                )
+            let count = Double(max(arr.count, 1))
+            return arr.enumerated().map { (offset, node) -> PlacedNode in
+                let angle: Double = Double(offset) / count * .pi * 2 - .pi / 2
+                let x: CGFloat = cx + r * CGFloat(cos(angle))
+                let y: CGFloat = cy + r * CGFloat(sin(angle))
+                return PlacedNode(node: node, x: x, y: y, radius: node.graphRadius)
             }
         }
 

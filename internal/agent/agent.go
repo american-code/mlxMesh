@@ -40,6 +40,7 @@ import (
 	"github.com/open-inference-mesh/oim/internal/capability"
 	"github.com/open-inference-mesh/oim/internal/exoadapter"
 	"github.com/open-inference-mesh/oim/internal/governor"
+	"github.com/open-inference-mesh/oim/internal/httpmw"
 	"github.com/open-inference-mesh/oim/internal/jobrunner"
 	"github.com/open-inference-mesh/oim/internal/nodeconfig"
 	"github.com/open-inference-mesh/oim/internal/protocol"
@@ -379,6 +380,13 @@ func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct flo
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		// Invalid values are the caller's fault → 400, not a server 500. Save
+		// re-validates too, but checking here lets us distinguish bad input
+		// (400) from an actual filesystem write failure (500).
+		if err := nodeconfig.Validate(cfg); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 		if err := nodeconfig.Save(cfg); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -441,7 +449,7 @@ func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct flo
 		writeJSON(w, http.StatusOK, result)
 	})
 
-	return &http.Server{Handler: agentCORS(mux)}
+	return &http.Server{Handler: httpmw.SecurityHeaders(agentCORS(mux))}
 }
 
 // agentCORS allows the local dashboard (any localhost origin) to call /detect and /config.

@@ -33,7 +33,7 @@ struct GlobalMapView: View {
         }
         .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
         .mapControls {
-            MapZoomStepper()
+            // MapZoomStepper is macOS/visionOS-only; iOS zooms via pinch gesture.
             MapCompass()
         }
     }
