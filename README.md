@@ -278,12 +278,12 @@ Node Agents (wrapping Exo)        ← Milestone 1 ✓
 | # | Status | Description |
 |---|--------|-------------|
 | M1 | **Done** | Node agent: manifest assembly, resource governor, bench, Ed25519 identity |
-| M2 | Stub | Pod coordinator: registry, fast-lane router, background scheduler |
-| M3 | Stub | Spot-check verification, tier-claim validation |
-| M4 | Stub | Centralized global directory |
-| M5 | Stub | Division-order settlement ledger |
-| M6 | Stub | MoE expert-shard planner |
-| M7 | Stub | Federated directory (multi-librarian) |
+| M2 | **Done** | Pod coordinator: registry, fast-lane router, background scheduler, job queue, rate limiting |
+| M3 | **Done** | Spot-check verification, tier-claim validation, measurement store |
+| M4 | **Done** | Centralized global directory with gossip sync and cache fallback |
+| M5 | **Done** | Division-order settlement ledger with SQLite persistence, startup grants with PoW |
+| M6 | **Done** | MoE expert-shard planner with proportional assignment and load imbalance detection |
+| M7 | Stub | Federated directory (multi-librarian) - FederatedResolver/DHTResolver are stubs
 
 ---
 
@@ -341,4 +341,26 @@ Node identity is derived from an Ed25519 public key — your node ID is `SHA-256
 
 ## License
 
-TBD — Apache 2.0 intended.
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
+
+### Commercial Use
+
+Commercial use of this software requires a separate commercial license. To obtain a commercial license, please contact us.
+
+**What this means:**
+- **Open source use**: Free to use, modify, and distribute under AGPL-3.0
+- **Commercial use**: Requires a commercial license for:
+  - Proprietary SaaS offerings using this software
+  - Integration into commercial products without releasing source code
+  - Use in enterprise environments without AGPL compliance
+
+For commercial licensing inquiries, please contact: [licensing contact information]
+
+### AGPL Summary
+
+The AGPL-3.0 requires that:
+- Source code modifications be made available to users of the software
+- Network users (SaaS) have access to the source code
+- Derivative works also be licensed under AGPL-3.0
+
+See the [LICENSE](LICENSE) file for the full text.
