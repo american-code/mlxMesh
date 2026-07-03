@@ -33,6 +33,8 @@ struct NodeDetailView: View {
                             valueColor: status.color)
                     StatRow(label: "Declared Memory", value: node.declaredMemoryGb.formattedGb)
                     StatRow(label: "Committed Memory", value: node.committedMemoryGb.formattedGb)
+                    StatRow(label: "In-flight jobs", value: "\(node.inFlightJobs)",
+                            valueColor: node.inFlightJobs > 0 ? .blue : nil)
                 }
 
                 // Models
@@ -85,13 +87,38 @@ struct NodeDetailView: View {
 
                 // Capabilities
                 Section("Capabilities") {
-                    StatRow(label: "Secure Enclave",
-                            value: node.hasSecureEnclave ? "Available" : "Not available",
-                            valueColor: node.hasSecureEnclave ? NodeStatus.live.color : nil)
+                    // enclaveAttested is coordinator-verified hardware proof; hasSecureEnclave
+                    // is merely self-declared by the node and not trusted for gating — the
+                    // same distinction the web dashboard draws (see NodeSnapshot.enclaveAttested).
+                    VStack(alignment: .leading, spacing: 3) {
+                        StatRow(label: "Secure Enclave",
+                                value: node.enclaveAttested ? "Attested"
+                                    : node.hasSecureEnclave ? "Claimed, unverified" : "Not available",
+                                valueColor: node.enclaveAttested ? NodeStatus.live.color
+                                    : node.hasSecureEnclave ? NodeStatus.degraded.color : nil)
+                        if node.hasSecureEnclave && !node.enclaveAttested {
+                            Text("Self-declared only — not cryptographically verified. High-sensitivity jobs will not route here.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     StatRow(label: "Cluster",
                             value: node.isCluster
                                 ? "Yes · \(node.clusterDeviceCount ?? 1) devices"
                                 : "Single device")
+                    if let families = node.clusterChipFamilies, !families.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Chip families")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            HStack(spacing: 6) {
+                                ForEach(Array(Set(families)).sorted(), id: \.self) { family in
+                                    Chip(family)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
                 }
 
                 // Identity

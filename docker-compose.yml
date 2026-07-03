@@ -1195,8 +1195,34 @@ services:
         condition: service_healthy
 
   # ── Traffic generators (simulation only — anonymous, no credit accounting) ──
+  # Multiple replicas per region with short, staggered intervals so the
+  # dashboard's queue/in-flight panel shows sustained visible activity — a
+  # single generator's in-flight window is too brief (~100-200ms) to reliably
+  # catch on a 2s SSE snapshot or a quick glance at the page.
 
-  traffic-gen-us:
+  traffic-gen-us-1:
+    <<: *oim
+    entrypoint: ["/usr/local/bin/jobgen"]
+    command:
+      - --coordinator=http://coordinator-us:9000
+      - --interval=1
+      - --model=llama-3.2-3b
+    depends_on:
+      coordinator-us:
+        condition: service_healthy
+
+  traffic-gen-us-2:
+    <<: *oim
+    entrypoint: ["/usr/local/bin/jobgen"]
+    command:
+      - --coordinator=http://coordinator-us:9000
+      - --interval=2
+      - --model=llama-3.2-3b
+    depends_on:
+      coordinator-us:
+        condition: service_healthy
+
+  traffic-gen-us-3:
     <<: *oim
     entrypoint: ["/usr/local/bin/jobgen"]
     command:
@@ -1207,12 +1233,56 @@ services:
       coordinator-us:
         condition: service_healthy
 
-  traffic-gen-eu:
+  traffic-gen-us-4:
+    <<: *oim
+    entrypoint: ["/usr/local/bin/jobgen"]
+    command:
+      - --coordinator=http://coordinator-us:9000
+      - --interval=1
+      - --model=llama-3.2-3b
+    depends_on:
+      coordinator-us:
+        condition: service_healthy
+
+  traffic-gen-eu-1:
+    <<: *oim
+    entrypoint: ["/usr/local/bin/jobgen"]
+    command:
+      - --coordinator=http://coordinator-eu:9001
+      - --interval=1
+      - --model=llama-3.2-3b
+    depends_on:
+      coordinator-eu:
+        condition: service_healthy
+
+  traffic-gen-eu-2:
+    <<: *oim
+    entrypoint: ["/usr/local/bin/jobgen"]
+    command:
+      - --coordinator=http://coordinator-eu:9001
+      - --interval=2
+      - --model=llama-3.2-3b
+    depends_on:
+      coordinator-eu:
+        condition: service_healthy
+
+  traffic-gen-eu-3:
     <<: *oim
     entrypoint: ["/usr/local/bin/jobgen"]
     command:
       - --coordinator=http://coordinator-eu:9001
       - --interval=3
+      - --model=llama-3.2-3b
+    depends_on:
+      coordinator-eu:
+        condition: service_healthy
+
+  traffic-gen-eu-4:
+    <<: *oim
+    entrypoint: ["/usr/local/bin/jobgen"]
+    command:
+      - --coordinator=http://coordinator-eu:9001
+      - --interval=1
       - --model=llama-3.2-3b
     depends_on:
       coordinator-eu:

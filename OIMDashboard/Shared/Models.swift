@@ -11,10 +11,15 @@ struct NodeSnapshot: Codable, Identifiable, Hashable {
     let committedMemoryGb: Double
     let models: [ModelCapability]
     let measuredToksPerSec: Double
-    let hasSecureEnclave: Bool
+    let hasSecureEnclave: Bool   // self-declared by the node — informational only
+    let enclaveAttested: Bool    // coordinator-verified Secure Enclave proof — trust this, not hasSecureEnclave
     let isCluster: Bool
     let clusterDeviceCount: Int?
+    // One coarse chip family per cluster device (e.g. "Apple M1") — no hostnames,
+    // no exact chip variant. Empty/absent for non-cluster nodes.
+    let clusterChipFamilies: [String]?
     let lastSeenAt: String
+    let inFlightJobs: Int
 
     var id: String { nodeId }
 
@@ -49,8 +54,19 @@ struct TopologyResponse: Codable {
     let queriedAt: String
 }
 
+// PodMetrics is a live snapshot of one coordinator's job queue and in-flight
+// load — the same figures the web dashboard's header pills (Queued/In-flight/
+// backpressure) are driven from.
+struct PodMetrics: Codable {
+    let queueDepth: Int
+    let queueCapacity: Int
+    let backpressurePct: Double
+    let totalInFlight: Int
+}
+
 struct NodesResponse: Codable {
     let podId: String
     let region: String
     let nodes: [NodeSnapshot]
+    let metrics: PodMetrics?
 }

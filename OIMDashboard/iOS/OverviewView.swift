@@ -56,18 +56,57 @@ struct OverviewView: View {
 struct StatsHeaderView: View {
     @Environment(TopologyStore.self) private var store
 
+    private var hasMetrics: Bool { !store.metricsByPod.isEmpty }
+
     var body: some View {
-        HStack(spacing: 0) {
-            StatPill(value: "\(store.liveCount)", label: "Live", color: NodeStatus.live.color)
-            Divider().frame(height: 36)
-            StatPill(value: store.totalTps.formattedTps, label: "Throughput")
-            Divider().frame(height: 36)
-            StatPill(value: store.totalMemoryGb.formattedGb, label: "Committed")
-            Divider().frame(height: 36)
-            StatPill(value: "\(store.pods.count)", label: "Regions")
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                StatPill(value: "\(store.liveCount)", label: "Live", color: NodeStatus.live.color)
+                Divider().frame(height: 36)
+                StatPill(value: store.totalTps.formattedTps, label: "Throughput")
+                Divider().frame(height: 36)
+                StatPill(value: store.totalMemoryGb.formattedGb, label: "Committed")
+                Divider().frame(height: 36)
+                StatPill(value: "\(store.pods.count)", label: "Regions")
+            }
+            .padding(.vertical, 12)
+
+            if hasMetrics {
+                Divider()
+                HStack(spacing: 0) {
+                    StatPill(value: "\(store.totalQueued)", label: "Queued",
+                             color: store.totalQueued > 0 ? NodeStatus.degraded.color : .secondary)
+                    Divider().frame(height: 36)
+                    StatPill(value: "\(store.totalInFlight)", label: "In-flight",
+                             color: store.totalInFlight > 0 ? .blue : .secondary)
+                    Divider().frame(height: 36)
+                    BackpressurePill(pct: store.avgBackpressurePct)
+                }
+                .padding(.vertical, 12)
+            }
         }
-        .padding(.vertical, 12)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+struct BackpressurePill: View {
+    let pct: Double
+    private var color: Color { pct >= 70 ? NodeStatus.unreachable.color : pct >= 30 ? NodeStatus.degraded.color : NodeStatus.live.color }
+    private var label: String { pct >= 70 ? "High load" : pct >= 30 ? "Moderate" : "Normal" }
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Text("\(Int(pct.rounded()))%")
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .foregroundStyle(color)
+                .monospacedDigit()
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+                .kerning(0.5)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 

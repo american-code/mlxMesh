@@ -24,13 +24,13 @@ import (
 )
 
 func main() {
-	usCount    := flag.Int("us",       22, "Number of regular US nodes")
-	euCount    := flag.Int("eu",       22, "Number of regular EU nodes")
-	exoUS      := flag.Int("exo-us",    2, "Number of large exo clusters in US (128/256 GB)")
-	exoEU      := flag.Int("exo-eu",    1, "Number of large exo clusters in EU (128/256 GB)")
-	basePort   := flag.Int("base-port", 8765, "First host port for node agents")
-	chaosPct   := flag.Float64("chaos-pct", 6, "Per-heartbeat percent chance a node simulates downtime (0 disables)")
-	traffic    := flag.Bool("traffic", true, "Include continuous traffic-generator services against both coordinators")
+	usCount := flag.Int("us", 22, "Number of regular US nodes")
+	euCount := flag.Int("eu", 22, "Number of regular EU nodes")
+	exoUS := flag.Int("exo-us", 2, "Number of large exo clusters in US (128/256 GB)")
+	exoEU := flag.Int("exo-eu", 1, "Number of large exo clusters in EU (128/256 GB)")
+	basePort := flag.Int("base-port", 8765, "First host port for node agents")
+	chaosPct := flag.Float64("chaos-pct", 6, "Per-heartbeat percent chance a node simulates downtime (0 disables)")
+	traffic := flag.Bool("traffic", true, "Include continuous traffic-generator services against both coordinators")
 	flag.Parse()
 
 	w := os.Stdout
@@ -142,7 +142,7 @@ func region(w *os.File, regionName, coordinatorSvc, coordinatorPort string, coun
 		exoIdx := i - count // 1-based index within exo set
 
 		nodeSvc := fmt.Sprintf("node-%s-%d", regionName, i)
-		exoSvc  := fmt.Sprintf("stub-exo-%s-%d", regionName, i)
+		exoSvc := fmt.Sprintf("stub-exo-%s-%d", regionName, i)
 		nodePort := port
 		port++
 
@@ -256,31 +256,31 @@ var regionCoords = map[string][]geoCoord{
 		{47.61, -117.43}, // Spokane, WA
 	},
 	"eu": {
-		{50.11, 8.68},   // Frankfurt, DE
-		{52.37, 4.90},   // Amsterdam, NL
-		{53.34, -6.27},  // Dublin, IE
-		{48.86, 2.35},   // Paris, FR
-		{51.51, -0.13},  // London, UK
-		{59.33, 18.07},  // Stockholm, SE
-		{40.42, -3.70},  // Madrid, ES
-		{52.23, 21.01},  // Warsaw, PL
-		{50.85, 4.35},   // Brussels, BE
-		{45.46, 9.19},   // Milan, IT
-		{48.14, 11.58},  // Munich, DE
-		{48.21, 16.37},  // Vienna, AT
-		{47.38, 8.54},   // Zurich, CH
-		{55.68, 12.57},  // Copenhagen, DK
-		{60.17, 24.94},  // Helsinki, FI
-		{59.91, 10.75},  // Oslo, NO
-		{50.08, 14.43},  // Prague, CZ
-		{47.50, 19.04},  // Budapest, HU
-		{44.43, 26.10},  // Bucharest, RO
-		{41.39, 2.16},   // Barcelona, ES
-		{45.75, 4.85},   // Lyon, FR
-		{53.57, 10.02},  // Hamburg, DE
-		{53.48, -2.24},  // Manchester, UK
-		{38.72, -9.14},  // Lisbon, PT
-		{43.30, 5.38},   // Marseille, FR
+		{50.11, 8.68},  // Frankfurt, DE
+		{52.37, 4.90},  // Amsterdam, NL
+		{53.34, -6.27}, // Dublin, IE
+		{48.86, 2.35},  // Paris, FR
+		{51.51, -0.13}, // London, UK
+		{59.33, 18.07}, // Stockholm, SE
+		{40.42, -3.70}, // Madrid, ES
+		{52.23, 21.01}, // Warsaw, PL
+		{50.85, 4.35},  // Brussels, BE
+		{45.46, 9.19},  // Milan, IT
+		{48.14, 11.58}, // Munich, DE
+		{48.21, 16.37}, // Vienna, AT
+		{47.38, 8.54},  // Zurich, CH
+		{55.68, 12.57}, // Copenhagen, DK
+		{60.17, 24.94}, // Helsinki, FI
+		{59.91, 10.75}, // Oslo, NO
+		{50.08, 14.43}, // Prague, CZ
+		{47.50, 19.04}, // Budapest, HU
+		{44.43, 26.10}, // Bucharest, RO
+		{41.39, 2.16},  // Barcelona, ES
+		{45.75, 4.85},  // Lyon, FR
+		{53.57, 10.02}, // Hamburg, DE
+		{53.48, -2.24}, // Manchester, UK
+		{38.72, -9.14}, // Lisbon, PT
+		{43.30, 5.38},  // Marseille, FR
 	},
 }
 
@@ -309,7 +309,7 @@ func nodeProfile(region string, idx int) (int, int, string, float64, float64) {
 	// All 32 GB nodes can run both models.
 	models := "llama-3.2-3b,mixtral-8x7b"
 	capPct := 0.65
-	tps    := 62.0 + float64((idx%5)*4) // 62–78 tok/s
+	tps := 62.0 + float64((idx%5)*4) // 62–78 tok/s
 
 	return memGB, baseLat, models, capPct, tps
 }
@@ -323,13 +323,13 @@ func exoProfile(region string, idx int) (int, int, string, float64, float64) {
 
 	if idx%2 == 1 {
 		// 256 GB flagship: runs the full model ladder
-		memGB  = 256
-		tps    = 780.0 + float64((idx%3)*20)
+		memGB = 256
+		tps = 780.0 + float64((idx%3)*20)
 		models = "llama-3.2-3b,mixtral-8x7b,llama-3.1-70b,llama-3.1-405b"
 	} else {
 		// 128 GB mid-tier
-		memGB  = 128
-		tps    = 370.0 + float64((idx%3)*15)
+		memGB = 128
+		tps = 370.0 + float64((idx%3)*15)
 		models = "llama-3.2-3b,mixtral-8x7b,llama-3.1-70b"
 	}
 
@@ -344,36 +344,49 @@ func exoProfile(region string, idx int) (int, int, string, float64, float64) {
 	return memGB, latMS, models, capPct, tps
 }
 
-// trafficGenerators writes two services that submit continuous simulated jobs
-// against coordinator-us and coordinator-eu, so the dashboard has live traffic
-// to render without a human manually running jobgen. Submitted anonymously
-// (no --user-id) — this is demo traffic, not real account activity.
+// trafficGeneratorsPerRegion is how many concurrent jobgen instances run
+// against each coordinator. jobgen has no internal concurrency (one job at a
+// time, then sleep --interval) — a single instance's in-flight window is only
+// as wide as one job's latency (~100-200ms), which a 2s SSE snapshot or a
+// human glancing at the dashboard will usually miss entirely, making a
+// perfectly healthy pod look idle. Running several instances with short,
+// staggered intervals overlaps their in-flight windows so the queue/backpressure
+// panel shows sustained, visible activity instead of a near-permanent zero.
+const trafficGeneratorsPerRegion = 4
+
+// trafficGenerators writes several jobgen services per region that submit
+// continuous simulated jobs against coordinator-us and coordinator-eu, so the
+// dashboard has live, VISIBLE traffic to render without a human manually
+// running jobgen. Submitted anonymously (no --user-id) — this is demo
+// traffic, not real account activity.
 func trafficGenerators(w *os.File) {
 	fmt.Fprint(w, `
   # ── Traffic generators (simulation only — anonymous, no credit accounting) ──
-
-  traffic-gen-us:
-    <<: *oim
-    entrypoint: ["/usr/local/bin/jobgen"]
-    command:
-      - --coordinator=http://coordinator-us:9000
-      - --interval=3
-      - --model=llama-3.2-3b
-    depends_on:
-      coordinator-us:
-        condition: service_healthy
-
-  traffic-gen-eu:
-    <<: *oim
-    entrypoint: ["/usr/local/bin/jobgen"]
-    command:
-      - --coordinator=http://coordinator-eu:9001
-      - --interval=3
-      - --model=llama-3.2-3b
-    depends_on:
-      coordinator-eu:
-        condition: service_healthy
+  # Multiple replicas per region with short, staggered intervals so the
+  # dashboard's queue/in-flight panel shows sustained visible activity — a
+  # single generator's in-flight window is too brief (~100-200ms) to reliably
+  # catch on a 2s SSE snapshot or a quick glance at the page.
 `)
+	writeTrafficGenRegion(w, "us", "coordinator-us", "9000")
+	writeTrafficGenRegion(w, "eu", "coordinator-eu", "9001")
+}
+
+func writeTrafficGenRegion(w *os.File, region, coordinatorService, port string) {
+	for i := 1; i <= trafficGeneratorsPerRegion; i++ {
+		intervalSec := 1 + (i-1)%3 // stagger 1s/2s/3s/1s... across replicas
+		fmt.Fprintf(w, `
+  traffic-gen-%s-%d:
+    <<: *oim
+    entrypoint: ["/usr/local/bin/jobgen"]
+    command:
+      - --coordinator=http://%s:%s
+      - --interval=%d
+      - --model=llama-3.2-3b
+    depends_on:
+      %s:
+        condition: service_healthy
+`, region, i, coordinatorService, port, intervalSec, coordinatorService)
+	}
 }
 
 func footer(w *os.File) {

@@ -6,6 +6,7 @@ import Observation
 final class TopologyStore {
     var pods: [PodHealthDigest] = []
     var nodesByPod: [String: [NodeSnapshot]] = [:]
+    var metricsByPod: [String: PodMetrics] = [:]
     var lastUpdated: Date?
     var error: String?
     var isLoading = false
@@ -15,6 +16,14 @@ final class TopologyStore {
     var liveCount: Int { allNodes.filter { $0.computedStatus == .live }.count }
     var totalTps: Double { allNodes.reduce(0) { $0 + $1.measuredToksPerSec } }
     var totalMemoryGb: Double { allNodes.reduce(0) { $0 + $1.committedMemoryGb } }
+
+    // Queue/backpressure aggregates — mirrors the web dashboard's header pills.
+    private var allMetrics: [PodMetrics] { Array(metricsByPod.values) }
+    var totalQueued: Int { allMetrics.reduce(0) { $0 + $1.queueDepth } }
+    var totalInFlight: Int { allMetrics.reduce(0) { $0 + $1.totalInFlight } }
+    var avgBackpressurePct: Double {
+        allMetrics.isEmpty ? 0 : allMetrics.reduce(0) { $0 + $1.backpressurePct } / Double(allMetrics.count)
+    }
 
     private var refreshTask: Task<Void, Never>?
     private var pollInterval: TimeInterval = 5
@@ -45,15 +54,16 @@ final class TopologyStore {
             pods = topology.pods
 
             // Fetch all regions in parallel
-            await withTaskGroup(of: (String, [NodeSnapshot]).self) { group in
+            await withTaskGroup(of: (String, NodesResponse?).self) { group in
                 for pod in topology.pods {
                     group.addTask {
-                        let nodes = try? await NetworkClient.fetchNodes(coordinatorURL: pod.coordinatorEndpoint)
-                        return (pod.podId, nodes?.nodes ?? [])
+                        let response = try? await NetworkClient.fetchNodes(coordinatorURL: pod.coordinatorEndpoint)
+                        return (pod.podId, response)
                     }
                 }
-                for await (podId, nodes) in group {
-                    nodesByPod[podId] = nodes
+                for await (podId, response) in group {
+                    nodesByPod[podId] = response?.nodes ?? []
+                    metricsByPod[podId] = response?.metrics
                 }
             }
             lastUpdated = .now

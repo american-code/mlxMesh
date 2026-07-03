@@ -356,6 +356,7 @@ function TryTheMesh({
   const [prompt, setPrompt] = useState('What can this network do?')
   const [sending, setSending] = useState(false)
   const [reply, setReply] = useState<string | null>(null)
+  const [stats, setStats] = useState<{ tokensPerSec: number | null; latencyMs: number | null } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   async function handleSend() {
@@ -363,12 +364,14 @@ function TryTheMesh({
     setSending(true)
     setError(null)
     setReply(null)
+    setStats(null)
     try {
       // llama-3.2-3b is the one model every simulated node serves — a reasonable
       // default so "Try the mesh" works without asking the user to pick a model
       // they don't yet know is available.
       const result = await submitTestQuery(coordinatorURL, prompt.trim(), 'llama-3.2-3b')
       setReply(result.content || '(empty response)')
+      setStats({ tokensPerSec: result.tokensPerSec, latencyMs: result.latencyMs })
       onServed(result.servedByNodeId, result.lane)
     } catch (e) {
       setError((e as Error).message)
@@ -417,6 +420,27 @@ function TryTheMesh({
           padding: '8px 12px', color: '#c9d1d9', fontSize: 12.5, lineHeight: 1.5,
         }}>
           {reply}
+          {stats && (stats.tokensPerSec !== null || stats.latencyMs !== null) && (
+            <div style={{
+              display: 'flex', gap: 14, marginTop: 8, paddingTop: 8,
+              borderTop: '1px solid #21262d', fontSize: 11, color: '#7d8590',
+            }}>
+              {stats.tokensPerSec !== null && (
+                <span>
+                  <span style={{ color: '#3fb950', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+                    {stats.tokensPerSec.toFixed(1)} t/s
+                  </span>{' '}measured this request
+                </span>
+              )}
+              {stats.latencyMs !== null && (
+                <span>
+                  <span style={{ color: '#79c0ff', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+                    {stats.latencyMs}ms
+                  </span>{' '}latency
+                </span>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

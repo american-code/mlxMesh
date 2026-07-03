@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { NodeDetection, NodeConfig, Schedule } from '../types'
+import type { NodeDetection, NodeConfig, Schedule, DeviceStat } from '../types'
 import { DEFAULT_SCHEDULE } from '../types'
-import { fetchLocalDetect, saveLocalConfig } from '../api'
+import {
+  fetchLocalDetect, saveLocalConfig,
+  getLocalAgentURL, setLocalAgentURL, resetLocalAgentURL, DEFAULT_LOCAL_AGENT_URL,
+} from '../api'
 
 const WEEKDAYS: Array<{ key: string; label: string }> = [
   { key: 'mon', label: 'M' }, { key: 'tue', label: 'T' }, { key: 'wed', label: 'W' },
@@ -188,6 +191,8 @@ export function NodeSetupView() {
   const [saving, setSaving]     = useState(false)
   const [saveMsg, setSaveMsg]   = useState<string | null>(null)
 
+  const [agentUrlDraft, setAgentUrlDraft] = useState(getLocalAgentURL())
+
   const detect = useCallback(async () => {
     setLoading(true)
     setSaveMsg(null)
@@ -261,16 +266,45 @@ export function NodeSetupView() {
     })
   }
 
+  function handleAgentUrlApply() {
+    setLocalAgentURL(agentUrlDraft)
+    detect()
+  }
+
+  function handleAgentUrlReset() {
+    resetLocalAgentURL()
+    setAgentUrlDraft(DEFAULT_LOCAL_AGENT_URL)
+    detect()
+  }
+
+  const agentUrlBar = (
+    <LocalAgentBar
+      value={agentUrlDraft}
+      onChange={setAgentUrlDraft}
+      onApply={handleAgentUrlApply}
+      onReset={handleAgentUrlReset}
+      isDefault={agentUrlDraft === DEFAULT_LOCAL_AGENT_URL}
+    />
+  )
+
   if (loading) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300, color: '#7d8590', fontSize: 14 }}>
-        Detecting local node…
+      <div style={{ maxWidth: 1100, margin: '24px auto', padding: '0 24px' }}>
+        {agentUrlBar}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 260, color: '#7d8590', fontSize: 14 }}>
+          Detecting local node…
+        </div>
       </div>
     )
   }
 
   if (!agentRunning || !detection) {
-    return <GettingStarted />
+    return (
+      <div style={{ maxWidth: 1100, margin: '24px auto', padding: '0 24px' }}>
+        {agentUrlBar}
+        <GettingStarted />
+      </div>
+    )
   }
 
   const modelIds = (detection.models ?? []).map(extractModelId).filter(Boolean)
@@ -288,8 +322,18 @@ export function NodeSetupView() {
     schedule.mode === 'window' && schedule.days.length > 0 ? `--schedule-days ${schedule.days.join(',')}` : '',
   ].filter(Boolean).join(' \\\n  ')
 
+  const topologyDevices = detection.device_topology?.devices ?? []
+
   return (
     <div style={{ maxWidth: 1100, margin: '24px auto', padding: '0 24px' }}>
+
+      {agentUrlBar}
+
+      {topologyDevices.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <ClusterTopologySection devices={topologyDevices} />
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
 
@@ -589,6 +633,153 @@ export function NodeSetupView() {
         </div>
       </div>
     </div>
+  )
+}
+
+// ── Local agent URL bar ───────────────────────────────────────────────────────
+// Lets the operator point Node Setup at wherever their real `oim node start`
+// process is actually listening. The default (8765) collides with this repo's
+// own Docker simulation stack (node-us-1 owns that port), so anyone running a
+// real agent alongside the simulation — or on any other custom --listen port —
+// needs this to ever see their real hardware instead of the sim node.
+
+function LocalAgentBar({ value, onChange, onApply, onReset, isDefault }: {
+  value: string
+  onChange: (v: string) => void
+  onApply: () => void
+  onReset: () => void
+  isDefault: boolean
+}) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 10,
+      background: '#161b22', border: '1px solid #21262d',
+      borderRadius: 8, padding: '8px 14px', marginBottom: 16,
+    }}>
+      <span style={{ color: '#7d8590', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>Local agent</span>
+      <input
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter') onApply() }}
+        placeholder="http://localhost:8765"
+        style={{
+          flex: 1, background: '#0d1117', border: '1px solid #30363d',
+          borderRadius: 6, padding: '5px 10px', color: '#e6edf3',
+          fontSize: 12, fontFamily: 'monospace',
+        }}
+      />
+      <button onClick={onApply} style={{
+        background: '#1c2128', border: '1px solid #30363d', color: '#e6edf3',
+        borderRadius: 6, padding: '5px 12px', cursor: 'pointer', fontSize: 12,
+      }}>Connect</button>
+      {!isDefault && (
+        <button onClick={onReset} style={{
+          background: 'transparent', border: 'none', color: '#7d8590',
+          cursor: 'pointer', fontSize: 11, textDecoration: 'underline',
+        }}>Reset to default</button>
+      )}
+    </div>
+  )
+}
+
+// ── Cluster topology diagram ─────────────────────────────────────────────────
+
+// loadColor buckets a device's live temp/GPU reading into a status color —
+// same thresholds a heat-conscious operator would eyeball: idle/cool devices
+// read gray, warming-up ones amber, and actively-serving ones red.
+function loadColor(d: DeviceStat): string {
+  if (d.temp_c >= 55 || d.gpu_usage_pct >= 15) return '#f85149'
+  if (d.temp_c >= 35 || d.gpu_usage_pct >= 2) return '#d29922'
+  return '#7d8590'
+}
+
+function ClusterTopologyDiagram({ devices }: { devices: DeviceStat[] }) {
+  const width = 640
+  const height = 340
+  const cx = width / 2
+  const cy = height / 2
+  const radius = devices.length <= 1 ? 0 : 120
+  const boxW = 108
+  const boxH = 58
+
+  const positions = new Map<string, { x: number; y: number }>()
+  devices.forEach((d, i) => {
+    const angle = (-90 + i * (360 / devices.length)) * (Math.PI / 180)
+    positions.set(d.device_id, {
+      x: cx + radius * Math.cos(angle),
+      y: cy + radius * Math.sin(angle),
+    })
+  })
+
+  // Dedupe undirected connection pairs — Exo reports links per-device, so
+  // each real link appears twice (A->B and B->A) unless only one side is up.
+  const edges: Array<[string, string]> = []
+  const seenPairs = new Set<string>()
+  devices.forEach(d => {
+    d.connected_to.forEach(peerId => {
+      if (!positions.has(peerId)) return
+      const key = [d.device_id, peerId].sort().join('|')
+      if (seenPairs.has(key)) return
+      seenPairs.add(key)
+      edges.push([d.device_id, peerId])
+    })
+  })
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
+      {edges.map(([a, b], i) => {
+        const pa = positions.get(a)!
+        const pb = positions.get(b)!
+        return (
+          <line key={i} x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y}
+            stroke="#30363d" strokeWidth={1.5} strokeDasharray="4 4" />
+        )
+      })}
+      {devices.map(d => {
+        const p = positions.get(d.device_id)!
+        const color = loadColor(d)
+        const usedGB = Math.max(0, d.ram_total_gb - d.ram_available_gb)
+        return (
+          <g key={d.device_id} transform={`translate(${p.x - boxW / 2}, ${p.y - boxH / 2})`}>
+            {/* device chassis */}
+            <rect x={0} y={0} width={boxW} height={boxH} rx={6} fill="#2d2410" stroke="#d29922" strokeWidth={1.5} />
+            <rect x={6} y={6} width={boxW - 12} height={boxH - 24} rx={3} fill="#3a2f14" />
+            <circle cx={14} cy={boxH - 10} r={2} fill="#8a6d1f" />
+            <circle cx={22} cy={boxH - 10} r={2} fill="#8a6d1f" />
+
+            <text x={boxW / 2} y={-10} textAnchor="middle" fill="#d29922" fontSize={11} fontWeight={700} fontFamily="monospace">
+              {d.friendly_name}
+            </text>
+            <text x={boxW / 2} y={boxH + 16} textAnchor="middle" fill="#e6edf3" fontSize={10} fontFamily="monospace">
+              {usedGB.toFixed(1)}GB/{d.ram_total_gb.toFixed(0)}GB ({d.ram_used_pct.toFixed(0)}%)
+            </text>
+
+            <g transform={`translate(${boxW + 8}, 4)`}>
+              <rect x={0} y={0} width={40} height={boxH - 8} rx={4} fill={`${color}18`} stroke={`${color}55`} />
+              <text x={20} y={15} textAnchor="middle" fill={color} fontSize={9} fontWeight={700}>{d.gpu_usage_pct.toFixed(0)}%</text>
+              <text x={20} y={28} textAnchor="middle" fill={color} fontSize={9} fontWeight={700}>{d.temp_c.toFixed(0)}°C</text>
+              <text x={20} y={41} textAnchor="middle" fill={color} fontSize={9} fontWeight={700}>{d.power_w.toFixed(0)}W</text>
+            </g>
+          </g>
+        )
+      })}
+    </svg>
+  )
+}
+
+function ClusterTopologySection({ devices }: { devices: DeviceStat[] }) {
+  return (
+    <Section title={`Cluster topology (${devices.length} device${devices.length === 1 ? '' : 's'})`}>
+      <div style={{ color: '#7d8590', fontSize: 11, marginBottom: 10 }}>
+        Live from Exo — RAM, GPU load, temperature, and power per device, updated on every re-detect.
+      </div>
+      <ClusterTopologyDiagram devices={devices} />
+      <div style={{ display: 'flex', gap: 16, marginTop: 4, fontSize: 11, color: '#7d8590' }}>
+        <span><span style={{ color: '#7d8590' }}>■</span> Idle</span>
+        <span><span style={{ color: '#d29922' }}>■</span> Warming up</span>
+        <span><span style={{ color: '#f85149' }}>■</span> Actively serving</span>
+      </div>
+    </Section>
   )
 }
 

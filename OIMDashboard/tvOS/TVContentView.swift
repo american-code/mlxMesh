@@ -81,6 +81,7 @@ struct TVPodRow: View {
 // MARK: - Detail: Region
 
 struct TVRegionDetailView: View {
+    @Environment(TopologyStore.self) private var store
     let pod: PodHealthDigest
     let nodes: [NodeSnapshot]
     @Binding var selectedNode: NodeSnapshot?
@@ -126,6 +127,19 @@ struct TVRegionDetailView: View {
                 }
                 .padding(.horizontal, 40)
 
+                if let metrics = store.metricsByPod[pod.podId] {
+                    HStack(spacing: 40) {
+                        TVStatPill(label: "Queued", value: "\(metrics.queueDepth)",
+                                   color: metrics.queueDepth > 0 ? NodeStatus.degraded.color : .secondary)
+                        TVStatPill(label: "In-flight", value: "\(metrics.totalInFlight)",
+                                   color: metrics.totalInFlight > 0 ? .blue : .secondary)
+                        TVStatPill(label: "Backpressure", value: "\(Int(metrics.backpressurePct.rounded()))%",
+                                   color: metrics.backpressurePct >= 70 ? NodeStatus.unreachable.color
+                                       : metrics.backpressurePct >= 30 ? NodeStatus.degraded.color : NodeStatus.live.color)
+                    }
+                    .padding(.horizontal, 40)
+                }
+
                 Spacer()
             }
             .frame(maxWidth: .infinity)
@@ -167,6 +181,15 @@ struct TVGlobalView: View {
                            color: .cyan)
                 TVStatPill(label: "Regions",     value: "\(store.pods.count)",
                            color: .orange)
+            }
+
+            if !store.metricsByPod.isEmpty {
+                HStack(spacing: 50) {
+                    TVStatPill(label: "Queued", value: "\(store.totalQueued)",
+                               color: store.totalQueued > 0 ? NodeStatus.degraded.color : .secondary)
+                    TVStatPill(label: "In-flight", value: "\(store.totalInFlight)",
+                               color: store.totalInFlight > 0 ? .blue : .secondary)
+                }
             }
 
             if store.isLoading {

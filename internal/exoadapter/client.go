@@ -83,6 +83,14 @@ func (c *Client) GetDownloadedModels(ctx context.Context) ([]map[string]any, err
 // downloaded or were never queued — GetDownloadedModels treats "not incomplete" as
 // the closest available signal to "ready to serve" without hand-parsing every
 // possible Exo download-state enum value.
+//
+// A "DownloadCompleted" entry is trusted directly from its status key rather
+// than compared by bytes: Exo omits the "downloaded" progress field entirely
+// once a download finishes (only "total" remains), so byte-comparing it
+// against the missing field (read as 0) would always read as 0 < total —
+// misclassifying every genuinely-downloaded model as incomplete and
+// silently emptying a node's whole servable-model list. Confirmed live: a
+// fully downloaded Qwen model was excluded this way before this fix.
 func incompleteModelIDs(state map[string]any) map[string]bool {
 	incomplete := make(map[string]bool)
 	downloads, _ := state["downloads"].(map[string]any)
@@ -90,10 +98,13 @@ func incompleteModelIDs(state map[string]any) map[string]bool {
 		entries, _ := rawEntries.([]any)
 		for _, rawEntry := range entries {
 			entry, _ := rawEntry.(map[string]any)
-			for _, rawInner := range entry { // single key: status name (e.g. "DownloadPending")
+			for status, rawInner := range entry { // single key: status name (e.g. "DownloadPending", "DownloadCompleted")
 				inner, _ := rawInner.(map[string]any)
 				modelID := extractModelID(inner)
 				if modelID == "" {
+					continue
+				}
+				if status == "DownloadCompleted" {
 					continue
 				}
 				downloadedBytes := extractBytes(inner, "downloaded")
@@ -232,13 +243,33 @@ func (c *Client) getJSON(ctx context.Context, path string) ([]map[string]any, er
 	if err := json.Unmarshal(raw, &bare); err == nil {
 		return bare, nil
 	}
-	var wrapped struct {
-		Data []map[string]any `json:"data"`
-	}
+	// Not a bare array — Exo wraps list responses under a different key per
+	// endpoint ("data" for /models, "previews" for /instance/previews, and
+	// possibly others not yet observed). Confirmed live: hardcoding "data"
+	// silently returned an empty list for /instance/previews, which blocked
+	// ever creating an Exo instance for a real, fully-downloaded model.
+	// Rather than hardcode every key by name, take the first array-of-objects
+	// field in the response object — every real shape seen so far has
+	// exactly one, so this is safe; if a response ever had two, this would
+	// pick whichever map iteration happens to visit first (undefined order).
+	var wrapped map[string]any
 	if err := json.Unmarshal(raw, &wrapped); err != nil {
-		return nil, fmt.Errorf("decode %s (neither bare array nor {data:[]} shape): %w", path, err)
+		return nil, fmt.Errorf("decode %s (not a JSON object or array): %w", path, err)
 	}
-	return wrapped.Data, nil
+	for _, v := range wrapped {
+		arr, ok := v.([]any)
+		if !ok {
+			continue
+		}
+		out := make([]map[string]any, 0, len(arr))
+		for _, item := range arr {
+			if m, ok := item.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("decode %s: no array field found in object response", path)
 }
 
 func (c *Client) getJSONObject(ctx context.Context, path string) (map[string]any, error) {

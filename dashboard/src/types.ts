@@ -94,6 +94,24 @@ export interface NodeConfig {
   schedule: Schedule
 }
 
+export interface DeviceStat {
+  device_id: string
+  friendly_name: string
+  model_id: string // e.g. "Mac Studio", "MacBook Pro"
+  chip_id: string // e.g. "Apple M1 Max"
+  ram_total_gb: number
+  ram_available_gb: number
+  ram_used_pct: number
+  gpu_usage_pct: number
+  temp_c: number
+  power_w: number
+  connected_to: string[]
+}
+
+export interface DeviceTopology {
+  devices: DeviceStat[]
+}
+
 export interface NodeDetection {
   node_id: string
   platform: string
@@ -110,6 +128,7 @@ export interface NodeDetection {
   // already low on free memory (e.g. one machine near-full while others in
   // the same cluster have headroom) contribute little or nothing here.
   safe_contributable_gb: number
+  device_topology?: DeviceTopology | null
   has_secure_enclave: boolean
   is_foregrounded: boolean
   exo_healthy: boolean

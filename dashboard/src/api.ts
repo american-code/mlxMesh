@@ -5,6 +5,8 @@ export interface TestQueryResult {
   content: string
   servedByNodeId: string | null
   lane: 'fast' | 'background' | null
+  tokensPerSec: number | null
+  latencyMs: number | null
 }
 
 const DIRECTORY = import.meta.env.VITE_DIRECTORY_URL ?? 'http://localhost:9100'
@@ -46,13 +48,34 @@ export async function claimStartupGrant(
   return res.json()
 }
 
-const LOCAL_AGENT = 'http://localhost:8765'
+const DEFAULT_LOCAL_AGENT = 'http://localhost:8765'
+const LOCAL_AGENT_STORAGE_KEY = 'oim_local_agent_url'
+
+// The node agent's --listen port is whatever the operator chose when they ran
+// `oim node start` — 8765 is just a convenient default, not a fixed contract.
+// Anyone running their real agent on a different port (e.g. alongside this
+// same repo's Docker simulation stack, which already owns 8765) needs a way
+// to point the dashboard at it, or Node Setup silently shows the wrong node.
+export function getLocalAgentURL(): string {
+  return localStorage.getItem(LOCAL_AGENT_STORAGE_KEY) || DEFAULT_LOCAL_AGENT
+}
+
+export function setLocalAgentURL(url: string): void {
+  const trimmed = url.trim().replace(/\/+$/, '')
+  if (trimmed) localStorage.setItem(LOCAL_AGENT_STORAGE_KEY, trimmed)
+}
+
+export function resetLocalAgentURL(): void {
+  localStorage.removeItem(LOCAL_AGENT_STORAGE_KEY)
+}
+
+export const DEFAULT_LOCAL_AGENT_URL = DEFAULT_LOCAL_AGENT
 
 export async function fetchLocalDetect(): Promise<NodeDetection> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 2500)
   try {
-    const res = await fetch(`${LOCAL_AGENT}/detect`, { signal: ctrl.signal })
+    const res = await fetch(`${getLocalAgentURL()}/detect`, { signal: ctrl.signal })
     if (!res.ok) throw new Error(`Agent returned ${res.status}`)
     return res.json()
   } finally {
@@ -61,7 +84,7 @@ export async function fetchLocalDetect(): Promise<NodeDetection> {
 }
 
 export async function saveLocalConfig(cfg: NodeConfig): Promise<{ status: string; path: string }> {
-  const res = await fetch(`${LOCAL_AGENT}/config`, {
+  const res = await fetch(`${getLocalAgentURL()}/config`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(cfg),
@@ -119,5 +142,7 @@ export async function submitTestQuery(
     content,
     servedByNodeId: data?.oim_served_by_node_id ?? null,
     lane: data?.oim_lane ?? null,
+    tokensPerSec: data?.oim_tokens_per_sec ?? null,
+    latencyMs: data?.oim_latency_ms ?? null,
   }
 }

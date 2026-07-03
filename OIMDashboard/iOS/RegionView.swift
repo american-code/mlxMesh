@@ -51,8 +51,17 @@ struct NodeRowView: View {
 
             // Name + endpoint
             VStack(alignment: .leading, spacing: 2) {
-                Text(node.label)
-                    .font(.system(size: 14, weight: .medium))
+                HStack(spacing: 6) {
+                    Text(node.label)
+                        .font(.system(size: 14, weight: .medium))
+                    if node.inFlightJobs > 0 {
+                        Text("\(node.inFlightJobs) in-flight")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.blue)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Color.blue.opacity(0.12), in: Capsule())
+                    }
+                }
                 Text(node.reachabilityEndpoint)
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)

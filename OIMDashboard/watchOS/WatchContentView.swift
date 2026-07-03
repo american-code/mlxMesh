@@ -26,6 +26,16 @@ struct WatchContentView: View {
                                 WatchStat(label: "Mem",
                                           value: store.totalMemoryGb.formattedGb)
                             }
+                            if !store.metricsByPod.isEmpty {
+                                HStack(spacing: 0) {
+                                    WatchStat(label: "Queued",
+                                              value: "\(store.totalQueued)",
+                                              color: store.totalQueued > 0 ? NodeStatus.degraded.color : .primary)
+                                    WatchStat(label: "In-flight",
+                                              value: "\(store.totalInFlight)",
+                                              color: store.totalInFlight > 0 ? .blue : .primary)
+                                }
+                            }
                         }
 
                         ForEach(store.pods) { pod in

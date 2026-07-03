@@ -340,6 +340,14 @@ func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct flo
 			}
 		}
 
+		// Best-effort per-device breakdown for the Node Setup topology diagram.
+		// nil (omitted) whenever Exo is unreachable or hasn't formed a topology
+		// yet — the dashboard falls back to the simple RAM bar in that case.
+		var deviceTopology *capability.DeviceTopology
+		if exoHealthy {
+			deviceTopology, _ = capability.GetDeviceTopology(r.Context(), exo)
+		}
+
 		writeJSON(w, http.StatusOK, map[string]any{
 			"node_id":               nodeID,
 			"platform":              sysInfo["platform"],
@@ -351,6 +359,7 @@ func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct flo
 			"cluster_device_count":  clusterDeviceCount,
 			"cluster_chip_families": clusterChipFamilies,
 			"safe_contributable_gb": safeContributableGB,
+			"device_topology":       deviceTopology,
 			"has_secure_enclave":    protocol.CheckSecureEnclaveAvailable(),
 			"is_foregrounded":       governor.IsForegrounded(),
 			"exo_healthy":           exoHealthy,

@@ -97,7 +97,9 @@ func DispatchFastLane(
 		}
 		attempted++
 		registry.IncrInFlight(r.node.Manifest.NodeID)
+		dispatchStart := time.Now()
 		result, err := dispatchToNode(ctx, job, messages, r.node.Manifest.ReachabilityEndpoint)
+		elapsed := time.Since(dispatchStart)
 		registry.DecrInFlight(r.node.Manifest.NodeID)
 		if err != nil {
 			registry.MarkUnreachable(r.node.Manifest.NodeID)
@@ -110,6 +112,13 @@ func DispatchFastLane(
 		if result != nil {
 			result["oim_served_by_node_id"] = r.node.Manifest.NodeID
 			result["oim_lane"] = string(job.Lane)
+			result["oim_latency_ms"] = elapsed.Milliseconds()
+			// Measured from THIS request's own wall-clock time and actual completion
+			// tokens — never the node's self-declared/benchmarked signature — so
+			// "Try the mesh" can show a real, this-request tok/s figure.
+			if tokens := completionTokensFromResult(result); tokens > 0 && elapsed > 0 {
+				result["oim_tokens_per_sec"] = math.Round(float64(tokens)/elapsed.Seconds()*100) / 100
+			}
 		}
 		return result, nil
 	}
@@ -220,6 +229,19 @@ func DispatchToResolvedNode(ctx context.Context, job protocol.JobSpec, messages 
 		return nil, err
 	}
 	return result, nil
+}
+
+// completionTokensFromResult reads usage.completion_tokens from an OpenAI-shaped
+// chat-completion response, returning 0 when absent rather than guessing.
+func completionTokensFromResult(result map[string]any) int {
+	usage, ok := result["usage"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	if n, ok := usage["completion_tokens"].(float64); ok && n > 0 {
+		return int(n)
+	}
+	return 0
 }
 
 // dispatchToNode makes a POST to the node's /v1/chat/completions endpoint and returns the response.
