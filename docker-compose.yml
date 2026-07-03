@@ -67,7 +67,7 @@ services:
       retries: 15
       start_period: 5s
 
-  # ── US nodes (13 regular + 2 exo) ────────────────────────────────────────
+  # ── US nodes (22 regular + 2 exo) ────────────────────────────────────────
 
   stub-exo-us-1:
     <<: *oim
@@ -594,9 +594,9 @@ services:
     command: ["/usr/local/bin/stub-exo"]
     environment:
       STUB_NODE_NAME: node-us-14
-      STUB_MODELS: llama-3.2-3b,mixtral-8x7b,llama-3.1-70b,llama-3.1-405b
-      STUB_MEMORY_GB: "256"
-      STUB_LATENCY_MS: "100"
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "210"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
       interval: 2s
@@ -607,7 +607,7 @@ services:
     <<: *oim
     hostname: node-us-14
     environment:
-      OIM_INITIAL_TPS: "800.0"
+      OIM_INITIAL_TPS: "78.0"
       OIM_CHAOS_DOWNTIME_PCT: "6"
     command:
       - /usr/local/bin/oim
@@ -618,10 +618,9 @@ services:
       - --exo-url=http://stub-exo-us-14:52415
       - --reachability-endpoint=http://node-us-14:8778
       - --region=us
-      - --cap=0.8
+      - --cap=0.7
       - --lat=32.6600
       - --lng=-96.8000
-      - --declared-memory-gb=256
     ports:
       - "8778:8778"
     depends_on:
@@ -635,9 +634,9 @@ services:
     command: ["/usr/local/bin/stub-exo"]
     environment:
       STUB_NODE_NAME: node-us-15
-      STUB_MODELS: llama-3.2-3b,mixtral-8x7b,llama-3.1-70b
-      STUB_MEMORY_GB: "128"
-      STUB_LATENCY_MS: "120"
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "110"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
       interval: 2s
@@ -648,7 +647,7 @@ services:
     <<: *oim
     hostname: node-us-15
     environment:
-      OIM_INITIAL_TPS: "400.0"
+      OIM_INITIAL_TPS: "62.0"
       OIM_CHAOS_DOWNTIME_PCT: "6"
     command:
       - /usr/local/bin/oim
@@ -659,10 +658,9 @@ services:
       - --exo-url=http://stub-exo-us-15:52415
       - --reachability-endpoint=http://node-us-15:8779
       - --region=us
-      - --cap=0.8
+      - --cap=0.7
       - --lat=25.6500
       - --lng=-80.1900
-      - --declared-memory-gb=128
     ports:
       - "8779:8779"
     depends_on:
@@ -671,7 +669,369 @@ services:
       stub-exo-us-15:
         condition: service_healthy
 
-  # ── EU nodes (12 regular + 1 exo) ────────────────────────────────────────
+  stub-exo-us-16:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-us-16
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "135"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-us-16:
+    <<: *oim
+    hostname: node-us-16
+    environment:
+      OIM_INITIAL_TPS: "66.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-us:9000
+      - --listen=:8780
+      - --exo-url=http://stub-exo-us-16:52415
+      - --reachability-endpoint=http://node-us-16:8780
+      - --region=us
+      - --cap=0.7
+      - --lat=42.2400
+      - --lng=-71.0600
+    ports:
+      - "8780:8780"
+    depends_on:
+      coordinator-us:
+        condition: service_healthy
+      stub-exo-us-16:
+        condition: service_healthy
+
+  stub-exo-us-17:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-us-17
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "160"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-us-17:
+    <<: *oim
+    hostname: node-us-17
+    environment:
+      OIM_INITIAL_TPS: "70.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-us:9000
+      - --listen=:8781
+      - --exo-url=http://stub-exo-us-17:52415
+      - --reachability-endpoint=http://node-us-17:8781
+      - --region=us
+      - --cap=0.7
+      - --lat=44.8600
+      - --lng=-93.2700
+    ports:
+      - "8781:8781"
+    depends_on:
+      coordinator-us:
+        condition: service_healthy
+      stub-exo-us-17:
+        condition: service_healthy
+
+  stub-exo-us-18:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-us-18
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "185"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-us-18:
+    <<: *oim
+    hostname: node-us-18
+    environment:
+      OIM_INITIAL_TPS: "74.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-us:9000
+      - --listen=:8782
+      - --exo-url=http://stub-exo-us-18:52415
+      - --reachability-endpoint=http://node-us-18:8782
+      - --region=us
+      - --cap=0.7
+      - --lat=36.0500
+      - --lng=-115.1400
+    ports:
+      - "8782:8782"
+    depends_on:
+      coordinator-us:
+        condition: service_healthy
+      stub-exo-us-18:
+        condition: service_healthy
+
+  stub-exo-us-19:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-us-19
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "210"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-us-19:
+    <<: *oim
+    hostname: node-us-19
+    environment:
+      OIM_INITIAL_TPS: "78.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-us:9000
+      - --listen=:8783
+      - --exo-url=http://stub-exo-us-19:52415
+      - --reachability-endpoint=http://node-us-19:8783
+      - --region=us
+      - --cap=0.7
+      - --lat=38.9800
+      - --lng=-94.5800
+    ports:
+      - "8783:8783"
+    depends_on:
+      coordinator-us:
+        condition: service_healthy
+      stub-exo-us-19:
+        condition: service_healthy
+
+  stub-exo-us-20:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-us-20
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "110"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-us-20:
+    <<: *oim
+    hostname: node-us-20
+    environment:
+      OIM_INITIAL_TPS: "62.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-us:9000
+      - --listen=:8784
+      - --exo-url=http://stub-exo-us-20:52415
+      - --reachability-endpoint=http://node-us-20:8784
+      - --region=us
+      - --cap=0.7
+      - --lat=29.6400
+      - --lng=-95.3700
+    ports:
+      - "8784:8784"
+    depends_on:
+      coordinator-us:
+        condition: service_healthy
+      stub-exo-us-20:
+        condition: service_healthy
+
+  stub-exo-us-21:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-us-21
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "135"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-us-21:
+    <<: *oim
+    hostname: node-us-21
+    environment:
+      OIM_INITIAL_TPS: "66.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-us:9000
+      - --listen=:8785
+      - --exo-url=http://stub-exo-us-21:52415
+      - --reachability-endpoint=http://node-us-21:8785
+      - --region=us
+      - --cap=0.7
+      - --lat=36.0500
+      - --lng=-86.7800
+    ports:
+      - "8785:8785"
+    depends_on:
+      coordinator-us:
+        condition: service_healthy
+      stub-exo-us-21:
+        condition: service_healthy
+
+  stub-exo-us-22:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-us-22
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "160"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-us-22:
+    <<: *oim
+    hostname: node-us-22
+    environment:
+      OIM_INITIAL_TPS: "70.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-us:9000
+      - --listen=:8786
+      - --exo-url=http://stub-exo-us-22:52415
+      - --reachability-endpoint=http://node-us-22:8786
+      - --region=us
+      - --cap=0.7
+      - --lat=39.8300
+      - --lng=-75.1700
+    ports:
+      - "8786:8786"
+    depends_on:
+      coordinator-us:
+        condition: service_healthy
+      stub-exo-us-22:
+        condition: service_healthy
+
+  stub-exo-us-23:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-us-23
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b,llama-3.1-70b,llama-3.1-405b
+      STUB_MEMORY_GB: "256"
+      STUB_LATENCY_MS: "100"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-us-23:
+    <<: *oim
+    hostname: node-us-23
+    environment:
+      OIM_INITIAL_TPS: "800.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-us:9000
+      - --listen=:8787
+      - --exo-url=http://stub-exo-us-23:52415
+      - --reachability-endpoint=http://node-us-23:8787
+      - --region=us
+      - --cap=0.8
+      - --lat=35.1100
+      - --lng=-80.8400
+      - --declared-memory-gb=256
+    ports:
+      - "8787:8787"
+    depends_on:
+      coordinator-us:
+        condition: service_healthy
+      stub-exo-us-23:
+        condition: service_healthy
+
+  stub-exo-us-24:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-us-24
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b,llama-3.1-70b
+      STUB_MEMORY_GB: "128"
+      STUB_LATENCY_MS: "120"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-us-24:
+    <<: *oim
+    hostname: node-us-24
+    environment:
+      OIM_INITIAL_TPS: "400.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-us:9000
+      - --listen=:8788
+      - --exo-url=http://stub-exo-us-24:52415
+      - --reachability-endpoint=http://node-us-24:8788
+      - --region=us
+      - --cap=0.8
+      - --lat=47.4900
+      - --lng=-117.4300
+      - --declared-memory-gb=128
+    ports:
+      - "8788:8788"
+    depends_on:
+      coordinator-us:
+        condition: service_healthy
+      stub-exo-us-24:
+        condition: service_healthy
+
+  # ── EU nodes (22 regular + 1 exo) ────────────────────────────────────────
 
   stub-exo-eu-1:
     <<: *oim
@@ -698,15 +1058,15 @@ services:
       - node
       - start
       - --coordinator=http://coordinator-eu:9001
-      - --listen=:8780
+      - --listen=:8789
       - --exo-url=http://stub-exo-eu-1:52415
-      - --reachability-endpoint=http://node-eu-1:8780
+      - --reachability-endpoint=http://node-eu-1:8789
       - --region=eu
       - --cap=0.7
       - --lat=52.2500
       - --lng=4.9000
     ports:
-      - "8780:8780"
+      - "8789:8789"
     depends_on:
       coordinator-eu:
         condition: service_healthy
@@ -738,15 +1098,15 @@ services:
       - node
       - start
       - --coordinator=http://coordinator-eu:9001
-      - --listen=:8781
+      - --listen=:8790
       - --exo-url=http://stub-exo-eu-2:52415
-      - --reachability-endpoint=http://node-eu-2:8781
+      - --reachability-endpoint=http://node-eu-2:8790
       - --region=eu
       - --cap=0.7
       - --lat=53.2200
       - --lng=-6.2700
     ports:
-      - "8781:8781"
+      - "8790:8790"
     depends_on:
       coordinator-eu:
         condition: service_healthy
@@ -778,15 +1138,15 @@ services:
       - node
       - start
       - --coordinator=http://coordinator-eu:9001
-      - --listen=:8782
+      - --listen=:8791
       - --exo-url=http://stub-exo-eu-3:52415
-      - --reachability-endpoint=http://node-eu-3:8782
+      - --reachability-endpoint=http://node-eu-3:8791
       - --region=eu
       - --cap=0.7
       - --lat=48.7400
       - --lng=2.3500
     ports:
-      - "8782:8782"
+      - "8791:8791"
     depends_on:
       coordinator-eu:
         condition: service_healthy
@@ -818,15 +1178,15 @@ services:
       - node
       - start
       - --coordinator=http://coordinator-eu:9001
-      - --listen=:8783
+      - --listen=:8792
       - --exo-url=http://stub-exo-eu-4:52415
-      - --reachability-endpoint=http://node-eu-4:8783
+      - --reachability-endpoint=http://node-eu-4:8792
       - --region=eu
       - --cap=0.7
       - --lat=51.3900
       - --lng=-0.1300
     ports:
-      - "8783:8783"
+      - "8792:8792"
     depends_on:
       coordinator-eu:
         condition: service_healthy
@@ -858,15 +1218,15 @@ services:
       - node
       - start
       - --coordinator=http://coordinator-eu:9001
-      - --listen=:8784
+      - --listen=:8793
       - --exo-url=http://stub-exo-eu-5:52415
-      - --reachability-endpoint=http://node-eu-5:8784
+      - --reachability-endpoint=http://node-eu-5:8793
       - --region=eu
       - --cap=0.7
       - --lat=59.2100
       - --lng=18.0700
     ports:
-      - "8784:8784"
+      - "8793:8793"
     depends_on:
       coordinator-eu:
         condition: service_healthy
@@ -898,15 +1258,15 @@ services:
       - node
       - start
       - --coordinator=http://coordinator-eu:9001
-      - --listen=:8785
+      - --listen=:8794
       - --exo-url=http://stub-exo-eu-6:52415
-      - --reachability-endpoint=http://node-eu-6:8785
+      - --reachability-endpoint=http://node-eu-6:8794
       - --region=eu
       - --cap=0.7
       - --lat=40.3000
       - --lng=-3.7000
     ports:
-      - "8785:8785"
+      - "8794:8794"
     depends_on:
       coordinator-eu:
         condition: service_healthy
@@ -938,15 +1298,15 @@ services:
       - node
       - start
       - --coordinator=http://coordinator-eu:9001
-      - --listen=:8786
+      - --listen=:8795
       - --exo-url=http://stub-exo-eu-7:52415
-      - --reachability-endpoint=http://node-eu-7:8786
+      - --reachability-endpoint=http://node-eu-7:8795
       - --region=eu
       - --cap=0.7
       - --lat=52.1100
       - --lng=21.0100
     ports:
-      - "8786:8786"
+      - "8795:8795"
     depends_on:
       coordinator-eu:
         condition: service_healthy
@@ -978,15 +1338,15 @@ services:
       - node
       - start
       - --coordinator=http://coordinator-eu:9001
-      - --listen=:8787
+      - --listen=:8796
       - --exo-url=http://stub-exo-eu-8:52415
-      - --reachability-endpoint=http://node-eu-8:8787
+      - --reachability-endpoint=http://node-eu-8:8796
       - --region=eu
       - --cap=0.7
       - --lat=50.7300
       - --lng=4.3500
     ports:
-      - "8787:8787"
+      - "8796:8796"
     depends_on:
       coordinator-eu:
         condition: service_healthy
@@ -1018,15 +1378,15 @@ services:
       - node
       - start
       - --coordinator=http://coordinator-eu:9001
-      - --listen=:8788
+      - --listen=:8797
       - --exo-url=http://stub-exo-eu-9:52415
-      - --reachability-endpoint=http://node-eu-9:8788
+      - --reachability-endpoint=http://node-eu-9:8797
       - --region=eu
       - --cap=0.7
       - --lat=45.3400
       - --lng=9.1900
     ports:
-      - "8788:8788"
+      - "8797:8797"
     depends_on:
       coordinator-eu:
         condition: service_healthy
@@ -1058,15 +1418,15 @@ services:
       - node
       - start
       - --coordinator=http://coordinator-eu:9001
-      - --listen=:8789
+      - --listen=:8798
       - --exo-url=http://stub-exo-eu-10:52415
-      - --reachability-endpoint=http://node-eu-10:8789
+      - --reachability-endpoint=http://node-eu-10:8798
       - --region=eu
       - --cap=0.7
       - --lat=48.0200
       - --lng=11.5800
     ports:
-      - "8789:8789"
+      - "8798:8798"
     depends_on:
       coordinator-eu:
         condition: service_healthy
@@ -1098,15 +1458,15 @@ services:
       - node
       - start
       - --coordinator=http://coordinator-eu:9001
-      - --listen=:8790
+      - --listen=:8799
       - --exo-url=http://stub-exo-eu-11:52415
-      - --reachability-endpoint=http://node-eu-11:8790
+      - --reachability-endpoint=http://node-eu-11:8799
       - --region=eu
       - --cap=0.7
       - --lat=48.0900
       - --lng=16.3700
     ports:
-      - "8790:8790"
+      - "8799:8799"
     depends_on:
       coordinator-eu:
         condition: service_healthy
@@ -1138,15 +1498,15 @@ services:
       - node
       - start
       - --coordinator=http://coordinator-eu:9001
-      - --listen=:8791
+      - --listen=:8800
       - --exo-url=http://stub-exo-eu-12:52415
-      - --reachability-endpoint=http://node-eu-12:8791
+      - --reachability-endpoint=http://node-eu-12:8800
       - --region=eu
       - --cap=0.7
       - --lat=47.2600
       - --lng=8.5400
     ports:
-      - "8791:8791"
+      - "8800:8800"
     depends_on:
       coordinator-eu:
         condition: service_healthy
@@ -1158,9 +1518,9 @@ services:
     command: ["/usr/local/bin/stub-exo"]
     environment:
       STUB_NODE_NAME: node-eu-13
-      STUB_MODELS: llama-3.2-3b,mixtral-8x7b,llama-3.1-70b,llama-3.1-405b
-      STUB_MEMORY_GB: "256"
-      STUB_LATENCY_MS: "190"
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "235"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
       interval: 2s
@@ -1171,6 +1531,406 @@ services:
     <<: *oim
     hostname: node-eu-13
     environment:
+      OIM_INITIAL_TPS: "74.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-eu:9001
+      - --listen=:8801
+      - --exo-url=http://stub-exo-eu-13:52415
+      - --reachability-endpoint=http://node-eu-13:8801
+      - --region=eu
+      - --cap=0.7
+      - --lat=55.5600
+      - --lng=12.5700
+    ports:
+      - "8801:8801"
+    depends_on:
+      coordinator-eu:
+        condition: service_healthy
+      stub-exo-eu-13:
+        condition: service_healthy
+
+  stub-exo-eu-14:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-eu-14
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "270"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-eu-14:
+    <<: *oim
+    hostname: node-eu-14
+    environment:
+      OIM_INITIAL_TPS: "78.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-eu:9001
+      - --listen=:8802
+      - --exo-url=http://stub-exo-eu-14:52415
+      - --reachability-endpoint=http://node-eu-14:8802
+      - --region=eu
+      - --cap=0.7
+      - --lat=60.0500
+      - --lng=24.9400
+    ports:
+      - "8802:8802"
+    depends_on:
+      coordinator-eu:
+        condition: service_healthy
+      stub-exo-eu-14:
+        condition: service_healthy
+
+  stub-exo-eu-15:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-eu-15
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "305"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-eu-15:
+    <<: *oim
+    hostname: node-eu-15
+    environment:
+      OIM_INITIAL_TPS: "62.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-eu:9001
+      - --listen=:8803
+      - --exo-url=http://stub-exo-eu-15:52415
+      - --reachability-endpoint=http://node-eu-15:8803
+      - --region=eu
+      - --cap=0.7
+      - --lat=59.7900
+      - --lng=10.7500
+    ports:
+      - "8803:8803"
+    depends_on:
+      coordinator-eu:
+        condition: service_healthy
+      stub-exo-eu-15:
+        condition: service_healthy
+
+  stub-exo-eu-16:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-eu-16
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "340"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-eu-16:
+    <<: *oim
+    hostname: node-eu-16
+    environment:
+      OIM_INITIAL_TPS: "66.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-eu:9001
+      - --listen=:8804
+      - --exo-url=http://stub-exo-eu-16:52415
+      - --reachability-endpoint=http://node-eu-16:8804
+      - --region=eu
+      - --cap=0.7
+      - --lat=49.9600
+      - --lng=14.4300
+    ports:
+      - "8804:8804"
+    depends_on:
+      coordinator-eu:
+        condition: service_healthy
+      stub-exo-eu-16:
+        condition: service_healthy
+
+  stub-exo-eu-17:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-eu-17
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "375"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-eu-17:
+    <<: *oim
+    hostname: node-eu-17
+    environment:
+      OIM_INITIAL_TPS: "70.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-eu:9001
+      - --listen=:8805
+      - --exo-url=http://stub-exo-eu-17:52415
+      - --reachability-endpoint=http://node-eu-17:8805
+      - --region=eu
+      - --cap=0.7
+      - --lat=47.3800
+      - --lng=19.0400
+    ports:
+      - "8805:8805"
+    depends_on:
+      coordinator-eu:
+        condition: service_healthy
+      stub-exo-eu-17:
+        condition: service_healthy
+
+  stub-exo-eu-18:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-eu-18
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "200"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-eu-18:
+    <<: *oim
+    hostname: node-eu-18
+    environment:
+      OIM_INITIAL_TPS: "74.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-eu:9001
+      - --listen=:8806
+      - --exo-url=http://stub-exo-eu-18:52415
+      - --reachability-endpoint=http://node-eu-18:8806
+      - --region=eu
+      - --cap=0.7
+      - --lat=44.3100
+      - --lng=26.1000
+    ports:
+      - "8806:8806"
+    depends_on:
+      coordinator-eu:
+        condition: service_healthy
+      stub-exo-eu-18:
+        condition: service_healthy
+
+  stub-exo-eu-19:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-eu-19
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "235"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-eu-19:
+    <<: *oim
+    hostname: node-eu-19
+    environment:
+      OIM_INITIAL_TPS: "78.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-eu:9001
+      - --listen=:8807
+      - --exo-url=http://stub-exo-eu-19:52415
+      - --reachability-endpoint=http://node-eu-19:8807
+      - --region=eu
+      - --cap=0.7
+      - --lat=41.2700
+      - --lng=2.1600
+    ports:
+      - "8807:8807"
+    depends_on:
+      coordinator-eu:
+        condition: service_healthy
+      stub-exo-eu-19:
+        condition: service_healthy
+
+  stub-exo-eu-20:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-eu-20
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "270"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-eu-20:
+    <<: *oim
+    hostname: node-eu-20
+    environment:
+      OIM_INITIAL_TPS: "62.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-eu:9001
+      - --listen=:8808
+      - --exo-url=http://stub-exo-eu-20:52415
+      - --reachability-endpoint=http://node-eu-20:8808
+      - --region=eu
+      - --cap=0.7
+      - --lat=45.6300
+      - --lng=4.8500
+    ports:
+      - "8808:8808"
+    depends_on:
+      coordinator-eu:
+        condition: service_healthy
+      stub-exo-eu-20:
+        condition: service_healthy
+
+  stub-exo-eu-21:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-eu-21
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "305"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-eu-21:
+    <<: *oim
+    hostname: node-eu-21
+    environment:
+      OIM_INITIAL_TPS: "66.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-eu:9001
+      - --listen=:8809
+      - --exo-url=http://stub-exo-eu-21:52415
+      - --reachability-endpoint=http://node-eu-21:8809
+      - --region=eu
+      - --cap=0.7
+      - --lat=53.4500
+      - --lng=10.0200
+    ports:
+      - "8809:8809"
+    depends_on:
+      coordinator-eu:
+        condition: service_healthy
+      stub-exo-eu-21:
+        condition: service_healthy
+
+  stub-exo-eu-22:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-eu-22
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b
+      STUB_MEMORY_GB: "32"
+      STUB_LATENCY_MS: "340"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-eu-22:
+    <<: *oim
+    hostname: node-eu-22
+    environment:
+      OIM_INITIAL_TPS: "70.0"
+      OIM_CHAOS_DOWNTIME_PCT: "6"
+    command:
+      - /usr/local/bin/oim
+      - node
+      - start
+      - --coordinator=http://coordinator-eu:9001
+      - --listen=:8810
+      - --exo-url=http://stub-exo-eu-22:52415
+      - --reachability-endpoint=http://node-eu-22:8810
+      - --region=eu
+      - --cap=0.7
+      - --lat=53.3600
+      - --lng=-2.2400
+    ports:
+      - "8810:8810"
+    depends_on:
+      coordinator-eu:
+        condition: service_healthy
+      stub-exo-eu-22:
+        condition: service_healthy
+
+  stub-exo-eu-23:
+    <<: *oim
+    command: ["/usr/local/bin/stub-exo"]
+    environment:
+      STUB_NODE_NAME: node-eu-23
+      STUB_MODELS: llama-3.2-3b,mixtral-8x7b,llama-3.1-70b,llama-3.1-405b
+      STUB_MEMORY_GB: "256"
+      STUB_LATENCY_MS: "190"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+  node-eu-23:
+    <<: *oim
+    hostname: node-eu-23
+    environment:
       OIM_INITIAL_TPS: "800.0"
       OIM_CHAOS_DOWNTIME_PCT: "6"
     command:
@@ -1178,20 +1938,20 @@ services:
       - node
       - start
       - --coordinator=http://coordinator-eu:9001
-      - --listen=:8792
-      - --exo-url=http://stub-exo-eu-13:52415
-      - --reachability-endpoint=http://node-eu-13:8792
+      - --listen=:8811
+      - --exo-url=http://stub-exo-eu-23:52415
+      - --reachability-endpoint=http://node-eu-23:8811
       - --region=eu
       - --cap=0.8
-      - --lat=55.5600
-      - --lng=12.5700
+      - --lat=38.6000
+      - --lng=-9.1400
       - --declared-memory-gb=256
     ports:
-      - "8792:8792"
+      - "8811:8811"
     depends_on:
       coordinator-eu:
         condition: service_healthy
-      stub-exo-eu-13:
+      stub-exo-eu-23:
         condition: service_healthy
 
   # ── Traffic generators (simulation only — anonymous, no credit accounting) ──
@@ -1284,6 +2044,30 @@ services:
       - --coordinator=http://coordinator-eu:9001
       - --interval=1
       - --model=llama-3.2-3b
+    depends_on:
+      coordinator-eu:
+        condition: service_healthy
+
+  pointer-host-us:
+    <<: *oim
+    entrypoint: ["/usr/local/bin/jobgen"]
+    command:
+      - --coordinator=http://coordinator-us:9000
+      - --interval=4
+      - --model=llama-3.2-3b
+      - --pointer-host=ipad-us-coordinator
+    depends_on:
+      coordinator-us:
+        condition: service_healthy
+
+  pointer-host-eu:
+    <<: *oim
+    entrypoint: ["/usr/local/bin/jobgen"]
+    command:
+      - --coordinator=http://coordinator-eu:9001
+      - --interval=4
+      - --model=llama-3.2-3b
+      - --pointer-host=ipad-eu-coordinator
     depends_on:
       coordinator-eu:
         condition: service_healthy

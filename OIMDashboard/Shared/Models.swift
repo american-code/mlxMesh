@@ -9,7 +9,7 @@ struct NodeSnapshot: Codable, Identifiable, Hashable {
     let reachabilityEndpoint: String
     let declaredMemoryGb: Double
     let committedMemoryGb: Double
-    let models: [ModelCapability]
+    let models: [ModelCapability]?  // Optional to handle null from nodes with no models
     let measuredToksPerSec: Double
     let hasSecureEnclave: Bool   // self-declared by the node — informational only
     let enclaveAttested: Bool    // coordinator-verified Secure Enclave proof — trust this, not hasSecureEnclave
@@ -64,10 +64,27 @@ struct PodMetrics: Codable {
     let totalInFlight: Int
 }
 
+// CoordinationParticipant is an iOS device acting as a security/coordination
+// layer (hosts encrypted payload pointers). Not an inference node — shown with
+// a distinct icon and a toggleable layer.
+struct CoordinationParticipant: Codable, Identifiable, Hashable {
+    let deviceId: String
+    let role: String
+    let isMobile: Bool
+    let geographicHint: String
+    let lastSeenAt: String
+    // Encrypted-payload pointers this device has served — the concrete work a
+    // coordination participant does. Optional for backward-compat with older
+    // coordinators that don't emit the field.
+    let pointersServed: Int?
+    var id: String { deviceId }
+}
+
 struct NodesResponse: Codable {
     let podId: String
     let region: String
     let nodes: [NodeSnapshot]
+    let coordinationNodes: [CoordinationParticipant]?
     let metrics: PodMetrics?
 }
 

@@ -369,6 +369,28 @@ func trafficGenerators(w *os.File) {
 `)
 	writeTrafficGenRegion(w, "us", "coordinator-us", "9000")
 	writeTrafficGenRegion(w, "eu", "coordinator-eu", "9001")
+	// One pointer-host generator per region: announces as an iOS-style
+	// coordination participant and routes its jobs through the encrypted-pointer
+	// path, so the dashboards' Security / coordination layer shows a live device
+	// with a climbing "pointers served" count out of the box.
+	writePointerHostGen(w, "us", "coordinator-us", "9000")
+	writePointerHostGen(w, "eu", "coordinator-eu", "9001")
+}
+
+func writePointerHostGen(w *os.File, region, coordinatorService, port string) {
+	fmt.Fprintf(w, `
+  pointer-host-%s:
+    <<: *oim
+    entrypoint: ["/usr/local/bin/jobgen"]
+    command:
+      - --coordinator=http://%s:%s
+      - --interval=4
+      - --model=llama-3.2-3b
+      - --pointer-host=ipad-%s-coordinator
+    depends_on:
+      %s:
+        condition: service_healthy
+`, region, coordinatorService, port, region, coordinatorService)
 }
 
 func writeTrafficGenRegion(w *os.File, region, coordinatorService, port string) {

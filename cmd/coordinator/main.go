@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -41,8 +42,10 @@ import (
 	"github.com/open-inference-mesh/oim/internal/coordinator"
 	"github.com/open-inference-mesh/oim/internal/directory"
 	"github.com/open-inference-mesh/oim/internal/httpmw"
+	"github.com/open-inference-mesh/oim/internal/httptls"
 	"github.com/open-inference-mesh/oim/internal/protocol"
 	"github.com/open-inference-mesh/oim/internal/settlement"
+	"github.com/open-inference-mesh/oim/internal/wallet"
 )
 
 // apiKeyStore maps generated oim_* API keys ↔ user IDs.
@@ -169,6 +172,7 @@ func rootCmd() *cobra.Command {
 	var maxDispatchAttempts, directoryIntervalSec, grantPoWBits int
 	var rateLimitRPS, rateLimitBurst, grantRateLimitPerHour float64
 	var corsOrigins []string
+	var tlsCert, tlsKey string
 
 	cmd := &cobra.Command{
 		Use:   "oim-coordinator",
@@ -182,7 +186,7 @@ Optionally report aggregate health to a directory with --directory.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiKey, dbPath,
 				maxDispatchAttempts, time.Duration(directoryIntervalSec)*time.Second, rateLimitRPS, rateLimitBurst,
-				corsOrigins, grantPoWBits, grantRateLimitPerHour)
+				corsOrigins, grantPoWBits, grantRateLimitPerHour, tlsCert, tlsKey)
 		},
 	}
 	cmd.Flags().StringVar(&listenAddr, "listen", ":9000", "Address to listen on")
@@ -199,6 +203,8 @@ Optionally report aggregate health to a directory with --directory.`,
 	cmd.Flags().StringSliceVar(&corsOrigins, "cors-origin", nil, "Allowed browser origin(s) for CORS (repeatable or comma-separated; empty = allow any origin, dev-friendly default)")
 	cmd.Flags().IntVar(&grantPoWBits, "grant-pow-bits", settlement.DefaultGrantPoWBits, "Proof-of-work difficulty (leading zero bits) required to claim a startup grant; raises the cost of minting disposable user_ids to farm grants (0 disables)")
 	cmd.Flags().Float64Var(&grantRateLimitPerHour, "grant-rate-limit-per-hour", 6.0, "Startup-grant claims allowed per client IP per hour, independent of the general write-path rate limit (0 disables)")
+	cmd.Flags().StringVar(&tlsCert, "tls-cert", "", "Path to the TLS certificate (PEM). Set with --tls-key to serve HTTPS; unset serves plain HTTP")
+	cmd.Flags().StringVar(&tlsKey, "tls-key", "", "Path to the TLS private key (PEM). Required together with --tls-cert")
 	return cmd
 }
 
@@ -225,8 +231,10 @@ func (s *settlementRecordStore) store(r map[string]any) {
 	s.records = append(s.records, r)
 }
 
-func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiKey, dbPath string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64) error {
+func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiKey, dbPath string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64, tlsCert, tlsKey string) error {
 	registry := coordinator.NewNodeRegistry()
+	coordReg := coordinator.NewCoordinationRegistry()
+	walletMgr := wallet.NewManager()
 	assignments := coordinator.NewAssignmentStore()
 	measurements := coordinator.NewMeasurementStore()
 	settlementRecords := &settlementRecordStore{}
@@ -389,6 +397,15 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 			OIMJobID    string           `json:"oim_job_id"`
 			OIMSensitiv string           `json:"oim_sensitivity"`
 			OIMMaxPrice float64          `json:"oim_max_price_per_unit"`
+			// On-device routing hint fields (all optional). A request omitting
+			// them — every non-iOS client, curl, the Python agent, sim traffic —
+			// is handled identically to a nil hint: the coordinator classifies
+			// and routes normally. See internal/coordinator/hintvalidator.go.
+			OIMHint            *coordinator.RouterHint `json:"oim_hint"`
+			OIMSensOverride    string                  `json:"oim_sensitivity_override"`
+			OIMPayloadHash     string                  `json:"oim_payload_hash"`
+			OIMPayloadFetchURL string                  `json:"oim_payload_fetch_url"`
+			OIMEphemeralPubKey string                  `json:"oim_ephemeral_public_key"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeErr(w, http.StatusBadRequest, "parse request: "+err.Error())
@@ -421,26 +438,57 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 			}
 		}
 
-		sensitivity := protocol.SensitivityModerate
+		// The coordinator's OWN classification of the job. Today it derives this
+		// from the declared oim_sensitivity (default moderate); a future
+		// coordinator-side classifier would replace this line. Crucially, this is
+		// the authority the client can escalate but never fall below.
+		coordinatorTier := protocol.SensitivityModerate
 		if req.OIMSensitiv == string(protocol.SensitivityLow) {
-			sensitivity = protocol.SensitivityLow
+			coordinatorTier = protocol.SensitivityLow
 		} else if req.OIMSensitiv == string(protocol.SensitivityHighRequiresAttestation) {
-			sensitivity = protocol.SensitivityHighRequiresAttestation
+			coordinatorTier = protocol.SensitivityHighRequiresAttestation
 		}
+
+		// Validate the on-device hint (nil for non-iOS clients) and resolve the
+		// effective sensitivity. store is nil until per-requester hint-accuracy
+		// history is wired, so weight is 0 and the coordinator re-classifies —
+		// exactly today's behavior for hintless requests. The override can only
+		// escalate; de-escalation is impossible (hintvalidator.go).
+		sensitivity, _, _ := coordinator.ResolveRouting(userID, req.OIMHint, req.OIMSensOverride, coordinatorTier, nil)
 
 		jobID := req.OIMJobID
 		if jobID == "" {
 			jobID = fmt.Sprintf("job-%d", time.Now().UnixNano())
 		}
 
+		// PayloadRef carries the content-address pointer in privacy mode; the
+		// coordinator passes it (and the fetch URL + ephemeral pubkey) through to
+		// the assigned node and NEVER fetches it. Empty for legacy/plaintext.
+		payloadRef := req.OIMPayloadHash
+
+		// Pointer-path attribution: when a request rides an encrypted pointer, the
+		// device hosting/serving that ciphertext is a coordination participant
+		// doing real work. It self-identifies via X-OIM-Pointer-Host so we credit
+		// the served pointer to it. A stale/unknown ID is simply ignored (the
+		// registry returns false) — attribution never affects routing or the reply.
+		if payloadRef != "" {
+			if host := r.Header.Get("X-OIM-Pointer-Host"); host != "" {
+				if coordReg.RecordPointerServed(host) {
+					log.Printf("[coordinator] pointer served host=%s job=%s", host, jobID)
+				}
+			}
+		}
+
 		job := protocol.JobSpec{
-			JobID:           jobID,
-			ModelID:         req.Model,
-			Lane:            protocol.JobLaneFast,
-			Sensitivity:     sensitivity,
-			MaxPricePerUnit: req.OIMMaxPrice,
-			RedundancyDepth: 0,
-			PayloadRef:      "",
+			JobID:                  jobID,
+			ModelID:                req.Model,
+			Lane:                   protocol.JobLaneFast,
+			Sensitivity:            sensitivity,
+			MaxPricePerUnit:        req.OIMMaxPrice,
+			RedundancyDepth:        0,
+			PayloadRef:             payloadRef,
+			PayloadFetchURL:        req.OIMPayloadFetchURL,
+			PayloadEphemeralPubKey: req.OIMEphemeralPubKey,
 		}
 
 		result, err := coordinator.DispatchFastLane(r.Context(), job, req.Messages, registry, maxAttempts)
@@ -860,6 +908,10 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 			"pod_id": podID,
 			"region": regionHint,
 			"nodes":  registry.Snapshot(),
+			// iOS security/coordination participants — a separate list so the
+			// dashboard can render them with a distinct icon and toggle the layer,
+			// while the inference routers never see them.
+			"coordination_nodes": coordReg.Snapshot(),
 			"metrics": map[string]any{
 				"queue_depth":      jobQueue.Depth(),
 				"queue_capacity":   jobQueue.Capacity(),
@@ -867,6 +919,114 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 				"total_in_flight":  registry.TotalInFlight(),
 			},
 		})
+	})
+
+	// POST /coordination/announce — an iOS device announces (or heartbeats) that
+	// it is participating as a security/coordination layer (hosts encrypted
+	// payload pointers). Additive: pods work identically with zero participants.
+	mux.HandleFunc("POST /coordination/announce", func(w http.ResponseWriter, r *http.Request) {
+		var p coordinator.CoordinationParticipant
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse announce: "+err.Error())
+			return
+		}
+		if p.DeviceID == "" {
+			writeErr(w, http.StatusBadRequest, "device_id required")
+			return
+		}
+		coordReg.Announce(p, time.Now())
+		writeJSON(w, http.StatusOK, map[string]any{"status": "announced", "device_id": p.DeviceID})
+	})
+
+	// POST /coordination/withdraw — clean departure of a coordination participant.
+	mux.HandleFunc("POST /coordination/withdraw", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			DeviceID string `json:"device_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse withdraw: "+err.Error())
+			return
+		}
+		coordReg.Withdraw(body.DeviceID)
+		writeJSON(w, http.StatusOK, map[string]any{"status": "withdrawn"})
+	})
+
+	// --- Wallet: portable, recoverable account identity (internal/wallet) ---
+	// The account address (hash of the account's Ed25519 pubkey) IS the ledger
+	// user_id, so the same wallet key controls the same balance from any device.
+
+	// POST /account/challenge {address} → a one-time nonce to sign.
+	mux.HandleFunc("POST /account/challenge", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Address string `json:"address"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Address == "" {
+			writeErr(w, http.StatusBadRequest, "address required")
+			return
+		}
+		ch, err := walletMgr.IssueChallenge(body.Address, time.Now())
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, ch)
+	})
+
+	// POST /account/auth {address, nonce, public_key, signature} — proves account
+	// ownership; on success mints a session oim_ API key bound to the address.
+	mux.HandleFunc("POST /account/auth", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Address   string `json:"address"`
+			Nonce     string `json:"nonce"`
+			PublicKey string `json:"public_key"` // base64 Ed25519 raw
+			Signature string `json:"signature"`  // base64
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse auth: "+err.Error())
+			return
+		}
+		pub, err1 := base64.StdEncoding.DecodeString(body.PublicKey)
+		sig, err2 := base64.StdEncoding.DecodeString(body.Signature)
+		if err1 != nil || err2 != nil {
+			writeErr(w, http.StatusBadRequest, "public_key and signature must be base64")
+			return
+		}
+		if err := walletMgr.VerifyChallenge(body.Address, body.Nonce, pub, sig, time.Now()); err != nil {
+			writeErr(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		key, err := apiKeys.generate(body.Address)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "mint session key: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"address": body.Address, "api_key": key})
+	})
+
+	// POST /account/{address}/link-device {device_node_id, account_public_key,
+	// signature} — binds a device's earnings to this account (account-signed).
+	mux.HandleFunc("POST /account/{address}/link-device", func(w http.ResponseWriter, r *http.Request) {
+		address := r.PathValue("address")
+		var body struct {
+			DeviceNodeID     string `json:"device_node_id"`
+			AccountPublicKey string `json:"account_public_key"`
+			Signature        string `json:"signature"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse link: "+err.Error())
+			return
+		}
+		pub, err1 := base64.StdEncoding.DecodeString(body.AccountPublicKey)
+		sig, err2 := base64.StdEncoding.DecodeString(body.Signature)
+		if err1 != nil || err2 != nil {
+			writeErr(w, http.StatusBadRequest, "account_public_key and signature must be base64")
+			return
+		}
+		if err := walletMgr.LinkDevice(address, body.DeviceNodeID, pub, sig, time.Now()); err != nil {
+			writeErr(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "linked", "device_node_id": body.DeviceNodeID, "account": address})
 	})
 
 	// GET /nodes/stream — SSE push of node snapshots every 2 s.
@@ -891,9 +1051,10 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 				return
 			case <-ticker.C:
 				snap := map[string]any{
-					"pod_id": podID,
-					"region": regionHint,
-					"nodes":  registry.Snapshot(),
+					"pod_id":             podID,
+					"region":             regionHint,
+					"nodes":              registry.Snapshot(),
+					"coordination_nodes": coordReg.Snapshot(),
 					"metrics": map[string]any{
 						"queue_depth":      jobQueue.Depth(),
 						"queue_capacity":   jobQueue.Capacity(),
@@ -986,8 +1147,14 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 		srv.Shutdown(shutCtx)
 	}()
 
-	log.Printf("[coordinator] pod=%s region=%s listening on %s", podID, regionHint, listenAddr)
-	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+	scheme := "http"
+	if httptls.Enabled(tlsCert, tlsKey) {
+		scheme = "https"
+	} else {
+		log.Printf("[coordinator] WARNING: serving PLAINTEXT HTTP — set --tls-cert/--tls-key before exposing beyond localhost")
+	}
+	log.Printf("[coordinator] pod=%s region=%s listening on %s (%s)", podID, regionHint, listenAddr, scheme)
+	if err := httptls.Serve(srv, ln, tlsCert, tlsKey); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil

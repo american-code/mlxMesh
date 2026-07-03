@@ -23,6 +23,7 @@ export default function App() {
   const { data: topology, error: topoError, lastUpdated, refresh } = useTopology()
   const [selected, setSelected] = useState<NodeSnapshot | null>(null)
   const [tab, setTab] = useState<Tab>('network')
+  const [showCoordination, setShowCoordination] = useState(true)
 
   // "You" marker — approximate browser geolocation, requested once on mount.
   // Silently absent if denied/unavailable; nothing else depends on it.
@@ -45,6 +46,10 @@ export default function App() {
   // ── Dynamic: works for any number of pods/regions ──
   const podNodes = useAllNodes(pods)
   const allNodes = podNodes.flatMap(p => p.nodes)
+  // iOS security/coordination participants (distinct from inference nodes),
+  // tagged with the region they announced through.
+  const allCoordination = podNodes.flatMap(p =>
+    p.coordination.map(c => ({ ...c, region: p.pod.region_hint })))
 
   const liveCount     = allNodes.filter(n => computeNodeStatus(n) === 'live').length
   const degradedCount = allNodes.filter(n => computeNodeStatus(n) === 'degraded').length
@@ -115,7 +120,7 @@ export default function App() {
             width: 9, height: 9, borderRadius: '50%', background: '#3fb950',
           }} />
           <span style={{ fontWeight: 700, fontSize: 15, letterSpacing: '-0.01em' }}>
-            OIM Control Center
+            mlxMesh
           </span>
           <div style={{
             display: 'flex', background: '#1c2128',
@@ -231,6 +236,13 @@ export default function App() {
             onServed={lightUpRoute}
           />
         </section>
+
+        {/* ── Security / coordination layer — iOS devices hosting encrypted pointers ── */}
+        <SecurityLayerPanel
+          participants={allCoordination}
+          show={showCoordination}
+          onToggle={() => setShowCoordination(v => !v)}
+        />
 
         {/* ── Backpressure panel — queue depth and in-flight across all coordinators ── */}
         {pods.length > 0 && (
@@ -441,6 +453,70 @@ function TryTheMesh({
               )}
             </div>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// SecurityLayerPanel renders iOS coordination participants with a distinct
+// shield icon and a show/hide toggle for the whole layer. Renders even at zero
+// participants (so the layer is discoverable) but stays compact then.
+function SecurityLayerPanel({
+  participants, show, onToggle,
+}: {
+  participants: Array<{ device_id: string; role: string; is_mobile: boolean; geographic_hint: string; region: string }>
+  show: boolean
+  onToggle: () => void
+}) {
+  const count = participants.length
+  return (
+    <div style={{
+      background: '#161b22', border: '1px solid #a371f733',
+      borderRadius: 10, padding: '12px 20px', marginBottom: 20,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 16 }}>🛡️</span>
+          <span style={{ fontWeight: 600, fontSize: 13 }}>Security & coordination layer</span>
+          <span style={{
+            color: '#a371f7', background: '#a371f718', border: '1px solid #a371f744',
+            borderRadius: 20, padding: '1px 9px', fontSize: 12, fontWeight: 700,
+          }}>{count} device{count !== 1 ? 's' : ''}</span>
+          <span style={{ color: '#7d8590', fontSize: 12 }}>
+            iOS devices classifying on-device & hosting encrypted pointers — additive, mesh routes normally without them
+          </span>
+        </div>
+        <button onClick={onToggle} style={{
+          background: show ? '#a371f722' : '#1c2128',
+          border: `1px solid ${show ? '#a371f7' : '#30363d'}`,
+          color: show ? '#a371f7' : '#7d8590',
+          borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+        }}>{show ? 'Layer on' : 'Layer off'}</button>
+      </div>
+
+      {show && count > 0 && (
+        <div style={{
+          display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+          gap: 10, marginTop: 12,
+        }}>
+          {participants.map(p => (
+            <div key={p.device_id} style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              background: '#0d1117', border: '1px solid #21262d',
+              borderRadius: 8, padding: '8px 12px',
+            }}>
+              <span style={{ fontSize: 18 }}>{p.is_mobile ? '📱' : '🛡️'}</span>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontFamily: 'monospace', fontSize: 12, color: '#e6edf3', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {p.device_id.slice(0, 12)}…
+                </div>
+                <div style={{ color: '#7d8590', fontSize: 11 }}>
+                  {p.region.toUpperCase()} · {p.role.replace(/_/g, ' ')}
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>

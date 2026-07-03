@@ -348,6 +348,10 @@ func (r *NodeRegistry) Snapshot() []NodeSnapshot {
 		if e.manifest.MeasuredSignature != nil {
 			tps = e.manifest.MeasuredSignature.TokensPerSecDecode
 		}
+		models := e.manifest.Models
+		if models == nil {
+			models = []protocol.ModelCapability{}
+		}
 		out = append(out, NodeSnapshot{
 			NodeID:               e.manifest.NodeID,
 			Status:               status,
@@ -357,7 +361,7 @@ func (r *NodeRegistry) Snapshot() []NodeSnapshot {
 			ReachabilityEndpoint: e.manifest.ReachabilityEndpoint,
 			DeclaredMemoryGB:     e.manifest.DeclaredMemoryGB,
 			CommittedMemoryGB:    e.manifest.DeclaredMemoryGB * e.manifest.DeclaredMemoryCapPct,
-			Models:               e.manifest.Models,
+			Models:               models,
 			MeasuredToksPerSec:   tps,
 			HasSecureEnclave:     e.manifest.HasSecureEnclave,
 			EnclaveAttested:      e.enclaveAttested,

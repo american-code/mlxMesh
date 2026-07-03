@@ -7,20 +7,30 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0013CD9C21D8C464E19C357C /* MeshMapKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77284A05669E8C0AA1681CA7 /* MeshMapKit.swift */; };
+		010CB990A0F0E84096056EA6 /* ThermalMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 533D2ECD42C2EAB5C6D0EED6 /* ThermalMonitor.swift */; };
 		04B66F405D8B08B2DE22EBA0 /* TopologyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 079BB3368034DD3C9BD738C8 /* TopologyStore.swift */; };
+		051641083B5D4C164DA368CE /* CoordinationLayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A697856052BD874CD6939B45 /* CoordinationLayerView.swift */; };
 		082E4E9544607F81894DB9F0 /* NetworkGraphView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B2CCF1D9E228419A271419D /* NetworkGraphView.swift */; };
 		090646334E229530F14400A0 /* OIMDashboardApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10C3DFA53386C093446D3211 /* OIMDashboardApp.swift */; };
 		0B7CDC324F87697E7160F78A /* NetworkGraphView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B2CCF1D9E228419A271419D /* NetworkGraphView.swift */; };
 		0E182B36030FE827DDC2A568 /* OverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE6D8C75CFE1FFF59DB5A516 /* OverviewView.swift */; };
 		11441F887FC84DF719460E2F /* NetworkClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08CA2CAC31A57D3486DBC65 /* NetworkClient.swift */; };
+		15AFA23E2FDAA769BABAB11F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4E716F22E613E5CCC2B48450 /* Assets.xcassets */; };
+		16842E521AF32A8AED91EB88 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C2BF37C9195B932F9211B3CB /* Assets.xcassets */; };
 		1E63B07E27B4D863148F7169 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E755F2BF2DB1773E821A0030 /* SettingsView.swift */; };
 		2255A083CC3EE5DFB57A08C0 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7513586DABF50809E9929152 /* ContentView.swift */; };
+		287998A215E9A6E32F55A2ED /* ModelSignatureVerifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 462427F1716B3FB5AC128E4F /* ModelSignatureVerifier.swift */; };
+		305DDE8805FBA84E4CEB2658 /* PayloadEncryption.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE176491E6900213655D1785 /* PayloadEncryption.swift */; };
 		3125B098FA9BC27735FC1EDC /* WatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B27F1F173A888210D3946460 /* WatchApp.swift */; };
 		3207AC90A9F13F61CDA6375A /* TopologyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 079BB3368034DD3C9BD738C8 /* TopologyStore.swift */; };
 		34D4DC464F5381BA7F5F84C0 /* TryMeshView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B02540EC8D8E38F0FB3136E /* TryMeshView.swift */; };
 		3BFF4065F430C0D7FADB6CAA /* RegionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4749A9A539DFA6EE6809EA77 /* RegionView.swift */; };
 		41E37DBFA4D32DE85DFC1179 /* TVApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 940809D7CDA2BF7315466231 /* TVApp.swift */; };
+		451895B0CE3710D92E75CF3C /* ContributionSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3721584D617CA1C7946940D /* ContributionSession.swift */; };
 		452AE6F16886829658C6349D /* TopologyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 079BB3368034DD3C9BD738C8 /* TopologyStore.swift */; };
+		4AFDADC10578A270457A7E81 /* WalletStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F97F4F1ACD60743EAF71E25 /* WalletStore.swift */; };
+		4BBCEBA498624533ED9263B8 /* CoreMLRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E73E65D0E236D780072E7DAB /* CoreMLRouter.swift */; };
 		505A94291E913CEB2DE09AB3 /* WatchContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBFCECC0DADDF1F9036C408B /* WatchContentView.swift */; };
 		54FBAB0D399F2702E9B3C14A /* NetworkClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08CA2CAC31A57D3486DBC65 /* NetworkClient.swift */; };
 		591AD7987E35789CDE516B21 /* StatusUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BF6727643E63881CD213C93 /* StatusUtils.swift */; };
@@ -30,12 +40,24 @@
 		892E70A622442DBD043BA482 /* GlobalMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03FC7C4990BDDE4D359DFF3F /* GlobalMapView.swift */; };
 		8D80D745BE934DB8FC37EFB4 /* NetworkLoadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA6A50343A5863880D34B35E /* NetworkLoadView.swift */; };
 		9A0FE3810D3A62714F6F0965 /* NetworkClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08CA2CAC31A57D3486DBC65 /* NetworkClient.swift */; };
+		9D6DD3F16CCEC03D159D7EAD /* MeshMapKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77284A05669E8C0AA1681CA7 /* MeshMapKit.swift */; };
 		9E1E1B615CEAC06C43ED3582 /* PodSummaryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01DF4999D87E576A76F5B57 /* PodSummaryView.swift */; };
 		A1F5DE9F693131DBDA68D94A /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 618F1FC2462FE9B9AA8443C2 /* Models.swift */; };
+		A3595BF6FD51103117AA5091 /* MemoryPressureMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C898CBECE1458272C65BBD4 /* MemoryPressureMonitor.swift */; };
+		A4C3586BC67AF0D951C6ABDF /* OnDeviceRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55F4630F7DEB6AA82BB92097 /* OnDeviceRouter.swift */; };
+		A6F28E42CF9351C4D13C4A0B /* HintPacket.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B267465346DFBF132E90219 /* HintPacket.swift */; };
 		B6DFF17CDFB66131B8F71F31 /* NodeDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F693B9AB5F6EA3B48ED5ACD /* NodeDetailView.swift */; };
+		BC248B2794CE76EFCB4D9AF3 /* Ed25519.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ADCC23D60588C1F925CC2F8 /* Ed25519.swift */; };
+		C6DEB3B4C72203D05C97808E /* CoordinationBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B81EB4915B0484BABF72DAD7 /* CoordinationBridge.swift */; };
+		C758FAEFE7B61A39E712A94A /* RuleBasedRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99B0FF9740ED10AF7921EFCE /* RuleBasedRouter.swift */; };
 		C7F20AA13F4DF2416BFA80A4 /* TVContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B632D992AE2016624F5130F /* TVContentView.swift */; };
+		DBE17ACE4E0F0259F3D7D653 /* TVGlobalMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2667CBE1B73CCFCD6C01B5 /* TVGlobalMapView.swift */; };
 		DC88D80555CBCB60E80E98AA /* StatusUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BF6727643E63881CD213C93 /* StatusUtils.swift */; };
 		DD2D7D6F84F642694E8956ED /* AccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 729D1EBBD268BD9AEEEF31FF /* AccountView.swift */; };
+		DF43825DA33DFA1CC99056EA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FF0341AF8B655D5D9F161546 /* Assets.xcassets */; };
+		EA6DE2004B5416B8B8CA765D /* RouterHint.swift in Sources */ = {isa = PBXBuildFile; fileRef = C44C9D68563FBD4CF6AE0808 /* RouterHint.swift */; };
+		EE20FEE3EA9021F6939DDA84 /* MeshMapKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77284A05669E8C0AA1681CA7 /* MeshMapKit.swift */; };
+		FABB8947EE0CD7916CA3E86F /* ContributeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E954666FE7904D2BCDA3DC1 /* ContributeView.swift */; };
 		FCDDB98C47B1D0E772EF68A5 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 618F1FC2462FE9B9AA8443C2 /* Models.swift */; };
 /* End PBXBuildFile section */
 
@@ -45,27 +67,47 @@
 		08F8B2ED44ABE851C2FF4D57 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		0B2CCF1D9E228419A271419D /* NetworkGraphView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkGraphView.swift; sourceTree = "<group>"; };
 		10C3DFA53386C093446D3211 /* OIMDashboardApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OIMDashboardApp.swift; sourceTree = "<group>"; };
+		1B267465346DFBF132E90219 /* HintPacket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HintPacket.swift; sourceTree = "<group>"; };
 		2B632D992AE2016624F5130F /* TVContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVContentView.swift; sourceTree = "<group>"; };
+		3C898CBECE1458272C65BBD4 /* MemoryPressureMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryPressureMonitor.swift; sourceTree = "<group>"; };
+		462427F1716B3FB5AC128E4F /* ModelSignatureVerifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSignatureVerifier.swift; sourceTree = "<group>"; };
 		4749A9A539DFA6EE6809EA77 /* RegionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegionView.swift; sourceTree = "<group>"; };
+		4E716F22E613E5CCC2B48450 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		533D2ECD42C2EAB5C6D0EED6 /* ThermalMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThermalMonitor.swift; sourceTree = "<group>"; };
+		55F4630F7DEB6AA82BB92097 /* OnDeviceRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnDeviceRouter.swift; sourceTree = "<group>"; };
 		618F1FC2462FE9B9AA8443C2 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		6B02540EC8D8E38F0FB3136E /* TryMeshView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TryMeshView.swift; sourceTree = "<group>"; };
 		729D1EBBD268BD9AEEEF31FF /* AccountView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountView.swift; sourceTree = "<group>"; };
 		7513586DABF50809E9929152 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		77284A05669E8C0AA1681CA7 /* MeshMapKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshMapKit.swift; sourceTree = "<group>"; };
+		7ADCC23D60588C1F925CC2F8 /* Ed25519.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Ed25519.swift; sourceTree = "<group>"; };
 		7BF6727643E63881CD213C93 /* StatusUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusUtils.swift; sourceTree = "<group>"; };
+		7F97F4F1ACD60743EAF71E25 /* WalletStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletStore.swift; sourceTree = "<group>"; };
 		8EEFFD745DCB9D26863DA4AC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		8F693B9AB5F6EA3B48ED5ACD /* NodeDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeDetailView.swift; sourceTree = "<group>"; };
 		940809D7CDA2BF7315466231 /* TVApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVApp.swift; sourceTree = "<group>"; };
 		9515D5561CD4915256D06792 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		97E79085F54D07D0DEFCF815 /* OIMDashboard.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OIMDashboard.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		99B0FF9740ED10AF7921EFCE /* RuleBasedRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuleBasedRouter.swift; sourceTree = "<group>"; };
+		9E954666FE7904D2BCDA3DC1 /* ContributeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContributeView.swift; sourceTree = "<group>"; };
+		A697856052BD874CD6939B45 /* CoordinationLayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoordinationLayerView.swift; sourceTree = "<group>"; };
+		AA2667CBE1B73CCFCD6C01B5 /* TVGlobalMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVGlobalMapView.swift; sourceTree = "<group>"; };
 		B08CA2CAC31A57D3486DBC65 /* NetworkClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkClient.swift; sourceTree = "<group>"; };
 		B27F1F173A888210D3946460 /* WatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchApp.swift; sourceTree = "<group>"; };
+		B3721584D617CA1C7946940D /* ContributionSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContributionSession.swift; sourceTree = "<group>"; };
+		B81EB4915B0484BABF72DAD7 /* CoordinationBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoordinationBridge.swift; sourceTree = "<group>"; };
 		BA6A50343A5863880D34B35E /* NetworkLoadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkLoadView.swift; sourceTree = "<group>"; };
+		BE176491E6900213655D1785 /* PayloadEncryption.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PayloadEncryption.swift; sourceTree = "<group>"; };
 		BE6D8C75CFE1FFF59DB5A516 /* OverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewView.swift; sourceTree = "<group>"; };
 		BFFDE4AD9A2F2CC5A35131AC /* OIMDashboardWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OIMDashboardWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C01DF4999D87E576A76F5B57 /* PodSummaryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PodSummaryView.swift; sourceTree = "<group>"; };
 		C1F6B6EB8E86CB12F34EA6A0 /* OIMDashboardTV.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OIMDashboardTV.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C2BF37C9195B932F9211B3CB /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		C44C9D68563FBD4CF6AE0808 /* RouterHint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouterHint.swift; sourceTree = "<group>"; };
 		DBFCECC0DADDF1F9036C408B /* WatchContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchContentView.swift; sourceTree = "<group>"; };
+		E73E65D0E236D780072E7DAB /* CoreMLRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreMLRouter.swift; sourceTree = "<group>"; };
 		E755F2BF2DB1773E821A0030 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		FF0341AF8B655D5D9F161546 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -90,9 +132,21 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		39ED9EC8A19FF25BD98E1B52 /* Contribution */ = {
+			isa = PBXGroup;
+			children = (
+				B3721584D617CA1C7946940D /* ContributionSession.swift */,
+				B81EB4915B0484BABF72DAD7 /* CoordinationBridge.swift */,
+				3C898CBECE1458272C65BBD4 /* MemoryPressureMonitor.swift */,
+				533D2ECD42C2EAB5C6D0EED6 /* ThermalMonitor.swift */,
+			);
+			path = Contribution;
+			sourceTree = "<group>";
+		};
 		6780A28B2D718351E622F1B7 /* Shared */ = {
 			isa = PBXGroup;
 			children = (
+				77284A05669E8C0AA1681CA7 /* MeshMapKit.swift */,
 				618F1FC2462FE9B9AA8443C2 /* Models.swift */,
 				B08CA2CAC31A57D3486DBC65 /* NetworkClient.swift */,
 				0B2CCF1D9E228419A271419D /* NetworkGraphView.swift */,
@@ -105,6 +159,7 @@
 		6A815B196CA387F9F2DCAE79 /* watchOS */ = {
 			isa = PBXGroup;
 			children = (
+				C2BF37C9195B932F9211B3CB /* Assets.xcassets */,
 				9515D5561CD4915256D06792 /* Info.plist */,
 				B27F1F173A888210D3946460 /* WatchApp.swift */,
 				DBFCECC0DADDF1F9036C408B /* WatchContentView.swift */,
@@ -112,11 +167,35 @@
 			path = watchOS;
 			sourceTree = "<group>";
 		};
+		94FA7D0F5D7F08627F6B9879 /* Crypto */ = {
+			isa = PBXGroup;
+			children = (
+				7ADCC23D60588C1F925CC2F8 /* Ed25519.swift */,
+				1B267465346DFBF132E90219 /* HintPacket.swift */,
+				BE176491E6900213655D1785 /* PayloadEncryption.swift */,
+			);
+			path = Crypto;
+			sourceTree = "<group>";
+		};
+		AC6744143941995BCF7F167A /* Routing */ = {
+			isa = PBXGroup;
+			children = (
+				E73E65D0E236D780072E7DAB /* CoreMLRouter.swift */,
+				462427F1716B3FB5AC128E4F /* ModelSignatureVerifier.swift */,
+				55F4630F7DEB6AA82BB92097 /* OnDeviceRouter.swift */,
+				C44C9D68563FBD4CF6AE0808 /* RouterHint.swift */,
+				99B0FF9740ED10AF7921EFCE /* RuleBasedRouter.swift */,
+			);
+			path = Routing;
+			sourceTree = "<group>";
+		};
 		B51E007E0355F9D7BC118166 /* iOS */ = {
 			isa = PBXGroup;
 			children = (
 				729D1EBBD268BD9AEEEF31FF /* AccountView.swift */,
+				FF0341AF8B655D5D9F161546 /* Assets.xcassets */,
 				7513586DABF50809E9929152 /* ContentView.swift */,
+				A697856052BD874CD6939B45 /* CoordinationLayerView.swift */,
 				03FC7C4990BDDE4D359DFF3F /* GlobalMapView.swift */,
 				08F8B2ED44ABE851C2FF4D57 /* Info.plist */,
 				BA6A50343A5863880D34B35E /* NetworkLoadView.swift */,
@@ -127,18 +206,41 @@
 				4749A9A539DFA6EE6809EA77 /* RegionView.swift */,
 				E755F2BF2DB1773E821A0030 /* SettingsView.swift */,
 				6B02540EC8D8E38F0FB3136E /* TryMeshView.swift */,
+				39ED9EC8A19FF25BD98E1B52 /* Contribution */,
+				94FA7D0F5D7F08627F6B9879 /* Crypto */,
+				AC6744143941995BCF7F167A /* Routing */,
+				F845F692E9277095030E4D31 /* Views */,
+				B6360BABE29B862E600822CD /* Wallet */,
 			);
 			path = iOS;
+			sourceTree = "<group>";
+		};
+		B6360BABE29B862E600822CD /* Wallet */ = {
+			isa = PBXGroup;
+			children = (
+				7F97F4F1ACD60743EAF71E25 /* WalletStore.swift */,
+			);
+			path = Wallet;
 			sourceTree = "<group>";
 		};
 		C9885C02CCDB67C1FDB01E13 /* tvOS */ = {
 			isa = PBXGroup;
 			children = (
+				4E716F22E613E5CCC2B48450 /* Assets.xcassets */,
 				8EEFFD745DCB9D26863DA4AC /* Info.plist */,
 				940809D7CDA2BF7315466231 /* TVApp.swift */,
 				2B632D992AE2016624F5130F /* TVContentView.swift */,
+				AA2667CBE1B73CCFCD6C01B5 /* TVGlobalMapView.swift */,
 			);
 			path = tvOS;
+			sourceTree = "<group>";
+		};
+		F845F692E9277095030E4D31 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				9E954666FE7904D2BCDA3DC1 /* ContributeView.swift */,
+			);
+			path = Views;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -149,6 +251,7 @@
 			buildConfigurationList = 90F839AFE7106EC46B2ADA8E /* Build configuration list for PBXNativeTarget "OIMDashboardWatch" */;
 			buildPhases = (
 				5B32D129EAC709D2E89F83C9 /* Sources */,
+				92C8783D49F1ED58E929794A /* Resources */,
 			);
 			buildRules = (
 			);
@@ -166,6 +269,7 @@
 			buildConfigurationList = CB6D2ACF3B1E3F129619CB58 /* Build configuration list for PBXNativeTarget "OIMDashboardTV" */;
 			buildPhases = (
 				118198BDFCF27CED8A66C9E7 /* Sources */,
+				E109867ABB507AE40675E3C9 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -183,6 +287,7 @@
 			buildConfigurationList = 2FD903D153F2553767E944FB /* Build configuration list for PBXNativeTarget "OIMDashboard" */;
 			buildPhases = (
 				FD57DF244D6519B409842B66 /* Sources */,
+				8A4223F32375AE7009571AEA /* Resources */,
 			);
 			buildRules = (
 			);
@@ -225,17 +330,46 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+		8A4223F32375AE7009571AEA /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DF43825DA33DFA1CC99056EA /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		92C8783D49F1ED58E929794A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				16842E521AF32A8AED91EB88 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E109867ABB507AE40675E3C9 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				15AFA23E2FDAA769BABAB11F /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		118198BDFCF27CED8A66C9E7 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0013CD9C21D8C464E19C357C /* MeshMapKit.swift in Sources */,
 				5951B16D2B2239BE24DB543E /* Models.swift in Sources */,
 				11441F887FC84DF719460E2F /* NetworkClient.swift in Sources */,
 				5BBA7D77AF572F77473FA7A3 /* NetworkGraphView.swift in Sources */,
 				591AD7987E35789CDE516B21 /* StatusUtils.swift in Sources */,
 				41E37DBFA4D32DE85DFC1179 /* TVApp.swift in Sources */,
 				C7F20AA13F4DF2416BFA80A4 /* TVContentView.swift in Sources */,
+				DBE17ACE4E0F0259F3D7D653 /* TVGlobalMapView.swift in Sources */,
 				3207AC90A9F13F61CDA6375A /* TopologyStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -244,6 +378,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				9D6DD3F16CCEC03D159D7EAD /* MeshMapKit.swift in Sources */,
 				A1F5DE9F693131DBDA68D94A /* Models.swift in Sources */,
 				54FBAB0D399F2702E9B3C14A /* NetworkClient.swift in Sources */,
 				082E4E9544607F81894DB9F0 /* NetworkGraphView.swift in Sources */,
@@ -260,20 +395,36 @@
 			files = (
 				DD2D7D6F84F642694E8956ED /* AccountView.swift in Sources */,
 				2255A083CC3EE5DFB57A08C0 /* ContentView.swift in Sources */,
+				FABB8947EE0CD7916CA3E86F /* ContributeView.swift in Sources */,
+				451895B0CE3710D92E75CF3C /* ContributionSession.swift in Sources */,
+				C6DEB3B4C72203D05C97808E /* CoordinationBridge.swift in Sources */,
+				051641083B5D4C164DA368CE /* CoordinationLayerView.swift in Sources */,
+				4BBCEBA498624533ED9263B8 /* CoreMLRouter.swift in Sources */,
+				BC248B2794CE76EFCB4D9AF3 /* Ed25519.swift in Sources */,
 				892E70A622442DBD043BA482 /* GlobalMapView.swift in Sources */,
+				A6F28E42CF9351C4D13C4A0B /* HintPacket.swift in Sources */,
+				A3595BF6FD51103117AA5091 /* MemoryPressureMonitor.swift in Sources */,
+				EE20FEE3EA9021F6939DDA84 /* MeshMapKit.swift in Sources */,
+				287998A215E9A6E32F55A2ED /* ModelSignatureVerifier.swift in Sources */,
 				FCDDB98C47B1D0E772EF68A5 /* Models.swift in Sources */,
 				9A0FE3810D3A62714F6F0965 /* NetworkClient.swift in Sources */,
 				0B7CDC324F87697E7160F78A /* NetworkGraphView.swift in Sources */,
 				8D80D745BE934DB8FC37EFB4 /* NetworkLoadView.swift in Sources */,
 				B6DFF17CDFB66131B8F71F31 /* NodeDetailView.swift in Sources */,
 				090646334E229530F14400A0 /* OIMDashboardApp.swift in Sources */,
+				A4C3586BC67AF0D951C6ABDF /* OnDeviceRouter.swift in Sources */,
 				0E182B36030FE827DDC2A568 /* OverviewView.swift in Sources */,
+				305DDE8805FBA84E4CEB2658 /* PayloadEncryption.swift in Sources */,
 				9E1E1B615CEAC06C43ED3582 /* PodSummaryView.swift in Sources */,
 				3BFF4065F430C0D7FADB6CAA /* RegionView.swift in Sources */,
+				EA6DE2004B5416B8B8CA765D /* RouterHint.swift in Sources */,
+				C758FAEFE7B61A39E712A94A /* RuleBasedRouter.swift in Sources */,
 				1E63B07E27B4D863148F7169 /* SettingsView.swift in Sources */,
 				DC88D80555CBCB60E80E98AA /* StatusUtils.swift in Sources */,
+				010CB990A0F0E84096056EA6 /* ThermalMonitor.swift in Sources */,
 				04B66F405D8B08B2DE22EBA0 /* TopologyStore.swift in Sources */,
 				34D4DC464F5381BA7F5F84C0 /* TryMeshView.swift in Sources */,
+				4AFDADC10578A270457A7E81 /* WalletStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -283,7 +434,7 @@
 		5807552331F368678EA514DB /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "App Icon & Top Shelf Image";
 				ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME = LaunchImage;
 				DEVELOPMENT_TEAM = WXDFFW3882;
 				INFOPLIST_FILE = tvOS/Info.plist;
@@ -432,7 +583,7 @@
 		C06FA3A8CD22122934CE98F4 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "App Icon & Top Shelf Image";
 				ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME = LaunchImage;
 				DEVELOPMENT_TEAM = WXDFFW3882;
 				INFOPLIST_FILE = tvOS/Info.plist;
@@ -451,7 +602,8 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = WXDFFW3882;
 				INFOPLIST_FILE = iOS/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
@@ -459,7 +611,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.openinferencemesh.app;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.openinferencemesh.-";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 			};
@@ -469,7 +622,8 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = WXDFFW3882;
 				INFOPLIST_FILE = iOS/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
@@ -477,7 +631,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.openinferencemesh.app;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.openinferencemesh.-";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 			};

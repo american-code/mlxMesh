@@ -1,6 +1,6 @@
-# Open Inference Mesh (`oim`)
+# mlxMesh
 
-A distributed inference protocol that turns geographically-spread machines into a single, routable AI compute fabric — with strict privacy tiers, measured (not declared) performance accounting, and no native token.
+A distributed inference protocol that turns geographically-spread machines into a single, routable AI compute fabric — with strict privacy tiers, measured (not declared) performance accounting, and no native token. (Internal packages, the Go module path, and the `oim` CLI/binary names are unchanged.)
 
 **Brand:** MeshAI &nbsp;|&nbsp; **Protocol:** Open Inference Mesh &nbsp;|&nbsp; **CLI:** `oim`
 
@@ -15,6 +15,9 @@ Most distributed inference tools (e.g. [Exo](https://github.com/exo-explore/exo)
 - **Division-order accounting** — measured resource lines, not declared promises; credits from bootstrap grants decay as earned capacity grows
 - **Sensitivity tiers** — LOW / MODERATE / HIGH_REQUIRES_ATTESTATION (Secure Enclave gate on Apple Silicon)
 - **Ed25519 node identity** — derived from public key, never operator-chosen
+- **iOS coordination / security layer** — iPhone/iPad devices classify on-device and host encrypted payload pointers, adding a privacy layer *without* becoming compute nodes. Additive: the mesh routes identically with zero coordination devices present.
+- **Portable wallet identity** — an Ed25519 account key (iCloud-Keychain synced, seed-recoverable) that consolidates credits across a user's devices. Not on-chain — it *proves ownership* of a server-side ledger balance.
+- **Native clients** — SwiftUI apps for iOS/iPadOS, tvOS, and watchOS render live topology, and drive contribution/coordination from Apple hardware.
 
 ---
 
@@ -173,7 +176,8 @@ def run_mesh_job(prompt: str, user_id: str) -> str:
     return resp.json()["choices"][0]["message"]["content"]
 ```
 
-**Streaming pattern** — useful for long-running summarization where you want partial results:
+**Streaming pattern** — useful for long-running summarization where you want partial results.
+> **Status:** server-side token streaming (`stream: true`) is **not yet implemented** on `/v1/chat/completions` — the coordinator currently buffers and returns the full completion. The example below is the target API shape; see [Path to release](#path-to-release-safe-secure-scalable). (The `/nodes/stream` SSE endpoint that powers the live dashboards *is* implemented.)
 
 ```python
 with httpx.stream("POST", f"{coordinator}/v1/chat/completions",
@@ -186,7 +190,7 @@ with httpx.stream("POST", f"{coordinator}/v1/chat/completions",
             print(chunk["choices"][0]["delta"].get("content", ""), end="", flush=True)
 ```
 
-**Webhook / async pattern** (planned Milestone 5) — submit a job with a `callback_url`; the coordinator POSTs the completed response to your endpoint when done. This is the target pattern for fire-and-forget batch pipelines.
+**Webhook / async pattern** (planned — not yet implemented) — submit a job with a `callback_url`; the coordinator POSTs the completed response to your endpoint when done. This is the target pattern for fire-and-forget batch pipelines. Tracked under [Path to release](#path-to-release-safe-secure-scalable).
 
 ---
 
@@ -249,14 +253,66 @@ Key settings:
 
 ---
 
+## Running over TLS (HTTPS)
+
+The coordinator and directory serve plain HTTP by default (convenient for a
+single-box run and the docker sim). **Before exposing anything beyond localhost,
+turn on TLS** — otherwise API keys and job payloads travel in plaintext. Both
+servers log a loud warning while running without it.
+
+**1. Generate a local dev CA + server cert** (covers `localhost` + your LAN IP so
+a real iPhone/iPad connects cleanly):
+
+```bash
+scripts/gen-dev-certs.sh 192.168.1.135        # your Mac's LAN IP
+# → certs/ca.crt, certs/server.crt, certs/server.key
+```
+
+**2. Serve HTTPS:**
+
+```bash
+oim-coordinator --listen :9000 --tls-cert certs/server.crt --tls-key certs/server.key ...
+oim-directory   --listen :9100 --tls-cert certs/server.crt --tls-key certs/server.key ...
+```
+
+**3. Point Go nodes at the HTTPS coordinator and trust the CA:**
+
+```bash
+oim node start --coordinator https://192.168.1.135:9000 --tls-ca certs/ca.crt
+# (or --tls-skip-verify for throwaway local testing — logged, never for prod)
+```
+
+**4. Trust the CA on your iPhone/iPad** so the SwiftUI app connects without a
+warning: AirDrop `certs/ca.crt` to the device → install the profile (Settings →
+General → VPN & Device Management) → enable full trust (Settings → General →
+About → Certificate Trust Settings) → set the app's directory URL to
+`https://192.168.1.135:9100`. The apps use a **local-networking-only** ATS
+policy: plaintext http is allowed only to LAN hosts, so any public endpoint must
+be https.
+
+For a **public deploy**, use a real CA (Let's Encrypt / your cloud provider's
+cert manager) instead of the dev script, or terminate TLS at a load balancer.
+Automated cert issuance/renewal (ACME) is on the [release path](#path-to-release-safe-secure-scalable).
+
+---
+
 ## CLI reference
 
 ```
 oim node status     Report live capability manifest from local Exo instance
-oim node start      Start node agent (Milestone 2)
+oim node start      Start node agent (registers with a coordinator, serves jobs)
 
 oim bench run       Benchmark a model and save MeasuredSignature
-oim bench compare   Compare claimed vs measured performance (Milestone 3)
+oim bench compare   Compare claimed vs measured performance
+```
+
+To run the full local simulation mesh (2 regions, ~60 containers, live traffic + a
+coordination participant) instead of a single node:
+
+```bash
+go run ./tools/gen-compose > docker-compose.yml   # regenerate if needed
+docker compose up --build                          # heavy — needs several GB free
+# Dashboards/apps point at the directory on :9100 and coordinators on :9000/:9001
 ```
 
 ---
@@ -264,16 +320,22 @@ oim bench compare   Compare claimed vs measured performance (Milestone 3)
 ## Architecture overview
 
 ```
-Global Directory (librarian)      ← Milestone 4 (centralized) → 7 (federated)
+Global Directory (librarian)         ← M4 (centralized) → M7 (federated, stubbed)
         │
         ▼
-Pod Coordinators (1 per region)   ← Milestone 2
-        │
-        ▼
-Node Agents (wrapping Exo)        ← Milestone 1 ✓
+Pod Coordinators (1 per region)      ← M2
+   │        │
+   │        └── Coordination Registry ← M8  (iOS pointer-hosts; never routed to)
+   ▼
+Node Agents (wrapping Exo)           ← M1 ✓
+        ▲
+        │  live topology + contribution/coordination + wallet
+Native clients: iOS · tvOS · watchOS ← M8 / M9  (OIMDashboard/)
 ```
 
 ### Milestones
+
+**Protocol core** (the original 7-milestone build plan in ARCHITECTURE):
 
 | # | Status | Description |
 |---|--------|-------------|
@@ -283,7 +345,76 @@ Node Agents (wrapping Exo)        ← Milestone 1 ✓
 | M4 | **Done** | Centralized global directory with gossip sync and cache fallback |
 | M5 | **Done** | Division-order settlement ledger with SQLite persistence, startup grants with PoW |
 | M6 | **Done** | MoE expert-shard planner with proportional assignment and load imbalance detection |
-| M7 | Stub | Federated directory (multi-librarian) - FederatedResolver/DHTResolver are stubs
+| M7 | **Stub** | Federated directory (multi-librarian) — `FederatedResolver`/`DHTResolver` are stubs; see [Path to release](#path-to-release-safe-secure-scalable) |
+
+**Extended scope** (built beyond the original plan — see [Beyond original scope](#beyond-original-scope)):
+
+| # | Status | Description |
+|---|--------|-------------|
+| M8 | **Done (client + coordinator plumbing)** | On-device routing + iOS coordination/security layer: on-device CoreML classifier, client-side payload encryption (P256 ECDH → AES-256-GCM), coordinator hint validation (escalate-only), coordination registry + served-pointer accounting, native iOS/tvOS/watchOS apps. **Gap:** node-side pointer *consumption* (fetch ciphertext + decrypt) is not yet built — the coordinator threads the pointer but no node fetches it. |
+| M9 | **Done** | Portable wallet identity: Ed25519 account key, `oim…` address = ledger user_id, challenge-response auth, account-signed device linking for credit consolidation, iCloud-Keychain sync + Base32 recovery key. Cross-language crypto (CryptoKit ↔ Go) verified. |
+
+---
+
+### Beyond original scope
+
+The original ARCHITECTURE spec defined a headless Go protocol (M1–M7). The following were added on top and are **not** in that spec — flagged here so the delta is explicit:
+
+- **iOS as a coordination/security layer, not a compute node.** iOS/iPadOS cannot run Exo (Python+MLX, macOS/Linux only), so instead of forcing inference onto them, iOS devices classify on-device and host encrypted payload pointers. This is *additive* — with zero iOS devices the mesh routes exactly as M1–M7 defined.
+- **Encrypted-pointer privacy path.** Client-side P256 ECDH + HKDF-SHA256 + AES-256-GCM; the coordinator sees only a metadata pointer (hash + fetch URL + ephemeral pubkey), never plaintext. Served-pointer counts are attributed per device.
+- **Portable wallet (M9).** Credit consolidation + recovery across devices without a blockchain.
+- **Native Apple apps** (`OIMDashboard/`) — live topology, "Try the mesh," network-load/backpressure, coordination layer, wallet, and a tvOS global-map view.
+- **Simulation harness** — `tools/jobgen` (incl. `--pointer-host` mode) + `tools/gen-compose` produce a 60+ container multi-region mesh with continuous traffic and a live coordination participant, for device-free testing.
+- **Operational hardening already landed** — SQLite persistence, write-path signing, rate limiting, configurable CORS, security headers, config validation, dynamic queue capacity.
+
+---
+
+## Path to release (safe, secure, scalable)
+
+Everything above is a working **testbed** — a full multi-region mesh you can run locally and drive from real Apple hardware. It is **not yet production-safe**. The work below is what stands between the current state and a public release, grouped by the property it protects. Ordered roughly by priority within each group.
+
+### 🔒 Security — *blocks any public exposure*
+
+| Item | Why it blocks release | Status |
+|------|----------------------|--------|
+| **TLS everywhere** (coordinator, directory, node reachability) | API keys and job payloads must not travel in plaintext | **Partial** — coordinator + directory serve HTTPS via `--tls-cert`/`--tls-key` (TLS 1.2 floor); Go nodes trust it via `--tls-ca` (or `--tls-skip-verify` for dev); Apple clients use https + a local-networking-only ATS policy. **Remaining:** coordinator→node dispatch is still plaintext, and cert management is manual (no ACME/auto-renew yet) |
+| **Node-side pointer consumption** | The encrypted-pointer path is only half-built: the coordinator threads the pointer but no node fetches/decrypts ciphertext, so "privacy mode" isn't end-to-end yet | Not started (M8 gap) |
+| **Secrets management** | API keys / signing keys live in SQLite + local files; needs a real secret store and key rotation | Partial |
+| **Auth on read endpoints + abuse limits** | `/topology`, `/nodes`, `/balance` are unauthenticated; add per-account quotas and external-facing rate limits (task #24) | Partial |
+| **Input hardening / DoS** | Request size caps, timeouts, and payload-pointer SSRF guards (a fetch URL is attacker-controlled) | Not started |
+| **Third-party security review** of the crypto + settlement paths | Wallet auth, attestation, and ledger debits are trust-critical | Not started |
+
+### 🛡️ Safety & correctness — *blocks trusting the numbers*
+
+| Item | Why | Status |
+|------|-----|--------|
+| **Integration tests: coordinator ↔ node ↔ Exo** (task #18) | Unit tests are green, but the cross-process contract isn't covered end-to-end | Not started |
+| **Streaming (`stream: true`)** on `/v1/chat/completions` | Documented but unimplemented; interactive UX depends on it | Not started |
+| **Retry / backoff on inter-service HTTP** (task #22) | A single transient failure currently drops a job | Not started |
+| **Structured logging + metrics** (task #20) | No observability into routing decisions, debit races, or queue behavior in prod | Not started |
+| **Ledger reconciliation & audit trail** | Debits log but there's no periodic balance-integrity check | Not started |
+
+### 📈 Scalability — *blocks growth past the seed*
+
+| Item | Why | Status |
+|------|-----|--------|
+| **M7 — federated directory** | Single centralized directory is a SPOF and a scale ceiling; `FederatedResolver`/`DHTResolver` are stubs | Stub |
+| **Progressive decentralization** (task #49) | EC2 seed → network takes over "at parity"; needs the handoff logic + a parity metric | Not started |
+| **Coordinator HA** | One coordinator per region with no failover or shared state | Not started |
+| **Ledger beyond SQLite** | SQLite won't survive multi-coordinator write load; needs Postgres/managed store | Not started |
+| **Load & perf regression tests** (task #28) | No baseline to catch throughput regressions | Not started |
+
+### 🚀 Release engineering
+
+| Item | Status |
+|------|--------|
+| **Public seed deploy** — EC2 coordinator + directory as the bootstrap (task #42) | Not started |
+| CI: `golangci-lint` (task #26) + the Swift build/typecheck in a pipeline | Not started |
+| Signed release binaries + reproducible Docker images | Not started |
+| App Store / TestFlight pipeline for the Apple apps | Not started |
+| Runbook + incident/on-call docs; SLOs | Not started |
+
+**Suggested sequencing for a first safe release:** TLS + node-side pointer consumption + input hardening (security floor) → integration tests + observability (trust the numbers) → EC2 seed (task #42) → M7 federation + progressive decentralization (scale past the seed).
 
 ---
 
@@ -291,22 +422,29 @@ Node Agents (wrapping Exo)        ← Milestone 1 ✓
 
 ```
 cmd/
-  oim/             CLI entry point
-  coordinator/     Pod coordinator server (M2)
+  oim/             CLI + node agent entry point
+  coordinator/     Pod coordinator server (M2) — routing, ledger, wallet + coordination endpoints
   directory/       Global directory server (M4)
+  stub-exo/        Fake Exo for simulation
 internal/
-  protocol/        Wire types, crypto, job specs
+  protocol/        Wire types, crypto, job specs (+ payload-pointer fields)
   exoadapter/      Thin HTTP client wrapping Exo
   governor/        Resource caps and foreground check
   capability/      Live manifest assembly
   bench/           Tier benchmarking
   identity/        Ed25519 keypair persistence
-  coordinator/     Registry, router, verification stubs
-  directory/       Resolver interface + implementations
-  settlement/      Division-order ledger stubs
+  coordinator/     Registry, routers, queue, hint validation, coordination registry (M8)
+  wallet/          Portable account identity: address derivation, challenge-response, device linking (M9)
+  directory/       Resolver interface + implementations (M7 stubs)
+  settlement/      Division-order ledger
 config/
   node.example.yaml
-tests/             Protocol-level tests
+tools/
+  jobgen/          Simulated traffic generator (incl. --pointer-host mode)
+  gen-compose/     Generates the multi-region docker-compose sim
+  train-router/    Create ML pipeline for the on-device routing classifier
+OIMDashboard/      SwiftUI apps — Shared / iOS / tvOS / watchOS (M8/M9 clients)
+tests/             Protocol- and coordination-level tests
 ```
 
 ---

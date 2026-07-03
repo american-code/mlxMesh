@@ -32,6 +32,13 @@ type JobSpec struct {
 	Recurrence           *RecurrenceSpec `json:"recurrence,omitempty"`
 	RedundancyDepth      int             `json:"redundancy_depth"`
 	PayloadRef           string          `json:"payload_ref"`
+	// PayloadFetchURL / PayloadEphemeralPubKey complete the encrypted-pointer
+	// path: the assigned node fetches ciphertext from PayloadFetchURL and derives
+	// the ECDH shared secret from PayloadEphemeralPubKey. The coordinator only
+	// passes these through — it never fetches the payload or holds a key. Empty
+	// for legacy/plaintext requests.
+	PayloadFetchURL        string `json:"payload_fetch_url,omitempty"`
+	PayloadEphemeralPubKey string `json:"payload_ephemeral_pubkey,omitempty"`
 
 	// Parallel processing controls — all opt-in, all default to zero/false.
 	// Existing single-node job specs require no changes.

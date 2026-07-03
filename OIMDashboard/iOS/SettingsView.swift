@@ -21,7 +21,7 @@ struct SettingsView: View {
             } header: {
                 Text("Directory URL")
             } footer: {
-                Text("The oim-directory service endpoint. Coordinators and nodes are discovered automatically from here.")
+                Text("The oim-directory service endpoint. Coordinators and nodes are discovered automatically from here. Use https:// for any endpoint outside your local network — plaintext http is permitted only for LAN/local hosts. For a self-signed dev cert, install its CA on this device first (see scripts/gen-dev-certs.sh).")
             }
 
             Section {

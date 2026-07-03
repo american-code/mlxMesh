@@ -34,6 +34,7 @@ import (
 
 	"github.com/open-inference-mesh/oim/internal/directory"
 	"github.com/open-inference-mesh/oim/internal/httpmw"
+	"github.com/open-inference-mesh/oim/internal/httptls"
 	"github.com/open-inference-mesh/oim/internal/protocol"
 )
 
@@ -47,6 +48,7 @@ func rootCmd() *cobra.Command {
 	var listenAddr, peerURL string
 	var podTTLSec int
 	var corsOrigins []string
+	var tlsCert, tlsKey string
 
 	cmd := &cobra.Command{
 		Use:   "oim-directory",
@@ -59,17 +61,19 @@ individual node data, job payloads, or settlement data (proposal §7.1).
 Bootstrap-stage HA: run two instances with --peer pointing at each other.
 Each instance forwards received digests to its peer — one-hop only, no loops.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDirectory(listenAddr, peerURL, time.Duration(podTTLSec)*time.Second, corsOrigins)
+			return runDirectory(listenAddr, peerURL, time.Duration(podTTLSec)*time.Second, corsOrigins, tlsCert, tlsKey)
 		},
 	}
 	cmd.Flags().StringVar(&listenAddr, "listen", ":9100", "Address to listen on")
 	cmd.Flags().StringVar(&peerURL, "peer", "", "Peer directory URL for bootstrap-stage HA (empty = standalone)")
 	cmd.Flags().IntVar(&podTTLSec, "pod-ttl", 120, "Seconds before a pod digest is considered stale")
 	cmd.Flags().StringSliceVar(&corsOrigins, "cors-origin", nil, "Allowed browser origin(s) for CORS (repeatable or comma-separated; empty = allow any origin, dev-friendly default)")
+	cmd.Flags().StringVar(&tlsCert, "tls-cert", "", "Path to the TLS certificate (PEM). Set with --tls-key to serve HTTPS; unset serves plain HTTP")
+	cmd.Flags().StringVar(&tlsKey, "tls-key", "", "Path to the TLS private key (PEM). Required together with --tls-cert")
 	return cmd
 }
 
-func runDirectory(listenAddr, peerURL string, podTTL time.Duration, corsOrigins []string) error {
+func runDirectory(listenAddr, peerURL string, podTTL time.Duration, corsOrigins []string, tlsCert, tlsKey string) error {
 	store := directory.NewPodStore(podTTL)
 	gossip := directory.NewGossip(store, peerURL)
 
@@ -181,8 +185,14 @@ func runDirectory(listenAddr, peerURL string, podTTL time.Duration, corsOrigins 
 		srv.Shutdown(ctx)
 	}()
 
-	log.Printf("[directory] listening on %s (peer=%q pod-ttl=%s)", listenAddr, peerURL, podTTL)
-	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+	scheme := "http"
+	if httptls.Enabled(tlsCert, tlsKey) {
+		scheme = "https"
+	} else {
+		log.Printf("[directory] WARNING: serving PLAINTEXT HTTP — set --tls-cert/--tls-key before exposing beyond localhost")
+	}
+	log.Printf("[directory] listening on %s (%s peer=%q pod-ttl=%s)", listenAddr, scheme, peerURL, podTTL)
+	if err := httptls.Serve(srv, ln, tlsCert, tlsKey); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil

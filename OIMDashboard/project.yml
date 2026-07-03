@@ -29,6 +29,7 @@ targets:
     info:
       path: iOS/Info.plist
       properties:
+        CFBundleDisplayName: mlxMesh
         UILaunchScreen: {}
         UISupportedInterfaceOrientations~ipad:
           - UIInterfaceOrientationPortrait
@@ -56,6 +57,7 @@ targets:
     info:
       path: watchOS/Info.plist
       properties:
+        CFBundleDisplayName: mlxMesh
         WKWatchKitApp: true
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
@@ -73,12 +75,14 @@ targets:
     info:
       path: tvOS/Info.plist
       properties:
+        CFBundleDisplayName: mlxMesh
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.openinferencemesh.app.tv
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # tvOS references the app icon by its Brand Assets set name, not "AppIcon".
+        ASSETCATALOG_COMPILER_APPICON_NAME: "App Icon & Top Shelf Image"
 
 schemes:
   OIMDashboard:

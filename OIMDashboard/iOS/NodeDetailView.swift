@@ -38,9 +38,9 @@ struct NodeDetailView: View {
                 }
 
                 // Models
-                if !node.models.isEmpty {
+                if let models = node.models, !models.isEmpty {
                     Section("Models") {
-                        ForEach(node.models, id: \.modelId) { model in
+                        ForEach(models, id: \.modelId) { model in
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(model.modelId)
                                     .font(.system(size: 14, weight: .medium))

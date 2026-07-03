@@ -33,6 +33,9 @@ struct OverviewView: View {
                     NetworkLoadView()
                 }
 
+                // Security & coordination layer (iOS pointer-host devices)
+                CoordinationLayerView()
+
                 // Pod cards
                 LazyVGrid(columns: columns, spacing: 16) {
                     ForEach(store.pods) { pod in

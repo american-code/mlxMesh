@@ -7,9 +7,14 @@ final class TopologyStore {
     var pods: [PodHealthDigest] = []
     var nodesByPod: [String: [NodeSnapshot]] = [:]
     var metricsByPod: [String: PodMetrics] = [:]
+    var coordinationByPod: [String: [CoordinationParticipant]] = [:]
     var lastUpdated: Date?
     var error: String?
     var isLoading = false
+
+    /// iOS security/coordination participants across all pods (distinct from
+    /// inference nodes).
+    var allCoordination: [CoordinationParticipant] { pods.flatMap { coordinationByPod[$0.podId] ?? [] } }
 
     // Convenience aggregates
     var allNodes: [NodeSnapshot] { pods.flatMap { nodesByPod[$0.podId] ?? [] } }
@@ -64,6 +69,7 @@ final class TopologyStore {
                 for await (podId, response) in group {
                     nodesByPod[podId] = response?.nodes ?? []
                     metricsByPod[podId] = response?.metrics
+                    coordinationByPod[podId] = response?.coordinationNodes ?? []
                 }
             }
             lastUpdated = .now

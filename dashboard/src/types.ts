@@ -54,10 +54,22 @@ export interface TopologyResponse {
   queried_at: string
 }
 
+// CoordinationParticipant is an iOS device acting as a security/coordination
+// layer (hosts encrypted payload pointers). Not an inference node — rendered
+// with a distinct icon and toggleable as a layer.
+export interface CoordinationParticipant {
+  device_id: string
+  role: string
+  is_mobile: boolean
+  geographic_hint: string
+  last_seen_at: string
+}
+
 export interface NodesResponse {
   pod_id: string
   region: string
   nodes: NodeSnapshot[]
+  coordination_nodes?: CoordinationParticipant[]
   metrics?: PodMetrics
 }
 

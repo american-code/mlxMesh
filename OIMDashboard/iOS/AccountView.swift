@@ -80,6 +80,7 @@ struct CreditGauge: View {
 
 struct AccountView: View {
     @Environment(TopologyStore.self) private var store
+    @Environment(WalletStore.self) private var wallet
 
     @State private var userId = getOrCreateUserId()
     @State private var balance: Balance?
@@ -90,30 +91,15 @@ struct AccountView: View {
 
     private var coordinatorURL: String? { store.pods.first?.coordinatorEndpoint }
 
+    // The identity credits key on: the wallet account address when a wallet
+    // exists (so the balance is consolidated across every device linked to it),
+    // otherwise the legacy anonymous per-device UUID.
+    private var identityId: String { wallet.address ?? userId }
+
     var body: some View {
         List {
-            // ── Identity ──
-            Section("Node Identity") {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Label("Anonymous · proof-of-node", systemImage: "person.badge.shield.checkmark.fill")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text("M5 Preview")
-                            .font(.caption2)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(NodeStatus.live.color)
-                            .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(NodeStatus.live.color.opacity(0.12), in: Capsule())
-                    }
-                    Text(userId)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-                .padding(.vertical, 4)
-            }
+            // ── Wallet / identity ──
+            WalletSection(coordinatorURL: coordinatorURL) { await loadBalance() }
 
             // ── Credit Gauge ──
             Section("Credit Balance") {
@@ -205,7 +191,7 @@ struct AccountView: View {
         do {
             // Routed through NetworkClient so the coordinator's loopback host is
             // rewritten to the reachable directory host on a physical device.
-            balance = try await NetworkClient.fetchBalance(coordinatorURL: url, userId: userId)
+            balance = try await NetworkClient.fetchBalance(coordinatorURL: url, userId: identityId)
         } catch {
             self.error = error.localizedDescription
         }
@@ -217,7 +203,7 @@ struct AccountView: View {
         defer { claiming = false }
         do {
             let base = NetworkClient.resolvedCoordinator(url)
-            var req = URLRequest(url: URL(string: "\(base)/users/\(userId)/startup-grant")!)
+            var req = URLRequest(url: URL(string: "\(base)/users/\(identityId)/startup-grant")!)
             req.httpMethod = "POST"
             let (_, _) = try await URLSession.shared.data(for: req)
             claimMsg = "Grant claimed successfully"
@@ -253,6 +239,149 @@ struct CreditRow: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
+    }
+}
+
+// MARK: - Wallet Section
+
+/// Wallet UI folded into the Account screen: create/import a portable account,
+/// reveal the recovery key, prove ownership to the coordinator, and link other
+/// devices (e.g. a Mac Studio node) so their earnings consolidate here.
+struct WalletSection: View {
+    @Environment(WalletStore.self) private var wallet
+    let coordinatorURL: String?
+    let onIdentityChanged: () async -> Void
+
+    @State private var showRecovery = false
+    @State private var showImport = false
+    @State private var importText = ""
+    @State private var linkNodeID = ""
+    @State private var linkMsg: String?
+    @State private var busy = false
+
+    private var resolvedURL: String? { coordinatorURL.map { NetworkClient.resolvedCoordinator($0) } }
+
+    var body: some View {
+        if !wallet.hasWallet {
+            Section("Wallet") {
+                Text("Create a wallet to consolidate credits across your devices and recover your balance if a device is lost. Your key is stored in iCloud Keychain and never leaves your devices.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button {
+                    wallet.createWallet()
+                    Task { await onIdentityChanged() }
+                } label: {
+                    Label("Create wallet", systemImage: "wallet.pass.fill")
+                }
+                Button {
+                    showImport = true
+                } label: {
+                    Label("Restore from recovery key", systemImage: "arrow.down.doc.fill")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .alert("Restore wallet", isPresented: $showImport) {
+                TextField("Recovery key", text: $importText)
+                    .textInputAutocapitalization(.characters)
+                Button("Restore") {
+                    if wallet.importWallet(recoveryKey: importText) {
+                        Task { await onIdentityChanged() }
+                    }
+                    importText = ""
+                }
+                Button("Cancel", role: .cancel) { importText = "" }
+            } message: {
+                Text("Enter the recovery key you saved when creating the wallet.")
+            }
+        } else {
+            Section("Wallet") {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Label("Account", systemImage: "wallet.pass.fill")
+                            .font(.subheadline)
+                        Spacer()
+                        if wallet.isAuthenticated {
+                            Label("Verified", systemImage: "checkmark.seal.fill")
+                                .font(.caption2).foregroundStyle(NodeStatus.live.color)
+                        }
+                    }
+                    Text(wallet.address ?? "")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
+                .padding(.vertical, 2)
+
+                Button {
+                    guard let url = resolvedURL else { return }
+                    busy = true
+                    Task { await wallet.authenticate(coordinatorURL: url); busy = false }
+                } label: {
+                    Label(wallet.isAuthenticated ? "Re-verify ownership" : "Verify ownership",
+                          systemImage: "person.badge.key.fill")
+                        .font(.subheadline)
+                }
+                .disabled(busy || resolvedURL == nil)
+
+                if let err = wallet.authError {
+                    Label(err, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.red)
+                }
+
+                Button {
+                    showRecovery.toggle()
+                } label: {
+                    Label(showRecovery ? "Hide recovery key" : "Show recovery key",
+                          systemImage: "key.fill")
+                        .font(.subheadline).foregroundStyle(NodeStatus.degraded.color)
+                }
+                if showRecovery, let rk = wallet.recoveryKey {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(rk)
+                            .font(.system(size: 12, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+                        Text("Write this down and keep it safe. Anyone with this key controls your credits, and it is the only backup outside iCloud Keychain.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            // ── Link another device ──
+            Section("Consolidate a device") {
+                Text("Link a Mac / node you run so its earnings credit this account. Enter its node ID (shown in that node's setup).")
+                    .font(.caption).foregroundStyle(.secondary)
+                TextField("Device / node ID", text: $linkNodeID)
+                    .font(.system(size: 13, design: .monospaced))
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                Button {
+                    guard let url = resolvedURL else { return }
+                    busy = true
+                    Task {
+                        linkMsg = await wallet.linkDevice(linkNodeID, coordinatorURL: url) ?? "Linked — earnings now consolidate here."
+                        if wallet.linkedDevices.contains(linkNodeID.trimmingCharacters(in: .whitespacesAndNewlines)) { linkNodeID = "" }
+                        busy = false
+                    }
+                } label: {
+                    Label("Link device", systemImage: "link")
+                }
+                .disabled(busy || resolvedURL == nil || linkNodeID.trimmingCharacters(in: .whitespaces).isEmpty)
+
+                if let msg = linkMsg {
+                    Text(msg).font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(wallet.linkedDevices, id: \.self) { dev in
+                    Label(dev, systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(NodeStatus.live.color)
+                }
+            }
+        }
     }
 }
 

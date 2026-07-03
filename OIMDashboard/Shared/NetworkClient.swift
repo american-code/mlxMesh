@@ -63,6 +63,70 @@ enum NetworkClient {
         _ = try await URLSession.shared.data(for: req)
     }
 
+    // MARK: - Wallet (portable account identity → credit consolidation)
+
+    // requestChallenge asks the coordinator for a one-time nonce the account key
+    // must sign to prove ownership. Mirrors POST /account/challenge {address}.
+    static func requestChallenge(coordinatorURL: String, address: String) async throws -> String {
+        var req = URLRequest(url: URL(string: "\(resolvedCoordinator(coordinatorURL))/account/challenge")!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["address": address])
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try Self.ensureOK(resp, data)
+        let ch = try decoder.decode(WalletChallenge.self, from: data)
+        return ch.nonce
+    }
+
+    // authenticate submits the signed challenge; on success the coordinator mints
+    // a session oim_ API key bound to the address. POST /account/auth.
+    static func authenticate(coordinatorURL: String, address: String, nonce: String,
+                             publicKey: Data, signature: Data) async throws -> String {
+        var req = URLRequest(url: URL(string: "\(resolvedCoordinator(coordinatorURL))/account/auth")!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: [
+            "address": address,
+            "nonce": nonce,
+            "public_key": publicKey.base64EncodedString(),
+            "signature": signature.base64EncodedString(),
+        ])
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try Self.ensureOK(resp, data)
+        let out = try decoder.decode(WalletAuthResponse.self, from: data)
+        return out.apiKey
+    }
+
+    // linkDevice binds a contributing device's node ID to this account so its
+    // earnings consolidate here. Account-signed. POST /account/{address}/link-device.
+    static func linkDevice(coordinatorURL: String, address: String, deviceNodeID: String,
+                           accountPublicKey: Data, signature: Data) async throws {
+        var req = URLRequest(url: URL(string: "\(resolvedCoordinator(coordinatorURL))/account/\(address)/link-device")!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: [
+            "device_node_id": deviceNodeID,
+            "account_public_key": accountPublicKey.base64EncodedString(),
+            "signature": signature.base64EncodedString(),
+        ])
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try Self.ensureOK(resp, data)
+    }
+
+    // ensureOK surfaces the coordinator's JSON {"error": "..."} body on non-2xx
+    // (challenge/auth/link all return 400/401 with a reason), instead of the
+    // opaque success URLSession gives for any HTTP status.
+    private static func ensureOK(_ resp: URLResponse, _ data: Data) throws {
+        guard let http = resp as? HTTPURLResponse else { return }
+        guard (200..<300).contains(http.statusCode) else {
+            if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let msg = obj["error"] as? String {
+                throw NetworkError.message(msg)
+            }
+            throw NetworkError.message("HTTP \(http.statusCode)")
+        }
+    }
+
     // MARK: - Try the mesh
 
     // submitTestQuery sends a real inference job through the mesh and returns the
@@ -91,6 +155,24 @@ enum NetworkClient {
             latencyMs: (obj["oim_latency_ms"] as? Int) ?? (obj["oim_latency_ms"] as? Double).map { Int($0) }
         )
     }
+}
+
+enum NetworkError: LocalizedError {
+    case message(String)
+    var errorDescription: String? { if case .message(let m) = self { return m }; return nil }
+}
+
+// Wire shapes for the coordinator's wallet endpoints (snake_case → camelCase via
+// the shared decoder's keyDecodingStrategy).
+struct WalletChallenge: Codable {
+    let address: String
+    let nonce: String
+    let expiresAt: String
+}
+
+struct WalletAuthResponse: Codable {
+    let address: String
+    let apiKey: String
 }
 
 struct TestQueryResult {

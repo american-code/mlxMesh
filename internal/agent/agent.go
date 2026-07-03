@@ -41,6 +41,7 @@ import (
 	"github.com/open-inference-mesh/oim/internal/exoadapter"
 	"github.com/open-inference-mesh/oim/internal/governor"
 	"github.com/open-inference-mesh/oim/internal/httpmw"
+	"github.com/open-inference-mesh/oim/internal/httptls"
 	"github.com/open-inference-mesh/oim/internal/jobrunner"
 	"github.com/open-inference-mesh/oim/internal/nodeconfig"
 	"github.com/open-inference-mesh/oim/internal/protocol"
@@ -508,6 +509,23 @@ func refresh(ctx context.Context, coordinatorURL, nodeID string, priv []byte, ma
 	return postJSON(ctx, coordinatorURL+"/nodes/"+nodeID+"/refresh", req)
 }
 
+// coordinatorClient is the HTTP client for all coordinator calls (register,
+// refresh, job-outcome, benchmark, attestation). Defaults to the standard
+// client; ConfigureTLS swaps in a CA-pinned / skip-verify transport when the
+// node targets an HTTPS coordinator with a private or self-signed cert.
+var coordinatorClient = http.DefaultClient
+
+// ConfigureTLS points coordinatorClient at the given trust settings. Call once
+// at node startup before registering. A no-op when both args are zero-valued.
+func ConfigureTLS(caFile string, skipVerify bool) error {
+	c := *http.DefaultClient // shallow copy so we don't mutate the global default
+	if err := httptls.ConfigureClient(&c, caFile, skipVerify); err != nil {
+		return err
+	}
+	coordinatorClient = &c
+	return nil
+}
+
 func postJSON(ctx context.Context, url string, body any) error {
 	b, err := json.Marshal(body)
 	if err != nil {
@@ -518,7 +536,7 @@ func postJSON(ctx context.Context, url string, body any) error {
 		return fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := coordinatorClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("POST %s: %w", url, err)
 	}

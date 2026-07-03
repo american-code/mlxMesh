@@ -71,7 +71,7 @@ struct WatchContentView: View {
                     }
                 }
             }
-            .navigationTitle("OIM")
+            .navigationTitle("mlxMesh")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     if store.isLoading {

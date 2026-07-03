@@ -61,6 +61,7 @@ func rootCmd() *cobra.Command {
 	var count int
 	var verbose bool
 	var useQueue bool
+	var pointerHost string
 
 	cmd := &cobra.Command{
 		Use:   "jobgen",
@@ -75,6 +76,27 @@ token accounting, and earnings attribution. Run a local oim node agent
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
+
+			// Pointer-host simulation: announce this generator as an iOS-style
+			// coordination participant and tag its jobs with a pointer, so the
+			// coordinator's served-pointer counter (and the dashboards' security /
+			// coordination layer) show visible activity without a physical device.
+			if pointerHost != "" {
+				announcePointerHost(ctx, coordinatorURL, pointerHost)
+				go func() {
+					t := time.NewTicker(30 * time.Second) // stay under the 90s TTL
+					defer t.Stop()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-t.C:
+							announcePointerHost(ctx, coordinatorURL, pointerHost)
+						}
+					}
+				}()
+				fmt.Printf("Pointer host: %s (announcing as coordination participant)\n", pointerHost)
+			}
 
 			displayUser := userID
 			if displayUser == "" {
@@ -120,7 +142,7 @@ token accounting, and earnings attribution. Run a local oim node agent
 					}
 
 					prompt := referencePrompts[(jobNum-1)%len(referencePrompts)]
-					r := submitJob(ctx, coordinatorURL, userID, apiKey, model, prompt.label, prompt.content, useQueue, verbose)
+					r := submitJob(ctx, coordinatorURL, userID, apiKey, model, prompt.label, prompt.content, useQueue, pointerHost, verbose)
 
 					total.jobs++
 					if r.err != nil {
@@ -161,16 +183,57 @@ token accounting, and earnings attribution. Run a local oim node agent
 	cmd.Flags().IntVar(&count, "count", 0, "Number of jobs to submit (0 = unlimited)")
 	cmd.Flags().BoolVar(&verbose, "verbose", false, "Print first 120 chars of each response")
 	cmd.Flags().BoolVar(&useQueue, "queue", false, "Set X-OIM-Queue: true — coordinator queues the job instead of returning 503 when nodes are busy")
+	cmd.Flags().StringVar(&pointerHost, "pointer-host", "", "Simulate an iOS pointer-host: announce as a coordination participant and route jobs through the encrypted-pointer path attributed to this device ID")
 	return cmd
 }
 
-func submitJob(ctx context.Context, coordinator, userID, apiKey, model, promptLabel, promptContent string, useQueue bool, _ bool) jobResult {
+// announcePointerHost registers a synthetic coordination participant so the
+// coordinator counts pointers served by --pointer-host jobs. Best-effort.
+func announcePointerHost(ctx context.Context, coordinator, deviceID string) {
+	body, _ := json.Marshal(map[string]any{
+		"device_id":       deviceID,
+		"role":            "pointer_host",
+		"is_mobile":       true,
+		"geographic_hint": "sim",
+	})
+	req, err := http.NewRequestWithContext(ctx, "POST", coordinator+"/coordination/announce", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		resp.Body.Close()
+	}
+}
+
+// syntheticPointer fabricates a plausible encrypted-pointer triple for
+// simulation. The ciphertext is never actually fetched (stub-exo ignores it),
+// so a deterministic hash/URL/key is sufficient to exercise the pointer path.
+func syntheticPointer(deviceID string, jobNum int) (hash, fetchURL, ephemeralPubKey string) {
+	hash = fmt.Sprintf("sha256:sim-%s-%d", deviceID, jobNum)
+	fetchURL = fmt.Sprintf("http://%s.pointer.local/payload/%d", deviceID, jobNum)
+	ephemeralPubKey = "sim-ephemeral-pubkey"
+	return
+}
+
+var pointerJobSeq int
+
+func submitJob(ctx context.Context, coordinator, userID, apiKey, model, promptLabel, promptContent string, useQueue bool, pointerHost string, _ bool) jobResult {
 	body := map[string]any{
 		"messages":   []map[string]any{{"role": "user", "content": promptContent}},
 		"max_tokens": 256,
 	}
 	if model != "" {
 		body["model"] = model
+	}
+
+	// Route through the encrypted-pointer path when simulating a pointer host.
+	if pointerHost != "" {
+		pointerJobSeq++
+		hash, fetchURL, ephKey := syntheticPointer(pointerHost, pointerJobSeq)
+		body["oim_payload_hash"] = hash
+		body["oim_payload_fetch_url"] = fetchURL
+		body["oim_ephemeral_public_key"] = ephKey
 	}
 
 	b, _ := json.Marshal(body)
@@ -186,6 +249,9 @@ func submitJob(ctx context.Context, coordinator, userID, apiKey, model, promptLa
 	}
 	if useQueue {
 		req.Header.Set("X-OIM-Queue", "true")
+	}
+	if pointerHost != "" {
+		req.Header.Set("X-OIM-Pointer-Host", pointerHost)
 	}
 
 	start := time.Now()

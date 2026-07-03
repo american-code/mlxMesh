@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react'
 import { fetchNodes } from '../api'
-import type { NodeSnapshot, PodHealthDigest, PodMetrics } from '../types'
+import type { NodeSnapshot, PodHealthDigest, PodMetrics, CoordinationParticipant } from '../types'
 
 export interface PodNodes {
   pod: PodHealthDigest
   nodes: NodeSnapshot[]
+  coordination: CoordinationParticipant[]
   metrics: PodMetrics | null
   error: string | null
 }
@@ -18,7 +19,7 @@ export function useAllNodes(pods: PodHealthDigest[], intervalMs = 5000): PodNode
     if (pods.length === 0) { setResults([]); return }
 
     // Seed with empty entries so the grid renders immediately
-    setResults(pods.map(pod => ({ pod, nodes: [], metrics: null, error: null })))
+    setResults(pods.map(pod => ({ pod, nodes: [], coordination: [], metrics: null, error: null })))
 
     const cleanupFns: (() => void)[] = []
 
@@ -26,12 +27,12 @@ export function useAllNodes(pods: PodHealthDigest[], intervalMs = 5000): PodNode
       let pollTimer: ReturnType<typeof setInterval> | null = null
       let es: EventSource | null = null
 
-      function update(nodes: NodeSnapshot[], metrics: PodMetrics | null, error: string | null) {
+      function update(nodes: NodeSnapshot[], coordination: CoordinationParticipant[], metrics: PodMetrics | null, error: string | null) {
         setResults(prev => {
           // Guard against stale closures from a previous effect run
           if (prev.length !== pods.length) return prev
           const next = [...prev]
-          next[idx] = { pod, nodes, metrics, error }
+          next[idx] = { pod, nodes, coordination, metrics, error }
           return next
         })
       }
@@ -39,9 +40,9 @@ export function useAllNodes(pods: PodHealthDigest[], intervalMs = 5000): PodNode
       async function poll() {
         try {
           const res = await fetchNodes(pod.coordinator_endpoint)
-          update(res.nodes ?? [], res.metrics ?? null, null)
+          update(res.nodes ?? [], res.coordination_nodes ?? [], res.metrics ?? null, null)
         } catch (e) {
-          update([], null, e instanceof Error ? e.message : String(e))
+          update([], [], null, e instanceof Error ? e.message : String(e))
         }
       }
 
@@ -56,7 +57,7 @@ export function useAllNodes(pods: PodHealthDigest[], intervalMs = 5000): PodNode
       es.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data)
-          update(data.nodes ?? [], data.metrics ?? null, null)
+          update(data.nodes ?? [], data.coordination_nodes ?? [], data.metrics ?? null, null)
         } catch { /* ignore parse errors */ }
       }
 

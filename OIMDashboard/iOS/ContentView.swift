@@ -5,6 +5,13 @@ struct ContentView: View {
     @Environment(\.horizontalSizeClass) private var hSizeClass
     @State private var selectedNode: NodeSnapshot?
     @State private var sidebarItem: String? = "overview"
+    // Owned here (not inside ContributeView) so the coordination session and its
+    // live pointer-host persist across tab/sidebar navigation and data-poll
+    // rebuilds of the detail view.
+    @StateObject private var coordination = ContributionSession()
+    // Portable account identity (Keychain-backed, iCloud-synced). Hoisted here so
+    // one wallet instance is shared by Account/Coordinate and survives navigation.
+    @State private var wallet = WalletStore()
 
     var body: some View {
         Group {
@@ -14,6 +21,7 @@ struct ContentView: View {
                 iPhoneLayout
             }
         }
+        .environment(wallet)
         .sheet(item: $selectedNode) { node in
             NodeDetailView(node: node)
         }
@@ -24,7 +32,7 @@ struct ContentView: View {
         TabView {
             NavigationStack {
                 OverviewView(selectedNode: $selectedNode)
-                    .navigationTitle("OIM")
+                    .navigationTitle("mlxMesh")
                     .navigationBarTitleDisplayMode(.large)
                     .toolbar { refreshButton }
             }
@@ -45,6 +53,9 @@ struct ContentView: View {
                 }
                 .tabItem { Label(pod.regionHint.uppercased(), systemImage: "network") }
             }
+
+            ContributeView(session: coordination)
+                .tabItem { Label("Coordinate", systemImage: "lock.shield.fill") }
 
             NavigationStack {
                 AccountView()
@@ -73,12 +84,13 @@ struct ContentView: View {
                               systemImage: "network").tag("region-\(pod.podId)")
                     }
                 }
-                Section {
+                Section("This device") {
+                    Label("Coordinate", systemImage: "lock.shield.fill").tag("coordinate")
                     Label("Account", systemImage: "person.circle.fill").tag("account")
                     Label("Settings", systemImage: "gear").tag("settings")
                 }
             }
-            .navigationTitle("OIM")
+            .navigationTitle("mlxMesh")
             .toolbar { refreshButton }
         } detail: {
             detailView(for: sidebarItem)
@@ -91,6 +103,8 @@ struct ContentView: View {
         case "map":
             GlobalMapView(nodes: store.allNodes, selected: $selectedNode)
                 .ignoresSafeArea()
+        case "coordinate":
+            ContributeView(session: coordination)
         case "account":
             AccountView()
         case "settings":
