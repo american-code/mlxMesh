@@ -512,7 +512,7 @@ function SecurityLayerPanel({
                   {p.device_id.slice(0, 12)}…
                 </div>
                 <div style={{ color: '#7d8590', fontSize: 11 }}>
-                  {p.region.toUpperCase()} · {p.role.replace(/_/g, ' ')}
+                  {(p.region || p.geographic_hint || '—').toUpperCase()} · {p.role.replace(/_/g, ' ')}
                 </div>
               </div>
             </div>

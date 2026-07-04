@@ -213,6 +213,45 @@ func (c *Client) RunChatCompletion(
 	return c.postJSON(ctx, "/v1/chat/completions", payload)
 }
 
+// streamClient has no fixed timeout — a chat completion can run indefinitely;
+// callers cancel via ctx, not a client-wide deadline (unlike c.http, used for
+// short buffered calls where 30s is a reasonable ceiling).
+var streamClient = &http.Client{}
+
+// StreamChatCompletion calls POST /v1/chat/completions with stream:true and
+// stream_options.include_usage:true (so the trailing SSE frame carries
+// completion_tokens), returning the raw HTTP response for the caller to read
+// as text/event-stream — the streaming counterpart to RunChatCompletion, fast
+// lane only. The caller owns closing resp.Body.
+func (c *Client) StreamChatCompletion(ctx context.Context, modelID string, messages []map[string]any) (*http.Response, error) {
+	payload := map[string]any{
+		"model":          modelID,
+		"messages":       messages,
+		"stream":         true,
+		"stream_options": map[string]any{"include_usage": true},
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal stream payload: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/chat/completions", bytes.NewReader(b))
+	if err != nil {
+		return nil, fmt.Errorf("build stream request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("stream chat completion: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("stream chat completion HTTP %d: %s", resp.StatusCode, raw)
+	}
+	return resp, nil
+}
+
 // --- HTTP helpers ---
 
 // getJSON handles both list response shapes Exo uses across its endpoints:

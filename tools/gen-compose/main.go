@@ -158,6 +158,16 @@ func region(w *os.File, regionName, coordinatorSvc, coordinatorPort string, coun
 		}
 		lat, lng := geoForNode(regionName, i)
 
+		// The first node in each region is a realistic heterogeneous Exo cluster
+		// (two Mac Studios + a MacBook Pro) so the dashboard's Node Setup topology
+		// diagram is populated out of the box with mixed hardware — its port is the
+		// default the "Local agent" bar points at. Other nodes derive device count
+		// from memory (one device per ~48 GB).
+		deviceCountEnv := ""
+		if i == 1 {
+			deviceCountEnv = "\n      STUB_DEVICES: \"Mac Studio:32,Mac Studio:32,MacBook Pro:16\""
+		}
+
 		// stub-exo service
 		fmt.Fprintf(w, `
   %s:
@@ -167,14 +177,14 @@ func region(w *os.File, regionName, coordinatorSvc, coordinatorPort string, coun
       STUB_NODE_NAME: %s
       STUB_MODELS: %s
       STUB_MEMORY_GB: "%d"
-      STUB_LATENCY_MS: "%d"
+      STUB_LATENCY_MS: "%d"%s
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:52415/state"]
       interval: 2s
       timeout: 2s
       retries: 10
       start_period: 3s
-`, exoSvc, nodeSvc, models, memGB, latMS)
+`, exoSvc, nodeSvc, models, memGB, latMS, deviceCountEnv)
 
 		// node agent service — exo nodes include --declared-memory-gb so the coordinator
 		// sees the correct tier (128/256 GB) even when Docker containers share host RAM.

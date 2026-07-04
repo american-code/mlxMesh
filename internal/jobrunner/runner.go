@@ -5,12 +5,16 @@
 package jobrunner
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"net/http"
+	"strings"
 
 	"github.com/open-inference-mesh/oim/internal/exoadapter"
 	"github.com/open-inference-mesh/oim/internal/governor"
 	"github.com/open-inference-mesh/oim/internal/protocol"
+	"github.com/open-inference-mesh/oim/internal/sse"
 )
 
 // Runner holds the local Exo client for this node.
@@ -55,6 +59,65 @@ func (r *Runner) ExecuteFastLane(
 		return nil, fmt.Errorf("fast-lane inference failed: %w", err)
 	}
 	return result, nil
+}
+
+// ExecuteFastLaneStreaming is ExecuteFastLane's streaming counterpart: it
+// relays Exo's SSE response directly to w as it arrives (same
+// header/Flusher pattern used elsewhere for SSE — see the coordinator's
+// /nodes/stream handler) instead of returning one buffered blob, and returns
+// the accumulated completion-token count read from the trailing SSE usage
+// frame — the same accounting signal ExecuteFastLane returns via
+// usage.completion_tokens, just sourced from a stream instead of one blob.
+// Fast lane only; never called for background-lane jobs.
+// headersSent reports whether any bytes were relayed to w before an error
+// occurred — the caller (agent.go's handler) uses this to decide whether a
+// normal JSON error response is still possible (nothing written yet) or the
+// stream must simply be abandoned (the client already has partial output over
+// an implicit 200).
+func (r *Runner) ExecuteFastLaneStreaming(
+	ctx context.Context,
+	spec protocol.JobSpec,
+	messages []map[string]any,
+	capPct float64,
+	w http.ResponseWriter,
+) (tokensDelivered int, headersSent bool, err error) {
+	if err := r.RefuseIfConstrained(capPct); err != nil {
+		return 0, false, fmt.Errorf("pre-flight refused: %w", err)
+	}
+	resp, err := r.exo.StreamChatCompletion(ctx, spec.ModelID, messages)
+	if err != nil {
+		return 0, false, fmt.Errorf("fast-lane streaming inference failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return 0, false, fmt.Errorf("streaming not supported by response writer")
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	tokens := 0
+	started := false
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		started = true
+		fmt.Fprintf(w, "%s\n", line)
+		if strings.TrimSpace(line) == "" {
+			flusher.Flush() // blank line terminates one SSE event
+		}
+		if n := sse.ExtractUsageTokens(line); n > 0 {
+			tokens = n
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return tokens, started, fmt.Errorf("read exo stream: %w", err)
+	}
+	return tokens, started, nil
 }
 
 // ExecuteBackgroundLane runs one cycle of a recurring job.

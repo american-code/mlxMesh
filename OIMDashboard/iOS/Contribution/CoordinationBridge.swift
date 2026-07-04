@@ -83,6 +83,24 @@ final class CoordinationBridge {
         _ = try? await session.data(for: req)
     }
 
+    /// Fetches this device's coordinator-observed served-pointer count. The
+    /// coordinator is the source of truth: it increments the counter whenever it
+    /// attributes an encrypted pointer to this device, so the UI reflects real
+    /// credited work rather than a local guess (a node fetching from this device's
+    /// LAN host can't be observed from here, e.g. across a Docker sim). Returns
+    /// nil on any failure — the caller keeps the last known value.
+    func fetchPointersServed(deviceId: String) async -> Int? {
+        let req = URLRequest(url: podEndpoint.appendingPathComponent("nodes"))
+        guard let (data, _) = try? await session.data(for: req),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = obj["coordination_nodes"] as? [[String: Any]] else { return nil }
+        for p in list where p["device_id"] as? String == deviceId {
+            if let n = p["pointers_served"] as? Int { return n }
+            if let n = p["pointers_served"] as? NSNumber { return n.intValue }
+        }
+        return nil
+    }
+
     /// Clean withdrawal — never throws (runs during shutdown).
     func withdrawParticipation(deviceId: String) async {
         var req = URLRequest(url: podEndpoint.appendingPathComponent("coordination/withdraw"))

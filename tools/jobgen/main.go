@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -46,13 +47,13 @@ var referencePrompts = []struct {
 }
 
 type jobResult struct {
-	promptLabel     string
-	model           string
+	promptLabel      string
+	model            string
 	completionTokens int
-	promptTokens    int
-	latencyMs       float64
-	err             error
-	content         string
+	promptTokens     int
+	latencyMs        float64
+	err              error
+	content          string
 }
 
 func rootCmd() *cobra.Command {
@@ -83,6 +84,7 @@ token accounting, and earnings attribution. Run a local oim node agent
 			// coordination layer) show visible activity without a physical device.
 			if pointerHost != "" {
 				announcePointerHost(ctx, coordinatorURL, pointerHost)
+				refreshLiveHosts(ctx, coordinatorURL, pointerHost)
 				go func() {
 					t := time.NewTicker(30 * time.Second) // stay under the 90s TTL
 					defer t.Stop()
@@ -92,6 +94,10 @@ token accounting, and earnings attribution. Run a local oim node agent
 							return
 						case <-t.C:
 							announcePointerHost(ctx, coordinatorURL, pointerHost)
+							// Discover other live participants (e.g. a real iPad
+							// running the app) so their attributed pointers — and
+							// thus their credits — actually flow.
+							refreshLiveHosts(ctx, coordinatorURL, pointerHost)
 						}
 					}
 				}()
@@ -142,7 +148,14 @@ token accounting, and earnings attribution. Run a local oim node agent
 					}
 
 					prompt := referencePrompts[(jobNum-1)%len(referencePrompts)]
-					r := submitJob(ctx, coordinatorURL, userID, apiKey, model, prompt.label, prompt.content, useQueue, pointerHost, verbose)
+					// Rotate the attributed pointer host across this generator and
+					// every live participant, so a real connected+linked device
+					// (an iPad) visibly earns from simulated traffic.
+					effectiveHost := pointerHost
+					if pointerHost != "" {
+						effectiveHost = pickPointerHost(pointerHost, jobNum)
+					}
+					r := submitJob(ctx, coordinatorURL, userID, apiKey, model, prompt.label, prompt.content, useQueue, effectiveHost, verbose)
 
 					total.jobs++
 					if r.err != nil {
@@ -187,6 +200,51 @@ token accounting, and earnings attribution. Run a local oim node agent
 	return cmd
 }
 
+var (
+	liveHostsMu sync.Mutex
+	liveHosts   []string // other live participants (excludes this generator)
+)
+
+// refreshLiveHosts pulls the coordinator's live coordination participants and
+// caches every device id other than this generator's own. Best-effort.
+func refreshLiveHosts(ctx context.Context, coordinator, selfHost string) {
+	req, err := http.NewRequestWithContext(ctx, "GET", coordinator+"/nodes", nil)
+	if err != nil {
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	var body struct {
+		CoordinationNodes []struct {
+			DeviceID string `json:"device_id"`
+		} `json:"coordination_nodes"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&body) != nil {
+		return
+	}
+	others := make([]string, 0, len(body.CoordinationNodes))
+	for _, p := range body.CoordinationNodes {
+		if p.DeviceID != "" && p.DeviceID != selfHost {
+			others = append(others, p.DeviceID)
+		}
+	}
+	liveHostsMu.Lock()
+	liveHosts = others
+	liveHostsMu.Unlock()
+}
+
+// pickPointerHost round-robins the attributed pointer host across this generator
+// and all other live participants, so real connected devices earn their share.
+func pickPointerHost(selfHost string, jobNum int) string {
+	liveHostsMu.Lock()
+	pool := append([]string{selfHost}, liveHosts...)
+	liveHostsMu.Unlock()
+	return pool[jobNum%len(pool)]
+}
+
 // announcePointerHost registers a synthetic coordination participant so the
 // coordinator counts pointers served by --pointer-host jobs. Best-effort.
 func announcePointerHost(ctx context.Context, coordinator, deviceID string) {
@@ -209,9 +267,13 @@ func announcePointerHost(ctx context.Context, coordinator, deviceID string) {
 // syntheticPointer fabricates a plausible encrypted-pointer triple for
 // simulation. The ciphertext is never actually fetched (stub-exo ignores it),
 // so a deterministic hash/URL/key is sufficient to exercise the pointer path.
+// The fetch URL uses a literal RFC 5737 TEST-NET address: the coordinator's
+// SSRF guard resolves hostnames, so a made-up `.local` name would be rejected
+// with 400 before the job ever dispatched; a literal public-range IP needs no
+// DNS and passes validation while remaining guaranteed non-routable.
 func syntheticPointer(deviceID string, jobNum int) (hash, fetchURL, ephemeralPubKey string) {
 	hash = fmt.Sprintf("sha256:sim-%s-%d", deviceID, jobNum)
-	fetchURL = fmt.Sprintf("http://%s.pointer.local/payload/%d", deviceID, jobNum)
+	fetchURL = fmt.Sprintf("http://192.0.2.1/payload/%s/%d", deviceID, jobNum)
 	ephemeralPubKey = "sim-ephemeral-pubkey"
 	return
 }

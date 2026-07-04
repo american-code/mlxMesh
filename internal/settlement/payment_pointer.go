@@ -5,7 +5,7 @@ import "fmt"
 // PaymentPointer declares where a node operator wants to be paid.
 // The protocol never custodies funds — this carries WHERE, not HOW (proposal §10).
 type PaymentPointer struct {
-	RailType           string `json:"rail_type"`            // "stablecoin" | "fiat_invoice" | "other"
+	RailType           string `json:"rail_type"` // "stablecoin" | "fiat_invoice" | "other"
 	AddressOrReference string `json:"address_or_reference"`
 }
 

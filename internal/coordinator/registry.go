@@ -330,6 +330,7 @@ type NodeSnapshot struct {
 	ClusterChipFamilies  []string                   `json:"cluster_chip_families,omitempty"`
 	LastSeenAt           string                     `json:"last_seen_at"`
 	InFlightJobs         int                        `json:"in_flight_jobs"` // currently dispatched jobs
+	ECDHPublicKey        string                     `json:"ecdh_public_key,omitempty"`
 }
 
 // Snapshot returns a point-in-time view of all registered nodes (live and recently stale).
@@ -370,6 +371,7 @@ func (r *NodeRegistry) Snapshot() []NodeSnapshot {
 			ClusterChipFamilies:  e.manifest.ClusterChipFamilies,
 			LastSeenAt:           e.lastSeen.UTC().Format("2006-01-02T15:04:05Z"),
 			InFlightJobs:         int(atomic.LoadInt32(&e.inFlight)),
+			ECDHPublicKey:        e.manifest.ECDHPublicKey,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })

@@ -55,7 +55,8 @@ func TestCoordinationPointerServedCounter(t *testing.T) {
 	r.Announce(coordinator.CoordinationParticipant{DeviceID: "ipad-1"}, now)
 
 	// Two served pointers → count of 2 in the snapshot.
-	if !r.RecordPointerServed("ipad-1") || !r.RecordPointerServed("ipad-1") {
+	firstServed, secondServed := r.RecordPointerServed("ipad-1"), r.RecordPointerServed("ipad-1")
+	if !firstServed || !secondServed {
 		t.Fatal("RecordPointerServed should return true for a live device")
 	}
 	snap := r.SnapshotAt(now)

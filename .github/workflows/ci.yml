@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  go:
+    name: Go build, vet, lint, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+      - name: Unit tests
+        run: go test ./...
+
+      - name: Integration tests
+        run: go test -tags integration ./tests/ -run Integration
+
+  dashboard:
+    name: Web dashboard build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - run: npm ci
+      - run: npm run build # runs `tsc -b && vite build` — typecheck + build in one
+
+  swift:
+    name: Apple apps build (iOS/tvOS/watchOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: OIMDashboard
+        run: xcodegen generate
+
+      # CODE_SIGNING_ALLOWED=NO: CI runners don't have the project's personal
+      # DEVELOPMENT_TEAM signing identity (see project.yml) — this typechecks
+      # and builds every target without needing one, same as any contributor
+      # cloning the repo without that identity.
+      - name: Build iOS
+        working-directory: OIMDashboard
+        run: xcodebuild build -scheme OIMDashboard -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO
+
+      - name: Build tvOS
+        working-directory: OIMDashboard
+        run: xcodebuild build -scheme OIMDashboardTV -destination 'generic/platform=tvOS' CODE_SIGNING_ALLOWED=NO
+
+      - name: Build watchOS
+        working-directory: OIMDashboard
+        run: xcodebuild build -scheme OIMDashboardWatch -destination 'generic/platform=watchOS' CODE_SIGNING_ALLOWED=NO

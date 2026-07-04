@@ -29,7 +29,7 @@ func newEnclaveTestKey(t *testing.T) enclaveTestKey {
 }
 
 func (k enclaveTestKey) publicKeyBytes() []byte {
-	return elliptic.Marshal(elliptic.P256(), k.priv.PublicKey.X, k.priv.PublicKey.Y)
+	return elliptic.Marshal(elliptic.P256(), k.priv.X, k.priv.Y)
 }
 
 func (k enclaveTestKey) sign(t *testing.T, msg []byte) []byte {

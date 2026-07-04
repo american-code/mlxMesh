@@ -1,7 +1,7 @@
 // Package coordinator — query decomposition for background-lane jobs.
 //
 // Decomposition splits a compound query into independent sub-tasks that can be
-// dispatched in parallel, then synthesised by the merger. It is STRICTLY opt-in:
+// dispatched in parallel, then synthesized by the merger. It is STRICTLY opt-in:
 // AllowDecomposition=false (the default) must never be silently overridden.
 //
 // The decomposition model interface allows a BERT-class classifier to be plugged in
@@ -29,14 +29,14 @@ const (
 	SubTaskQueryOptimization SubTaskType = "QUERY_OPTIMIZATION"
 	SubTaskSummarization     SubTaskType = "SUMMARIZATION"
 	SubTaskClassification    SubTaskType = "CLASSIFICATION"
-	SubTaskMerge             SubTaskType = "MERGE" // synthesises outputs of all other sub-tasks; always last
+	SubTaskMerge             SubTaskType = "MERGE" // synthesizes outputs of all other sub-tasks; always last
 )
 
 // SubTask is one unit of parallelisable work within a decomposed job.
 type SubTask struct {
 	SubTaskID    string      `json:"sub_task_id"`
 	ParentJobID  string      `json:"parent_job_id"`
-	ModelID      string      `json:"model_id"`      // inherited from parent JobSpec; same model for all sub-tasks
+	ModelID      string      `json:"model_id"` // inherited from parent JobSpec; same model for all sub-tasks
 	SubTaskType  SubTaskType `json:"sub_task_type"`
 	Prompt       string      `json:"prompt"`        // constructed from the original query, scoped to this sub-task
 	DependsOn    []string    `json:"depends_on"`    // SubTaskIDs that must complete before this one starts
@@ -45,10 +45,10 @@ type SubTask struct {
 
 // DecomposedJob is the output of DecomposeJob, ready for DispatchSubTasksInParallel.
 type DecomposedJob struct {
-	OriginalJobID  string      `json:"original_job_id"`
-	SubTasks       []SubTask   `json:"sub_tasks"`
-	ConfidenceScore float64    `json:"confidence_score"` // 0..1; from the classifier or heuristic
-	ClassifierUsed string      `json:"classifier_used"`  // "keyword_heuristic" | "bert_classifier" | etc.
+	OriginalJobID   string    `json:"original_job_id"`
+	SubTasks        []SubTask `json:"sub_tasks"`
+	ConfidenceScore float64   `json:"confidence_score"` // 0..1; from the classifier or heuristic
+	ClassifierUsed  string    `json:"classifier_used"`  // "keyword_heuristic" | "bert_classifier" | etc.
 }
 
 // DecompositionModel is the interface for query intent classifiers.
@@ -171,7 +171,7 @@ func DecomposeJob(jobSpec protocol.JobSpec, model DecompositionModel) (Decompose
 		)
 	}
 	if jobSpec.Lane == protocol.JobLaneFast {
-		// Enforced again here for defence-in-depth; Validate() already blocks this.
+		// Enforced again here for defense-in-depth; Validate() already blocks this.
 		return DecomposedJob{}, fmt.Errorf(
 			"DecomposeJob: fast-lane job %q cannot be decomposed: %w",
 			jobSpec.JobID, ErrNotImplemented,
@@ -221,7 +221,7 @@ func DecomposeJob(jobSpec protocol.JobSpec, model DecompositionModel) (Decompose
 		ParentJobID: jobSpec.JobID,
 		ModelID:     jobSpec.ModelID,
 		SubTaskType: SubTaskMerge,
-		Prompt:      "Synthesise the sub-task outputs into a single coherent response.",
+		Prompt:      "Synthesize the sub-task outputs into a single coherent response.",
 		DependsOn:   analyticalIDs,
 	})
 
@@ -242,13 +242,13 @@ func buildSubTaskPrompt(t SubTaskType, jobID string) string {
 	case SubTaskAnomalyDetection:
 		return fmt.Sprintf("For job %s: identify anomalies, outliers, and unexpected patterns in the data.", jobID)
 	case SubTaskTrendAnalysis:
-		return fmt.Sprintf("For job %s: analyse temporal trends, growth rates, and forecasts.", jobID)
+		return fmt.Sprintf("For job %s: analyze temporal trends, growth rates, and forecasts.", jobID)
 	case SubTaskQueryOptimization:
 		return fmt.Sprintf("For job %s: suggest query optimisations, index recommendations, and execution plan improvements.", jobID)
 	case SubTaskSummarization:
 		return fmt.Sprintf("For job %s: produce a concise summary of the key points.", jobID)
 	case SubTaskClassification:
-		return fmt.Sprintf("For job %s: classify and categorise the data according to the requested taxonomy.", jobID)
+		return fmt.Sprintf("For job %s: classify and categorize the data according to the requested taxonomy.", jobID)
 	default:
 		return fmt.Sprintf("For job %s: perform the requested %s task.", jobID, string(t))
 	}

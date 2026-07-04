@@ -200,13 +200,13 @@ struct AccountView: View {
     private func claimGrant() async {
         guard let url = coordinatorURL else { return }
         claiming = true
+        claimMsg = "Solving proof-of-work…"
         defer { claiming = false }
         do {
-            let base = NetworkClient.resolvedCoordinator(url)
-            var req = URLRequest(url: URL(string: "\(base)/users/\(identityId)/startup-grant")!)
-            req.httpMethod = "POST"
-            let (_, _) = try await URLSession.shared.data(for: req)
-            claimMsg = "Grant claimed successfully"
+            // Mines the PoW nonce and only reports success if the coordinator
+            // actually accepted the claim (non-2xx now throws).
+            let amount = try await NetworkClient.claimStartupGrant(coordinatorURL: url, userId: identityId)
+            claimMsg = amount > 0 ? "Granted \(String(format: "%.2f", amount)) credits" : "Grant claimed"
             await loadBalance()
         } catch {
             claimMsg = error.localizedDescription
@@ -353,7 +353,25 @@ struct WalletSection: View {
 
             // ── Link another device ──
             Section("Consolidate a device") {
-                Text("Link a Mac / node you run so its earnings credit this account. Enter its node ID (shown in that node's setup).")
+                // One-tap: link THIS iPad's coordination id (the same id it
+                // announces with) so the credits it earns hosting encrypted
+                // pointers land in this account. Without this link the
+                // coordinator has no account to credit and participation earns 0.
+                Button {
+                    guard let url = resolvedURL else { return }
+                    busy = true
+                    let thisDevice = DeviceIdentity.current
+                    Task {
+                        linkMsg = await wallet.linkDevice(thisDevice, coordinatorURL: url)
+                            ?? "This iPad is linked — its participation now earns into this account."
+                        busy = false
+                    }
+                } label: {
+                    Label("Link this iPad's participation", systemImage: "ipad.and.iphone")
+                }
+                .disabled(busy || resolvedURL == nil || wallet.linkedDevices.contains(DeviceIdentity.current))
+
+                Text("Or link a Mac / node you run so its earnings credit this account. Enter its node ID (shown in that node's setup).")
                     .font(.caption).foregroundStyle(.secondary)
                 TextField("Device / node ID", text: $linkNodeID)
                     .font(.system(size: 13, design: .monospaced))

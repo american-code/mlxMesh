@@ -28,16 +28,16 @@ import (
 
 // SplitVerificationResult records one node's output for one document split.
 type SplitVerificationResult struct {
-	SplitID         string `json:"split_id"`
-	NodeID          string `json:"node_id"`
-	OutputChecksum  string `json:"output_checksum"` // SHA-256 of canonical inference output JSON
-	InputChecksum   string `json:"input_checksum"`  // DocumentSplit.Checksum — for audit trail
-	Passed          bool   `json:"passed"`
+	SplitID          string `json:"split_id"`
+	NodeID           string `json:"node_id"`
+	OutputChecksum   string `json:"output_checksum"` // SHA-256 of canonical inference output JSON
+	InputChecksum    string `json:"input_checksum"`  // DocumentSplit.Checksum — for audit trail
+	Passed           bool   `json:"passed"`
 	DivergenceDetail string `json:"divergence_detail,omitempty"` // populated only when Passed=false
 }
 
 // ComputeOutputChecksum produces a stable SHA-256 hex digest of an inference output
-// for comparison across nodes. Canonical JSON serialisation (keys sorted) ensures
+// for comparison across nodes. Canonical JSON serialization (keys sorted) ensures
 // that structurally equivalent outputs hash identically regardless of field order.
 //
 // Only valid when temperature=0 is enforced on the job — see package comment.
@@ -119,7 +119,7 @@ func TriggerFullRerunIfDiverged(
 	ctx context.Context,
 	jobID string,
 	splitResults []SplitVerificationResult,
-	fallbackNodeEndpoint string,
+	fallbackNodeEndpoint, fallbackTLSFingerprint string,
 	job protocol.JobSpec,
 	messages []map[string]any,
 ) (map[string]any, error) {
@@ -141,7 +141,7 @@ func TriggerFullRerunIfDiverged(
 
 	// Full re-run of the original unsplit job on the fallback node.
 	// dispatchToNode is defined in router.go (same package).
-	result, err := dispatchToNode(ctx, job, messages, fallbackNodeEndpoint)
+	result, err := dispatchToNode(ctx, job, messages, fallbackNodeEndpoint, fallbackTLSFingerprint)
 	if err != nil {
 		return nil, fmt.Errorf("trigger full rerun job %s: fallback dispatch: %w", jobID, err)
 	}

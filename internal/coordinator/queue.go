@@ -33,7 +33,7 @@ const (
 	MaxQueueCapacity = 500
 
 	// tpsPerQueueSlot: one queue slot per ~2 tok/s of live aggregate measured
-	// throughput — this is "network speed," the real analogue of hash rate.
+	// throughput — this is "network speed," the real analog of hash rate.
 	tpsPerQueueSlot = 2.0
 	// nodeFloorPerLiveNode: minimum slots contributed per live node even
 	// before it's been benchmarked (MeasuredToksPerSec == 0 right after
@@ -67,7 +67,7 @@ type JobQueue struct {
 }
 
 // NewJobQueue starts a bounded queue and worker goroutines that drain it.
-// Workers run until ctx is cancelled (typically at coordinator shutdown).
+// Workers run until ctx is canceled (typically at coordinator shutdown).
 // initialCapacity seeds admission before the first retarget tick; pass
 // DefaultQueueCapacity unless a caller has a specific reason not to.
 func NewJobQueue(ctx context.Context, initialCapacity, workers int, registry *NodeRegistry, maxAttempts int) *JobQueue {
@@ -133,7 +133,7 @@ func clampInt(v, min, max int) int {
 }
 
 // Enqueue submits a job to the queue and blocks until dispatched, the deadline
-// passes, or the caller's context is cancelled.
+// passes, or the caller's context is canceled.
 // Returns a 429-style error immediately if the queue buffer is full.
 func (q *JobQueue) Enqueue(ctx context.Context, job protocol.JobSpec, messages []map[string]any, timeout time.Duration) (map[string]any, error) {
 	if timeout <= 0 {

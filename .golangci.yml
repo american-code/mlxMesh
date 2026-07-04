@@ -1,0 +1,103 @@
+version: "2"
+run:
+  tests: true
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - errcheck
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - staticcheck
+    - unconvert
+    - unused
+  settings:
+    errcheck:
+      check-type-assertions: false
+      exclude-functions:
+        # Writing an HTTP response after the handler has decided what to send
+        # is best-effort: if it fails the client already disconnected, and
+        # there is nothing left to do about it in the handler itself.
+        - (net/http.ResponseWriter).Write
+        - (*encoding/json.Encoder).Encode
+        # Graceful shutdown is already time-bounded by the caller's context;
+        # a Shutdown error just means the deadline won — logged shutdown
+        # failures wouldn't change the exit path.
+        - (*net/http.Server).Shutdown
+        # Both call sites parse an optional operator-set env var / saved
+        # signature string with a sensible zero-value fallback already in
+        # place — a parse failure is a no-op, not a bug to surface.
+        - fmt.Sscanf
+    misspell:
+      locale: US
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+          - gosec
+        path: _test\.go
+      # G404 (weak math/rand): every flagged use is deliberately
+      # non-cryptographic — simulated hardware load %, chaos-testing downtime
+      # windows, and a spot-check sampling rate. None mint keys, tokens, or
+      # anything security-sensitive.
+      - linters:
+          - gosec
+        path: (tools/jobgen|internal/httpx|cmd/stub-exo|internal/coordinator/verification\.go)/?
+        text: G404
+      - linters:
+          - gosec
+        path: internal/agent/agent\.go
+        text: "G404|G118" # G404: chaos-simulation downtime jitter, not crypto.
+        # G118: outcome-reporting goroutines deliberately use
+        # context.Background(), not the request context — the report must
+        # outlive the HTTP handler that spawned it, so r.Context() (which is
+        # canceled the instant the handler returns) would be the actual bug.
+      # G117 (marshaled struct field looks like a secret): this file's entire
+      # job is persisting the node's private keys to a 0600 local file — the
+      # "leak" is the intended, documented behavior, not an accident.
+      - linters:
+          - gosec
+        path: internal/identity/store\.go
+        text: G117
+      # G706 (log injection via taint): every flagged call interpolates a
+      # structured ID (node/job/user ID, already-hex identifiers this system
+      # generates), never free-text external input. Acknowledged gap, not
+      # silently dismissed: migrating every log.Printf call site to
+      # slog-style structured fields would close this properly and is
+      # tracked as follow-up work, not done here.
+      - linters:
+          - gosec
+        text: G706
+      # SA1019 (deprecated elliptic.Marshal/Unmarshal): pre-existing
+      # Ed25519/P-256 raw-point handling in the node identity protocol.
+      # crypto/ecdh (already used by the newer internal/payloadcrypto) is the
+      # right replacement, but migrating the identity path is a separate,
+      # larger change than this exclusion's scope.
+      - linters:
+          - staticcheck
+        text: SA1019
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

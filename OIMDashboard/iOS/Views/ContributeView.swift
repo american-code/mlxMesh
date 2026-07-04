@@ -114,7 +114,7 @@ struct ContributeView: View {
                     let endpoint = podEndpoint.map { NetworkClient.resolvedCoordinator($0) }
                         ?? NetworkClient.directoryURL
                     await session.startSession(
-                        deviceId: Self.deviceId(),
+                        deviceId: DeviceIdentity.current,
                         geographicHint: Locale.current.region?.identifier.lowercased() ?? "us",
                         coordinatorURL: URL(string: endpoint) ?? URL(string: "http://localhost:9000")!)
                 }
@@ -193,10 +193,4 @@ struct ContributeView: View {
             .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
     }
 
-    // TODO(wallet): source a stable device id from the wallet account key once
-    // the client wallet lands; today it's an ephemeral per-launch id.
-    private static func deviceId() -> String {
-        let (_, pub) = Ed25519.generate()
-        return pub.prefix(16).hexString
-    }
 }

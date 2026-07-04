@@ -37,13 +37,15 @@ type MergedResult struct {
 	MergeNodeID             string         `json:"merge_node_id,omitempty"`   // node that ran the merge inference call, if any
 }
 
-// SelectMergeNode picks the node endpoint that will run the merge inference call.
+// SelectMergeNode picks the node that will run the merge inference call.
 // Prefers a node that did NOT participate in any of the sub-task inputs to avoid
 // correlated errors. Falls back to the first eligible node when all nodes ran sub-tasks.
 //
 // podNodes is the full list of live nodes in the pod.
 // subTaskResults carries the NodeIDs that already ran sub-tasks.
-func SelectMergeNode(podNodes []protocol.CapabilityManifest, subTaskResults []MergeInput) string {
+// Returns the endpoint plus its TLS pin (task: coordinator->node TLS) — both
+// travel together since the pin only means anything paired with its endpoint.
+func SelectMergeNode(podNodes []protocol.CapabilityManifest, subTaskResults []MergeInput) (endpoint, tlsFingerprint string) {
 	usedNodeIDs := make(map[string]bool, len(subTaskResults))
 	for _, r := range subTaskResults {
 		if nid, ok := r.Result["_node_id"].(string); ok {
@@ -52,14 +54,14 @@ func SelectMergeNode(podNodes []protocol.CapabilityManifest, subTaskResults []Me
 	}
 	for _, n := range podNodes {
 		if !usedNodeIDs[n.NodeID] {
-			return n.ReachabilityEndpoint
+			return n.ReachabilityEndpoint, n.TLSCertFingerprint
 		}
 	}
 	// All nodes participated — fall back to first.
 	if len(podNodes) > 0 {
-		return podNodes[0].ReachabilityEndpoint
+		return podNodes[0].ReachabilityEndpoint, podNodes[0].TLSCertFingerprint
 	}
-	return ""
+	return "", ""
 }
 
 // BuildMergePrompt constructs the system+user prompt for the merge inference call.
@@ -85,9 +87,9 @@ func BuildMergePrompt(subTaskResults []MergeInput, originalJobSpec protocol.JobS
 		}
 	}
 	for i, r := range ordered {
-		sb.WriteString(fmt.Sprintf("## Sub-task %d", i+1))
+		fmt.Fprintf(&sb, "## Sub-task %d", i+1)
 		if r.Position != "" {
-			sb.WriteString(fmt.Sprintf(" (%s)", r.Position))
+			fmt.Fprintf(&sb, " (%s)", r.Position)
 		}
 		sb.WriteString("\n")
 		if content, ok := r.Result["choices"].([]any); ok && len(content) > 0 {
@@ -121,7 +123,7 @@ func ExecuteMerge(
 	ctx context.Context,
 	mergeInputs []MergeInput,
 	originalJobSpec protocol.JobSpec,
-	mergeNodeEndpoint string,
+	mergeNodeEndpoint, tlsFingerprint string,
 ) (MergedResult, error) {
 	// Gate 1: all inputs must be verified.
 	for _, inp := range mergeInputs {
@@ -150,7 +152,7 @@ func ExecuteMerge(
 	// In the current architecture PayloadRef is encrypted; the merge prompt itself
 	// carries the sub-task outputs, which is sufficient.
 
-	result, err := dispatchToNode(ctx, originalJobSpec, mergeMessages, mergeNodeEndpoint)
+	result, err := dispatchToNode(ctx, originalJobSpec, mergeMessages, mergeNodeEndpoint, tlsFingerprint)
 	if err != nil {
 		return MergedResult{}, fmt.Errorf(
 			"merge job %s: merge inference failed: %w", originalJobSpec.JobID, err,
@@ -176,7 +178,7 @@ func MergeSplitOutputs(
 	leftSplitID, rightSplitID string,
 	strategy SplitStrategy,
 	originalJobSpec protocol.JobSpec,
-	mergeNodeEndpoint string,
+	mergeNodeEndpoint, tlsFingerprint string,
 ) (MergedResult, error) {
 	inputs := []MergeInput{
 		{
@@ -195,5 +197,5 @@ func MergeSplitOutputs(
 		},
 	}
 	_ = strategy // reserved for strategy-specific merge heuristics in a future iteration
-	return ExecuteMerge(ctx, inputs, originalJobSpec, mergeNodeEndpoint)
+	return ExecuteMerge(ctx, inputs, originalJobSpec, mergeNodeEndpoint, tlsFingerprint)
 }

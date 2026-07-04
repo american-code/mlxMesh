@@ -9,7 +9,7 @@ import (
 // ResourceLine is one decomposed contribution line.
 // Never blend these into one unit — the split is load-bearing (proposal §9.2).
 type ResourceLine struct {
-	ResourceType    string  `json:"resource_type"`    // "memory_hours" | "compute_cycles" | "bandwidth_relayed"
+	ResourceType    string  `json:"resource_type"` // "memory_hours" | "compute_cycles" | "bandwidth_relayed"
 	MeasuredAmount  float64 `json:"measured_amount"`
 	DeliveredAmount float64 `json:"delivered_amount"` // post-verification, post-overhead
 	UnitPrice       float64 `json:"unit_price"`

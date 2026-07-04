@@ -16,9 +16,9 @@ import (
 
 // Prompt is one reference benchmark workload.
 type Prompt struct {
-	Messages      []map[string]any
-	MaxTokens     int
-	Description   string
+	Messages    []map[string]any
+	MaxTokens   int
+	Description string
 }
 
 // ReferencePrompts is the fixed set used for comparable node-to-node benchmarking.

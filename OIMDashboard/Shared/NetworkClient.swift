@@ -55,12 +55,24 @@ enum NetworkClient {
         return try decoder.decode(Balance.self, from: data)
     }
 
-    static func claimStartupGrant(coordinatorURL: String, userId: String, nonce: UInt64) async throws {
+    // claimStartupGrant mines the required proof-of-work nonce (off the main
+    // actor), posts it, and verifies the coordinator accepted the claim. The PoW
+    // is mandatory — the endpoint rejects a nonce-less claim with 400, which is
+    // why an earlier fire-and-forget POST left the balance stuck at 0.
+    @discardableResult
+    static func claimStartupGrant(coordinatorURL: String, userId: String) async throws -> Double {
+        let nonce = await Task.detached(priority: .userInitiated) {
+            ProofOfWork.mineStartupGrant(userID: userId)
+        }.value
+
         var req = URLRequest(url: URL(string: "\(resolvedCoordinator(coordinatorURL))/users/\(userId)/startup-grant")!)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: ["nonce": nonce])
-        _ = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try Self.ensureOK(resp, data)  // surfaces "insufficient proof of work" etc. instead of silently "succeeding"
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        return obj["amount"] as? Double ?? 0
     }
 
     // MARK: - Wallet (portable account identity → credit consolidation)

@@ -25,7 +25,9 @@
 		3125B098FA9BC27735FC1EDC /* WatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B27F1F173A888210D3946460 /* WatchApp.swift */; };
 		3207AC90A9F13F61CDA6375A /* TopologyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 079BB3368034DD3C9BD738C8 /* TopologyStore.swift */; };
 		34D4DC464F5381BA7F5F84C0 /* TryMeshView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B02540EC8D8E38F0FB3136E /* TryMeshView.swift */; };
+		3830F682DCDC160E498DE9A5 /* ProofOfWork.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37C3523F06E8F6568EDC6B41 /* ProofOfWork.swift */; };
 		3BFF4065F430C0D7FADB6CAA /* RegionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4749A9A539DFA6EE6809EA77 /* RegionView.swift */; };
+		3E150E989B20F4C3ADF3F166 /* ProofOfWork.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37C3523F06E8F6568EDC6B41 /* ProofOfWork.swift */; };
 		41E37DBFA4D32DE85DFC1179 /* TVApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 940809D7CDA2BF7315466231 /* TVApp.swift */; };
 		451895B0CE3710D92E75CF3C /* ContributionSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3721584D617CA1C7946940D /* ContributionSession.swift */; };
 		452AE6F16886829658C6349D /* TopologyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 079BB3368034DD3C9BD738C8 /* TopologyStore.swift */; };
@@ -37,6 +39,7 @@
 		5951B16D2B2239BE24DB543E /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 618F1FC2462FE9B9AA8443C2 /* Models.swift */; };
 		5BBA7D77AF572F77473FA7A3 /* NetworkGraphView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B2CCF1D9E228419A271419D /* NetworkGraphView.swift */; };
 		63741A38ACDCB3B67FFD9D86 /* StatusUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BF6727643E63881CD213C93 /* StatusUtils.swift */; };
+		7A51FD97628F857B22D5D420 /* DeviceIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAE9867D363BF863D538F06D /* DeviceIdentity.swift */; };
 		892E70A622442DBD043BA482 /* GlobalMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03FC7C4990BDDE4D359DFF3F /* GlobalMapView.swift */; };
 		8D80D745BE934DB8FC37EFB4 /* NetworkLoadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA6A50343A5863880D34B35E /* NetworkLoadView.swift */; };
 		9A0FE3810D3A62714F6F0965 /* NetworkClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08CA2CAC31A57D3486DBC65 /* NetworkClient.swift */; };
@@ -47,6 +50,7 @@
 		A4C3586BC67AF0D951C6ABDF /* OnDeviceRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55F4630F7DEB6AA82BB92097 /* OnDeviceRouter.swift */; };
 		A6F28E42CF9351C4D13C4A0B /* HintPacket.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B267465346DFBF132E90219 /* HintPacket.swift */; };
 		B6DFF17CDFB66131B8F71F31 /* NodeDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F693B9AB5F6EA3B48ED5ACD /* NodeDetailView.swift */; };
+		BA90FF674687B1012FCAC1EB /* ProofOfWork.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37C3523F06E8F6568EDC6B41 /* ProofOfWork.swift */; };
 		BC248B2794CE76EFCB4D9AF3 /* Ed25519.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ADCC23D60588C1F925CC2F8 /* Ed25519.swift */; };
 		C6DEB3B4C72203D05C97808E /* CoordinationBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B81EB4915B0484BABF72DAD7 /* CoordinationBridge.swift */; };
 		C758FAEFE7B61A39E712A94A /* RuleBasedRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99B0FF9740ED10AF7921EFCE /* RuleBasedRouter.swift */; };
@@ -69,6 +73,7 @@
 		10C3DFA53386C093446D3211 /* OIMDashboardApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OIMDashboardApp.swift; sourceTree = "<group>"; };
 		1B267465346DFBF132E90219 /* HintPacket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HintPacket.swift; sourceTree = "<group>"; };
 		2B632D992AE2016624F5130F /* TVContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVContentView.swift; sourceTree = "<group>"; };
+		37C3523F06E8F6568EDC6B41 /* ProofOfWork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProofOfWork.swift; sourceTree = "<group>"; };
 		3C898CBECE1458272C65BBD4 /* MemoryPressureMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryPressureMonitor.swift; sourceTree = "<group>"; };
 		462427F1716B3FB5AC128E4F /* ModelSignatureVerifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSignatureVerifier.swift; sourceTree = "<group>"; };
 		4749A9A539DFA6EE6809EA77 /* RegionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegionView.swift; sourceTree = "<group>"; };
@@ -87,7 +92,7 @@
 		8F693B9AB5F6EA3B48ED5ACD /* NodeDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeDetailView.swift; sourceTree = "<group>"; };
 		940809D7CDA2BF7315466231 /* TVApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVApp.swift; sourceTree = "<group>"; };
 		9515D5561CD4915256D06792 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		97E79085F54D07D0DEFCF815 /* OIMDashboard.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OIMDashboard.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		97E79085F54D07D0DEFCF815 /* OIMDashboard.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OIMDashboard.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		99B0FF9740ED10AF7921EFCE /* RuleBasedRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuleBasedRouter.swift; sourceTree = "<group>"; };
 		9E954666FE7904D2BCDA3DC1 /* ContributeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContributeView.swift; sourceTree = "<group>"; };
 		A697856052BD874CD6939B45 /* CoordinationLayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoordinationLayerView.swift; sourceTree = "<group>"; };
@@ -101,9 +106,10 @@
 		BE6D8C75CFE1FFF59DB5A516 /* OverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewView.swift; sourceTree = "<group>"; };
 		BFFDE4AD9A2F2CC5A35131AC /* OIMDashboardWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OIMDashboardWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C01DF4999D87E576A76F5B57 /* PodSummaryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PodSummaryView.swift; sourceTree = "<group>"; };
-		C1F6B6EB8E86CB12F34EA6A0 /* OIMDashboardTV.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OIMDashboardTV.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C1F6B6EB8E86CB12F34EA6A0 /* OIMDashboardTV.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OIMDashboardTV.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C2BF37C9195B932F9211B3CB /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		C44C9D68563FBD4CF6AE0808 /* RouterHint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouterHint.swift; sourceTree = "<group>"; };
+		CAE9867D363BF863D538F06D /* DeviceIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIdentity.swift; sourceTree = "<group>"; };
 		DBFCECC0DADDF1F9036C408B /* WatchContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchContentView.swift; sourceTree = "<group>"; };
 		E73E65D0E236D780072E7DAB /* CoreMLRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreMLRouter.swift; sourceTree = "<group>"; };
 		E755F2BF2DB1773E821A0030 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -150,6 +156,7 @@
 				618F1FC2462FE9B9AA8443C2 /* Models.swift */,
 				B08CA2CAC31A57D3486DBC65 /* NetworkClient.swift */,
 				0B2CCF1D9E228419A271419D /* NetworkGraphView.swift */,
+				37C3523F06E8F6568EDC6B41 /* ProofOfWork.swift */,
 				7BF6727643E63881CD213C93 /* StatusUtils.swift */,
 				079BB3368034DD3C9BD738C8 /* TopologyStore.swift */,
 			);
@@ -196,6 +203,7 @@
 				FF0341AF8B655D5D9F161546 /* Assets.xcassets */,
 				7513586DABF50809E9929152 /* ContentView.swift */,
 				A697856052BD874CD6939B45 /* CoordinationLayerView.swift */,
+				CAE9867D363BF863D538F06D /* DeviceIdentity.swift */,
 				03FC7C4990BDDE4D359DFF3F /* GlobalMapView.swift */,
 				08F8B2ED44ABE851C2FF4D57 /* Info.plist */,
 				BA6A50343A5863880D34B35E /* NetworkLoadView.swift */,
@@ -308,6 +316,20 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					0C9D8FF5AC8EF15DEC1A9320 = {
+						DevelopmentTeam = WXDFFW3882;
+						ProvisioningStyle = Automatic;
+					};
+					7A3DF80A524980D488FEFDD1 = {
+						DevelopmentTeam = WXDFFW3882;
+						ProvisioningStyle = Automatic;
+					};
+					E0AF9724DF7DF279133823BB = {
+						DevelopmentTeam = WXDFFW3882;
+						ProvisioningStyle = Automatic;
+					};
+				};
 			};
 			buildConfigurationList = 4EA0136AACE3B318CD0AC09A /* Build configuration list for PBXProject "OIMDashboard" */;
 			developmentRegion = en;
@@ -366,6 +388,7 @@
 				5951B16D2B2239BE24DB543E /* Models.swift in Sources */,
 				11441F887FC84DF719460E2F /* NetworkClient.swift in Sources */,
 				5BBA7D77AF572F77473FA7A3 /* NetworkGraphView.swift in Sources */,
+				3E150E989B20F4C3ADF3F166 /* ProofOfWork.swift in Sources */,
 				591AD7987E35789CDE516B21 /* StatusUtils.swift in Sources */,
 				41E37DBFA4D32DE85DFC1179 /* TVApp.swift in Sources */,
 				C7F20AA13F4DF2416BFA80A4 /* TVContentView.swift in Sources */,
@@ -382,6 +405,7 @@
 				A1F5DE9F693131DBDA68D94A /* Models.swift in Sources */,
 				54FBAB0D399F2702E9B3C14A /* NetworkClient.swift in Sources */,
 				082E4E9544607F81894DB9F0 /* NetworkGraphView.swift in Sources */,
+				BA90FF674687B1012FCAC1EB /* ProofOfWork.swift in Sources */,
 				63741A38ACDCB3B67FFD9D86 /* StatusUtils.swift in Sources */,
 				452AE6F16886829658C6349D /* TopologyStore.swift in Sources */,
 				3125B098FA9BC27735FC1EDC /* WatchApp.swift in Sources */,
@@ -400,6 +424,7 @@
 				C6DEB3B4C72203D05C97808E /* CoordinationBridge.swift in Sources */,
 				051641083B5D4C164DA368CE /* CoordinationLayerView.swift in Sources */,
 				4BBCEBA498624533ED9263B8 /* CoreMLRouter.swift in Sources */,
+				7A51FD97628F857B22D5D420 /* DeviceIdentity.swift in Sources */,
 				BC248B2794CE76EFCB4D9AF3 /* Ed25519.swift in Sources */,
 				892E70A622442DBD043BA482 /* GlobalMapView.swift in Sources */,
 				A6F28E42CF9351C4D13C4A0B /* HintPacket.swift in Sources */,
@@ -416,6 +441,7 @@
 				0E182B36030FE827DDC2A568 /* OverviewView.swift in Sources */,
 				305DDE8805FBA84E4CEB2658 /* PayloadEncryption.swift in Sources */,
 				9E1E1B615CEAC06C43ED3582 /* PodSummaryView.swift in Sources */,
+				3830F682DCDC160E498DE9A5 /* ProofOfWork.swift in Sources */,
 				3BFF4065F430C0D7FADB6CAA /* RegionView.swift in Sources */,
 				EA6DE2004B5416B8B8CA765D /* RouterHint.swift in Sources */,
 				C758FAEFE7B61A39E712A94A /* RuleBasedRouter.swift in Sources */,
@@ -436,7 +462,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "App Icon & Top Shelf Image";
 				ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME = LaunchImage;
-				DEVELOPMENT_TEAM = WXDFFW3882;
 				INFOPLIST_FILE = tvOS/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -482,9 +507,10 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = WXDFFW3882;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -515,7 +541,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				DEVELOPMENT_TEAM = WXDFFW3882;
 				INFOPLIST_FILE = watchOS/Info.plist;
 				PRODUCT_BUNDLE_IDENTIFIER = com.openinferencemesh.app.watchkitapp;
 				SDKROOT = watchos;
@@ -558,9 +583,10 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = WXDFFW3882;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -585,7 +611,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "App Icon & Top Shelf Image";
 				ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME = LaunchImage;
-				DEVELOPMENT_TEAM = WXDFFW3882;
 				INFOPLIST_FILE = tvOS/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -602,17 +627,14 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_IDENTITY = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = WXDFFW3882;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
 				INFOPLIST_FILE = iOS/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "com.openinferencemesh.-";
-				PROVISIONING_PROFILE_SPECIFIER = "";
+				PRODUCT_BUNDLE_IDENTIFIER = com.openinferencemesh.app;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 			};
@@ -622,17 +644,14 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_IDENTITY = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = WXDFFW3882;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
 				INFOPLIST_FILE = iOS/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "com.openinferencemesh.-";
-				PROVISIONING_PROFILE_SPECIFIER = "";
+				PRODUCT_BUNDLE_IDENTIFIER = com.openinferencemesh.app;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 			};
@@ -642,7 +661,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				DEVELOPMENT_TEAM = WXDFFW3882;
 				INFOPLIST_FILE = watchOS/Info.plist;
 				PRODUCT_BUNDLE_IDENTIFIER = com.openinferencemesh.app.watchkitapp;
 				SDKROOT = watchos;

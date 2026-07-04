@@ -364,8 +364,8 @@ func TestGrantMultiplierStepsDownWithCapacity(t *testing.T) {
 		score     float64
 		wantGrant float64
 	}{
-		{"user-a", 0.0, settlement.BASE_GRANT_AMOUNT * 1.0},  // 100.0
-		{"user-b", 600.0, settlement.BASE_GRANT_AMOUNT * 0.5}, // 50.0
+		{"user-a", 0.0, settlement.BASE_GRANT_AMOUNT * 1.0},    // 100.0
+		{"user-b", 600.0, settlement.BASE_GRANT_AMOUNT * 0.5},  // 50.0
 		{"user-c", 3000.0, settlement.BASE_GRANT_AMOUNT * 0.0}, // 0.0
 	}
 	for _, tc := range cases {

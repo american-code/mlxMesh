@@ -19,25 +19,25 @@ func TestPodStoreQueryByModel(t *testing.T) {
 	store := directory.NewPodStore(5 * time.Minute)
 
 	store.Upsert(protocol.PodHealthDigest{
-		PodID:            "pod-us-1",
-		RegionHint:       "us",
-		ServableModelIDs: []string{"llama-3.2-3b", "mistral-7b"},
+		PodID:                "pod-us-1",
+		RegionHint:           "us",
+		ServableModelIDs:     []string{"llama-3.2-3b", "mistral-7b"},
 		AggregateHealthScore: 0.9,
-		NodeCountApprox:  3,
+		NodeCountApprox:      3,
 	})
 	store.Upsert(protocol.PodHealthDigest{
-		PodID:            "pod-eu-1",
-		RegionHint:       "eu",
-		ServableModelIDs: []string{"llama-3.2-3b"},
+		PodID:                "pod-eu-1",
+		RegionHint:           "eu",
+		ServableModelIDs:     []string{"llama-3.2-3b"},
 		AggregateHealthScore: 0.7,
-		NodeCountApprox:  2,
+		NodeCountApprox:      2,
 	})
 	store.Upsert(protocol.PodHealthDigest{
-		PodID:            "pod-apac-1",
-		RegionHint:       "apac",
-		ServableModelIDs: []string{"mistral-7b"},
+		PodID:                "pod-apac-1",
+		RegionHint:           "apac",
+		ServableModelIDs:     []string{"mistral-7b"},
 		AggregateHealthScore: 0.8,
-		NodeCountApprox:  1,
+		NodeCountApprox:      1,
 	})
 
 	// llama-3.2-3b: both us and eu pods
@@ -204,8 +204,8 @@ func TestCentralizedResolverRegisterPod(t *testing.T) {
 
 	resolver := directory.NewCentralizedResolver([]string{srv.URL})
 	err := resolver.RegisterPod(context.Background(), protocol.PodHealthDigest{
-		PodID:            "pod-test",
-		ServableModelIDs: []string{"llama-3.2-3b"},
+		PodID:                "pod-test",
+		ServableModelIDs:     []string{"llama-3.2-3b"},
 		AggregateHealthScore: 0.9,
 	})
 	if err != nil {
@@ -236,8 +236,8 @@ func TestGossipPropagates(t *testing.T) {
 	gossipA := directory.NewGossip(storeA, peer.URL)
 
 	digest := protocol.PodHealthDigest{
-		PodID:            "pod-propagated",
-		ServableModelIDs: []string{"llama-3.2-3b"},
+		PodID:                "pod-propagated",
+		ServableModelIDs:     []string{"llama-3.2-3b"},
 		AggregateHealthScore: 0.85,
 	}
 	gossipA.ReceivePodDigest(digest)
@@ -307,13 +307,13 @@ func TestDirectoryHTTPServerEndToEnd(t *testing.T) {
 
 	// Register two pods with different model sets.
 	resolver.RegisterPod(context.Background(), protocol.PodHealthDigest{
-		PodID:            "pod-us-1",
-		ServableModelIDs: []string{"llama-3.2-3b", "mistral-7b"},
+		PodID:                "pod-us-1",
+		ServableModelIDs:     []string{"llama-3.2-3b", "mistral-7b"},
 		AggregateHealthScore: 0.9,
 	})
 	resolver.RegisterPod(context.Background(), protocol.PodHealthDigest{
-		PodID:            "pod-eu-1",
-		ServableModelIDs: []string{"llama-3.2-3b"},
+		PodID:                "pod-eu-1",
+		ServableModelIDs:     []string{"llama-3.2-3b"},
 		AggregateHealthScore: 0.7,
 	})
 

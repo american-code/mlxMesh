@@ -174,7 +174,10 @@ func runDirectory(listenAddr, peerURL string, podTTL time.Duration, corsOrigins 
 		return fmt.Errorf("listen on %s: %w", listenAddr, err)
 	}
 
-	srv := &http.Server{Handler: httpmw.SecurityHeaders(corsMiddleware(corsOrigins, mux))}
+	srv := &http.Server{
+		Handler:           httpmw.SecurityHeaders(corsMiddleware(corsOrigins, mux)),
+		ReadHeaderTimeout: 10 * time.Second, // slow-loris guard, same bound as the coordinator (task #53)
+	}
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -188,6 +191,7 @@ func runDirectory(listenAddr, peerURL string, podTTL time.Duration, corsOrigins 
 	scheme := "http"
 	if httptls.Enabled(tlsCert, tlsKey) {
 		scheme = "https"
+		httptls.WarnIfExpiringSoon(tlsCert, 30*24*time.Hour, "directory")
 	} else {
 		log.Printf("[directory] WARNING: serving PLAINTEXT HTTP — set --tls-cert/--tls-key before exposing beyond localhost")
 	}

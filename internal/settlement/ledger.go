@@ -317,7 +317,7 @@ func (l *Ledger) TotalOutstandingGrantLiability() float64 {
 	defer l.mu.RUnlock()
 
 	type userState struct {
-		grantTotal  float64
+		grantTotal   float64
 		totalDebited float64
 	}
 	users := map[string]*userState{}

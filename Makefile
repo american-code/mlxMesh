@@ -3,7 +3,7 @@ COORDINATOR_BIN := bin/oim-coordinator
 DIRECTORY_BIN  := bin/oim-directory
 STUB_EXO_BIN   := bin/stub-exo
 
-.PHONY: build build-all test lint clean install sim sim-down
+.PHONY: build build-all test test-integration lint clean install sim sim-down
 
 build:
 	go build -o $(BIN) ./cmd/oim
@@ -21,7 +21,10 @@ test:
 	go test ./...
 
 lint:
-	go vet ./...
+	golangci-lint run ./...
+
+test-integration:
+	go test -tags integration ./tests/ -run Integration -v
 
 clean:
 	rm -rf bin/

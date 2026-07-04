@@ -126,6 +126,8 @@ func AssembleManifest(
 		ReachabilityEndpoint: opts.ReachabilityEndpoint,
 		PricePerUnit:         opts.PricePerUnit,
 		HasSecureEnclave:     protocol.CheckSecureEnclaveAvailable(),
+		ECDHPublicKey:        opts.ECDHPublicKey,
+		TLSCertFingerprint:   opts.TLSCertFingerprint,
 	}, nil
 }
 
@@ -139,6 +141,13 @@ type Options struct {
 	GeoLng               float64 // approximate longitude; 0 = not declared
 	ReachabilityEndpoint string
 	PricePerUnit         map[string]float64
+	// ECDHPublicKey is this node's P-256 key-agreement public key (raw
+	// uncompressed point, base64) — see protocol.CapabilityManifest.ECDHPublicKey.
+	// Empty means this node doesn't support encrypted-pointer jobs.
+	ECDHPublicKey string
+	// TLSCertFingerprint — see protocol.CapabilityManifest.TLSCertFingerprint.
+	// Empty means this node serves its job endpoint over plain HTTP.
+	TLSCertFingerprint string
 }
 
 // DefaultOptions returns sensible defaults for a new node.

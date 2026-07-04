@@ -22,12 +22,12 @@
 	<string>1</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<!-- Allow plaintext HTTP only to LAN/local hosts (dev sim over http).
-		     Any public / internet endpoint must be https. -->
-		<key>NSAllowsLocalNetworking</key>
+		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
-	<key>WKWatchKitApp</key>
+	<key>WKApplication</key>
+	<true/>
+	<key>WKWatchOnly</key>
 	<true/>
 </dict>
 </plist>

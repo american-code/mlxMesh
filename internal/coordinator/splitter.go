@@ -84,8 +84,8 @@ func DetectSplitStrategy(content, _ string) SplitStrategy {
 }
 
 // FindMidpoint returns the character offset of the best split point closest to
-// the exact centre of content, respecting the given strategy's boundary rules.
-// "Closest to centre" is critical — a semantically perfect boundary at 10% from
+// the exact center of content, respecting the given strategy's boundary rules.
+// "Closest to center" is critical — a semantically perfect boundary at 10% from
 // the end produces a heavily imbalanced split that defeats the parallelism gain.
 func FindMidpoint(content string, strategy SplitStrategy) int {
 	mid := len(content) / 2

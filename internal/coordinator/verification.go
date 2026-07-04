@@ -135,4 +135,3 @@ func responseContentLen(result map[string]any) int {
 	content, _ := msg["content"].(string)
 	return len(content)
 }
-

@@ -25,6 +25,8 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/ecdh"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -42,8 +44,11 @@ import (
 	"github.com/open-inference-mesh/oim/internal/governor"
 	"github.com/open-inference-mesh/oim/internal/httpmw"
 	"github.com/open-inference-mesh/oim/internal/httptls"
+	"github.com/open-inference-mesh/oim/internal/httpx"
+	"github.com/open-inference-mesh/oim/internal/identity"
 	"github.com/open-inference-mesh/oim/internal/jobrunner"
 	"github.com/open-inference-mesh/oim/internal/nodeconfig"
+	"github.com/open-inference-mesh/oim/internal/payloadcrypto"
 	"github.com/open-inference-mesh/oim/internal/protocol"
 )
 
@@ -83,6 +88,16 @@ type Config struct {
 	// SensitivityHighRequiresAttestation jobs — everything else works with
 	// this off, which is the common case for anyone building from source.
 	AttemptEnclaveAttestation bool
+
+	// TLSCert/TLSKey serve this node's OWN job endpoint over HTTPS instead of
+	// plain HTTP (task: coordinator->node TLS). Self-signed is fine — the
+	// coordinator pins the exact certificate fingerprint recorded at this
+	// node's registration rather than chain-verifying against a shared CA
+	// (nodes are independently operated; there is no shared CA to verify
+	// against). Both empty (the default) keeps today's plain-HTTP behavior
+	// unchanged.
+	TLSCert string
+	TLSKey  string
 }
 
 func DefaultConfig() Config {
@@ -97,7 +112,7 @@ func DefaultConfig() Config {
 	}
 }
 
-// Run starts the node agent. It blocks until ctx is cancelled.
+// Run starts the node agent. It blocks until ctx is canceled.
 // priv and pub are the node's Ed25519 keypair loaded via identity.LoadOrCreate().
 func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	exo := exoadapter.New(cfg.ExoURL)
@@ -108,13 +123,18 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 		listenAddr = ":8765"
 	}
 
+	// Coordinator->node TLS (task): this node's own job listener serves HTTPS
+	// when both --tls-cert/--tls-key are set, self-signed and all — the
+	// coordinator pins the fingerprint below rather than chain-verifying.
+	nodeTLSEnabled := httptls.Enabled(cfg.TLSCert, cfg.TLSKey)
+
 	// Derive the reachability endpoint from the listen address so the coordinator
 	// knows how to reach back to this node. An explicit override takes precedence
 	// (needed behind NAT and in Docker containers).
 	reachabilityEndpoint := cfg.ReachabilityEndpoint
 	if reachabilityEndpoint == "" {
 		var epErr error
-		reachabilityEndpoint, epErr = resolveReachabilityEndpoint(listenAddr)
+		reachabilityEndpoint, epErr = resolveReachabilityEndpoint(listenAddr, nodeTLSEnabled)
 		if epErr != nil {
 			return fmt.Errorf("resolve reachability endpoint: %w", epErr)
 		}
@@ -130,6 +150,27 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	}
 	opts.GeoLat = cfg.GeoLat
 	opts.GeoLng = cfg.GeoLng
+
+	// Node-side pointer consumption (M8): load/generate this node's P-256
+	// key-agreement keypair so it can decrypt payloads a client encrypted to
+	// it. Non-fatal on failure — the node still serves ordinary (non-pointer)
+	// jobs; it just won't advertise a key, so it's ineligible for a
+	// reservation (POST /v1/reserve-node) until this succeeds.
+	ecdhPriv, ecdhErr := identity.LoadOrCreateECDH()
+	if ecdhErr != nil {
+		log.Printf("[agent] encrypted-pointer support unavailable (no ecdh identity): %v", ecdhErr)
+	} else {
+		opts.ECDHPublicKey = base64.StdEncoding.EncodeToString(ecdhPriv.PublicKey().Bytes())
+	}
+
+	if nodeTLSEnabled {
+		fp, fpErr := httptls.CertFingerprint(cfg.TLSCert)
+		if fpErr != nil {
+			return fmt.Errorf("read tls cert fingerprint: %w", fpErr)
+		}
+		opts.TLSCertFingerprint = fp
+		httptls.WarnIfExpiringSoon(cfg.TLSCert, 30*24*time.Hour, "node")
+	}
 
 	// Initial registration.
 	manifest, err := capability.AssembleManifest(ctx, exo, pub, opts)
@@ -175,14 +216,18 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 
 	// Start HTTP server for job reception (non-blocking).
 	nodeID := manifest.NodeID
-	srv := buildJobServer(runner, exo, cfg.CapacityPct, nodeID, cfg.CoordinatorURL, cfg.ExoURL, priv, &chaosActive, &scheduleActive)
+	srv := buildJobServer(runner, exo, cfg.CapacityPct, nodeID, cfg.CoordinatorURL, cfg.ExoURL, priv, ecdhPriv, &chaosActive, &scheduleActive)
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", listenAddr, err)
 	}
 	go func() {
-		log.Printf("[agent] serving jobs at %s", listenAddr)
-		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		scheme := "http"
+		if nodeTLSEnabled {
+			scheme = "https"
+		}
+		log.Printf("[agent] serving jobs at %s://%s", scheme, listenAddr)
+		if err := httptls.Serve(srv, ln, cfg.TLSCert, cfg.TLSKey); err != nil && err != http.ErrServerClosed {
 			log.Printf("[agent] job server error: %v", err)
 		}
 	}()
@@ -288,7 +333,7 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 // scheduleActive is the operator-controlled counterpart: false outside the
 // contributor's configured sharing window (nodeconfig.Schedule) — same
 // refuse-jobs effect as chaos, but deliberate rather than simulated.
-func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct float64, nodeID, coordinatorURL, exoURL string, priv []byte, chaosActive, scheduleActive *atomic.Bool) *http.Server {
+func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct float64, nodeID, coordinatorURL, exoURL string, priv []byte, ecdhPriv *ecdh.PrivateKey, chaosActive, scheduleActive *atomic.Bool) *http.Server {
 	mux := http.NewServeMux()
 
 	// Health endpoint for coordinator liveness checks.
@@ -402,12 +447,15 @@ func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct flo
 			return
 		}
 		var req struct {
-			Model     string           `json:"model"`
-			Messages  []map[string]any `json:"messages"`
-			JobID     string           `json:"oim_job_id"`
-			ModelID   string           `json:"oim_model_id"`
-			Lane      string           `json:"oim_lane"`
-			Sensitive string           `json:"oim_sensitivity"`
+			Model                  string           `json:"model"`
+			Messages               []map[string]any `json:"messages"`
+			Stream                 bool             `json:"stream"`
+			JobID                  string           `json:"oim_job_id"`
+			ModelID                string           `json:"oim_model_id"`
+			Lane                   string           `json:"oim_lane"`
+			Sensitive              string           `json:"oim_sensitivity"`
+			PayloadFetchURL        string           `json:"oim_payload_fetch_url"`
+			PayloadEphemeralPubKey string           `json:"oim_ephemeral_public_key"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -415,6 +463,28 @@ func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct flo
 		}
 		if req.Model == "" && req.ModelID != "" {
 			req.Model = req.ModelID
+		}
+		// The coordinator sends the job ID as the X-OIM-Job-ID header (fast-lane
+		// dispatch) and may also inline it in the body. Prefer the header so the
+		// outcome we report back carries the SAME job ID the coordinator recorded —
+		// otherwise its double-credit guard (creditedJobs) can't match our report
+		// and the job gets credited twice (once observed, once self-reported).
+		if hdr := r.Header.Get("X-OIM-Job-ID"); hdr != "" {
+			req.JobID = hdr
+		}
+
+		// Encrypted-pointer path (M8): the coordinator never fetches the payload —
+		// only this assigned node does, decrypting with the ECDH key this node
+		// advertised in its manifest. req.Messages is the (empty/placeholder)
+		// plaintext field in this mode; the REAL messages come from the pointer.
+		messages := req.Messages
+		if req.PayloadFetchURL != "" {
+			decoded, decErr := fetchAndDecryptPayload(r.Context(), req.PayloadFetchURL, req.PayloadEphemeralPubKey, ecdhPriv)
+			if decErr != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]string{"error": "payload decrypt: " + decErr.Error()})
+				return
+			}
+			messages = decoded
 		}
 
 		spec := protocol.JobSpec{
@@ -425,13 +495,39 @@ func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct flo
 
 		isContinuation := r.Header.Get("X-OIM-Continuation") == "true"
 		start := time.Now()
+
+		// Streaming (fast lane only — background lane stays buffered/polling by
+		// design): relays Exo's SSE response directly to w instead of returning
+		// one buffered blob.
+		if req.Stream && req.Lane != string(protocol.JobLaneBackground) {
+			tokensDelivered, headersSent, execErr := runner.ExecuteFastLaneStreaming(r.Context(), spec, messages, capPct, w)
+			latencyMs := float64(time.Since(start).Milliseconds())
+			go func() {
+				if err := ReportJobOutcome(context.Background(), coordinatorURL, nodeID, priv, spec.JobID, execErr == nil, latencyMs, tokensDelivered); err != nil {
+					log.Printf("[agent] report outcome: %v", err)
+				}
+			}()
+			if execErr != nil {
+				// If nothing was written yet (pre-flight refused, Exo
+				// unreachable), a normal JSON error still works. Once streaming
+				// has begun there is no status code left to change — writeJSON
+				// would just corrupt the response, so it's skipped in that case.
+				if !headersSent {
+					writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": execErr.Error()})
+				} else {
+					log.Printf("[agent] streaming inference failed mid-stream job=%s: %v", spec.JobID, execErr)
+				}
+			}
+			return
+		}
+
 		var result map[string]any
 		var execErr error
 
 		if req.Lane == string(protocol.JobLaneBackground) {
-			result, execErr = runner.ExecuteBackgroundLane(r.Context(), spec, req.Messages, capPct, isContinuation)
+			result, execErr = runner.ExecuteBackgroundLane(r.Context(), spec, messages, capPct, isContinuation)
 		} else {
-			result, execErr = runner.ExecuteFastLane(r.Context(), spec, req.Messages, capPct)
+			result, execErr = runner.ExecuteFastLane(r.Context(), spec, messages, capPct)
 		}
 
 		latencyMs := float64(time.Since(start).Milliseconds())
@@ -450,7 +546,10 @@ func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct flo
 		writeJSON(w, http.StatusOK, result)
 	})
 
-	return &http.Server{Handler: httpmw.SecurityHeaders(agentCORS(mux))}
+	return &http.Server{
+		Handler:           httpmw.SecurityHeaders(agentCORS(mux)),
+		ReadHeaderTimeout: 10 * time.Second, // slow-loris guard, same bound as the coordinator (task #53)
+	}
 }
 
 // agentCORS allows the local dashboard (any localhost origin) to call /detect and /config.
@@ -509,11 +608,66 @@ func refresh(ctx context.Context, coordinatorURL, nodeID string, priv []byte, ma
 	return postJSON(ctx, coordinatorURL+"/nodes/"+nodeID+"/refresh", req)
 }
 
+// fetchAndDecryptPayload retrieves the encrypted payload from fetchURL and
+// decrypts it with this node's ECDH identity, returning the plaintext
+// `messages` array the client encrypted. Node-side half of the M8
+// encrypted-pointer path (internal/payloadcrypto).
+func fetchAndDecryptPayload(ctx context.Context, fetchURL, ephemeralPubKeyB64 string, ecdhPriv *ecdh.PrivateKey) ([]map[string]any, error) {
+	if ecdhPriv == nil {
+		return nil, fmt.Errorf("this node has no ecdh identity (encrypted-pointer jobs unsupported)")
+	}
+	// Defense in depth: the coordinator already validated this URL before
+	// dispatch (task #53's SSRF guard), but this node is the one actually
+	// making the connection, so it re-checks rather than trusting the
+	// coordinator blindly.
+	if err := httpmw.ValidateFetchURL(fetchURL); err != nil {
+		return nil, fmt.Errorf("fetch url: %w", err)
+	}
+	ephemeralPubKeyRaw, err := base64.StdEncoding.DecodeString(ephemeralPubKeyB64)
+	if err != nil {
+		return nil, fmt.Errorf("decode ephemeral public key: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build fetch request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("fetch payload: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("fetch payload: HTTP %d", resp.StatusCode)
+	}
+	// Cap at the same 8 MiB ceiling the rest of the mesh enforces on request
+	// bodies (httpmw.DefaultMaxBodyBytes) — an oversized "ciphertext" from a
+	// malicious or misbehaving fetch URL must not be read unbounded.
+	combined, err := io.ReadAll(io.LimitReader(resp.Body, httpmw.DefaultMaxBodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("read payload: %w", err)
+	}
+	plaintext, err := payloadcrypto.Decrypt(ecdhPriv, ephemeralPubKeyRaw, combined)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt: %w", err)
+	}
+	var messages []map[string]any
+	if err := json.Unmarshal(plaintext, &messages); err != nil {
+		return nil, fmt.Errorf("parse decrypted messages: %w", err)
+	}
+	return messages, nil
+}
+
 // coordinatorClient is the HTTP client for all coordinator calls (register,
 // refresh, job-outcome, benchmark, attestation). Defaults to the standard
 // client; ConfigureTLS swaps in a CA-pinned / skip-verify transport when the
 // node targets an HTTPS coordinator with a private or self-signed cert.
 var coordinatorClient = http.DefaultClient
+
+// outboundLimiter caps this node's outbound coordinator calls (task #24). It is
+// a client-side safety valve: even if a bug spins register/refresh in a tight
+// loop, we won't flood the coordinator. Generous (well above the heartbeat
+// cadence) so normal operation never waits.
+var outboundLimiter = httpx.NewLimiter(20, 40)
 
 // ConfigureTLS points coordinatorClient at the given trust settings. Call once
 // at node startup before registering. A no-op when both args are zero-valued.
@@ -526,26 +680,40 @@ func ConfigureTLS(caFile string, skipVerify bool) error {
 	return nil
 }
 
+// postJSON POSTs body to url with retry-and-backoff (task #22). All callers
+// (register / refresh / reputation job-outcome / benchmark) are idempotent, so
+// retrying a transient failure is safe: a dropped connection or a coordinator
+// 5xx/429 is retried with exponential backoff, while a 4xx (permanent) fails
+// fast without hammering the server.
 func postJSON(ctx context.Context, url string, body any) error {
 	b, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
-	if err != nil {
-		return fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := coordinatorClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("POST %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		rb, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("POST %s HTTP %d: %s", url, resp.StatusCode, rb)
-	}
-	return nil
+	return httpx.Do(ctx, httpx.DefaultRetry(), func() error {
+		if err := outboundLimiter.Wait(ctx); err != nil {
+			return err // context canceled while throttled — permanent
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
+		if err != nil {
+			return fmt.Errorf("build request: %w", err) // permanent
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := coordinatorClient.Do(req)
+		if err != nil {
+			return httpx.Transient(fmt.Errorf("POST %s: %w", url, err)) // network — retry
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			rb, _ := io.ReadAll(resp.Body)
+			e := fmt.Errorf("POST %s HTTP %d: %s", url, resp.StatusCode, rb)
+			if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+				return httpx.Transient(e) // transient server-side — retry
+			}
+			return e // 4xx — permanent
+		}
+		return nil
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -590,7 +758,7 @@ func extractTokenCount(result map[string]any) int {
 
 // resolveReachabilityEndpoint converts a listen address like ":8765" to a full URL
 // that the coordinator can reach back on.
-func resolveReachabilityEndpoint(listenAddr string) (string, error) {
+func resolveReachabilityEndpoint(listenAddr string, tlsEnabled bool) (string, error) {
 	host, port, err := net.SplitHostPort(listenAddr)
 	if err != nil {
 		return "", fmt.Errorf("parse listen address %q: %w", listenAddr, err)
@@ -598,5 +766,9 @@ func resolveReachabilityEndpoint(listenAddr string) (string, error) {
 	if host == "" {
 		host = "localhost"
 	}
-	return "http://" + host + ":" + port, nil
+	scheme := "http://"
+	if tlsEnabled {
+		scheme = "https://"
+	}
+	return scheme + host + ":" + port, nil
 }

@@ -1,0 +1,41 @@
+# golangci-lint configuration (task #26).
+# Run: golangci-lint run ./...
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck      # unchecked errors
+    - govet         # suspicious constructs
+    - ineffassign   # ineffectual assignments
+    - staticcheck   # broad correctness/simplification suite
+    - unused        # dead code
+    - gofmt         # formatting
+    - goimports     # import grouping/ordering
+    - misspell      # common English typos in comments
+    - unconvert     # redundant type conversions
+    - bodyclose     # response bodies must be closed
+    - gosec         # basic security issues
+
+issues:
+  # Test files legitimately ignore some errors and use weaker crypto/rand.
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosec
+    # jobgen/jitter use math/rand deliberately (simulation, backoff jitter).
+    - path: (tools/jobgen|internal/httpx)/
+      text: "G404"
+      linters:
+        - gosec
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+linters-settings:
+  errcheck:
+    check-type-assertions: false
+  misspell:
+    locale: US

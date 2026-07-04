@@ -14,7 +14,7 @@ import (
 )
 
 // settlementContent is the signable portion of a settlement record.
-// Marshalling this struct (not the full map) produces a canonical byte sequence to sign.
+// Marshaling this struct (not the full map) produces a canonical byte sequence to sign.
 type settlementContent struct {
 	DivisionOrder      map[string]any `json:"division_order"`
 	VerificationResult bool           `json:"verification_result"`

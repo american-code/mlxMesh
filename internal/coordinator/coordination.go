@@ -21,7 +21,12 @@ type CoordinationParticipant struct {
 	Role           string `json:"role"` // e.g. "pointer_host"
 	IsMobile       bool   `json:"is_mobile"`
 	GeographicHint string `json:"geographic_hint"`
-	LastSeenAt     string `json:"last_seen_at"`
+	// Region is the coordinator-assigned placement region (us/eu/apac). It is set
+	// by the coordinator on Announce — NOT trusted from the client — so dashboards
+	// and the global map always have a region to plot the shield in. Distinct from
+	// GeographicHint, which is the device's self-reported locale.
+	Region     string `json:"region"`
+	LastSeenAt string `json:"last_seen_at"`
 	// PointersServed counts inference requests whose encrypted payload was
 	// fetched from this device's pointer path — the concrete "work" a
 	// coordination participant does. Monotonic for the participant's lifetime;

@@ -65,6 +65,22 @@ type CapabilityManifest struct {
 	// HasSecureEnclave gates eligibility for SensitivityHighRequiresAttestation jobs.
 	// This is a capability CHECK, not a confidentiality guarantee (proposal §8.1).
 	HasSecureEnclave bool `json:"has_secure_enclave"`
+	// ECDHPublicKey is this node's P-256 key-agreement public key (raw
+	// uncompressed point, base64-encoded) — a client encrypts a job's payload
+	// to this key so only this node can decrypt it (internal/payloadcrypto).
+	// Empty on nodes that predate this field or don't support encrypted-pointer
+	// jobs; such nodes are simply ineligible for a reservation
+	// (POST /v1/reserve-node). Rides the existing manifest signature for free.
+	ECDHPublicKey string `json:"ecdh_public_key,omitempty"`
+	// TLSCertFingerprint is the SHA-256 fingerprint (hex) of this node's
+	// --tls-cert, present only when the node serves its job endpoint over TLS.
+	// The coordinator pins this exact fingerprint for all dispatches to this
+	// node instead of chain-verifying — nodes are independently operated and
+	// self-signed, so there is no shared CA to verify against. Tamper-evident
+	// via the existing manifest signature: a MITM can't rewrite this field in
+	// transit without invalidating the Ed25519 signature over the whole
+	// manifest. Empty means this node serves plain HTTP (unchanged default).
+	TLSCertFingerprint string `json:"tls_cert_fingerprint,omitempty"`
 }
 
 // Bytes serializes the manifest to canonical JSON bytes for signing.

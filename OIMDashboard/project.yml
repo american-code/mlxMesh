@@ -10,7 +10,12 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    DEVELOPMENT_TEAM: ""          # paste your Apple developer team ID here
+    # Jacob Melton (Personal Team). Baked in so `xcodegen generate` stops resetting
+    # it to "" — an empty team makes Xcode ad-hoc ("Sign to Run Locally"), which a
+    # physical device rejects with "ad-hoc signed … not supported on this device".
+    # Change this to your own team ID if you fork/build under a different account.
+    DEVELOPMENT_TEAM: "WXDFFW3882"
+    CODE_SIGN_STYLE: Automatic
     DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
 
 targets:
@@ -58,7 +63,14 @@ targets:
       path: watchOS/Info.plist
       properties:
         CFBundleDisplayName: mlxMesh
-        WKWatchKitApp: true
+        # WKApplication (NOT the legacy WKWatchKitApp, which marks the OLD
+        # watchOS 1/2 two-bundle "WatchKit App + WatchKit Extension" layout and
+        # is exactly what the installer rejects as "WatchKit 1.0") marks this as
+        # a modern single-target standalone watch app.
+        WKApplication: true
+        # No iOS companion app installed alongside — must be declared Watch-only
+        # or the installer separately rejects it for missing WKWatchOnly.
+        WKWatchOnly: true
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
     settings:

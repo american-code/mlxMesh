@@ -192,10 +192,12 @@ export function NodeSetupView() {
   const [saveMsg, setSaveMsg]   = useState<string | null>(null)
 
   const [agentUrlDraft, setAgentUrlDraft] = useState(getLocalAgentURL())
+  const [detectError, setDetectError] = useState<string | null>(null)
 
   const detect = useCallback(async () => {
     setLoading(true)
     setSaveMsg(null)
+    setDetectError(null)
     try {
       const d = await fetchLocalDetect()
       setDetection(d)
@@ -217,8 +219,20 @@ export function NodeSetupView() {
       } else {
         setAllowedModels(new Set(modelIds))
       }
-    } catch {
+    } catch (e) {
       setAgentRunning(false)
+      // Surface WHY the connect failed instead of silently showing onboarding —
+      // "Connect does nothing" was almost always a swallowed fetch error.
+      const url = getLocalAgentURL()
+      const reason = (e as Error).name === 'AbortError'
+        ? 'timed out (no response in 2.5s)'
+        : (e as Error).message || 'connection refused'
+      const httpsToHttp = window.location.protocol === 'https:' && url.startsWith('http:')
+      setDetectError(
+        httpsToHttp
+          ? `Can't reach ${url}: this dashboard is loaded over HTTPS, so the browser blocks the plaintext http:// agent request (mixed content). Load the dashboard over http://, or run the agent behind https.`
+          : `Can't reach the node agent at ${url} — ${reason}. Make sure "oim node start" is running and listening there (its --listen port), and that you opened this dashboard on the SAME machine as the agent (not from another device, where "localhost" is that device).`
+      )
     } finally {
       setLoading(false)
     }
@@ -278,13 +292,23 @@ export function NodeSetupView() {
   }
 
   const agentUrlBar = (
-    <LocalAgentBar
-      value={agentUrlDraft}
-      onChange={setAgentUrlDraft}
-      onApply={handleAgentUrlApply}
-      onReset={handleAgentUrlReset}
-      isDefault={agentUrlDraft === DEFAULT_LOCAL_AGENT_URL}
-    />
+    <>
+      <LocalAgentBar
+        value={agentUrlDraft}
+        onChange={setAgentUrlDraft}
+        onApply={handleAgentUrlApply}
+        onReset={handleAgentUrlReset}
+        isDefault={agentUrlDraft === DEFAULT_LOCAL_AGENT_URL}
+      />
+      {detectError && (
+        <div style={{
+          background: '#f8514912', border: '1px solid #f8514940', borderRadius: 8,
+          padding: '10px 14px', marginBottom: 16, color: '#f0a3a0', fontSize: 12, lineHeight: 1.6,
+        }}>
+          <strong style={{ color: '#f85149' }}>Couldn't connect.</strong> {detectError}
+        </div>
+      )}
+    </>
   )
 
   if (loading) {

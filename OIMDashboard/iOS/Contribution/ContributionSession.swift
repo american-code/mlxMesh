@@ -105,14 +105,28 @@ final class ContributionSession: ObservableObject {
     private func startHeartbeat() {
         heartbeatTask?.cancel()
         heartbeatTask = Task { [weak self] in
+            // Pull the coordinator's count once on start so the stat isn't stuck
+            // at 0 until the first heartbeat.
+            if let self, self.isActiveState { await self.refreshPointersServed() }
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 30_000_000_000) // 30s
                 guard let self, !Task.isCancelled else { return }
                 if self.isActiveState {
                     await self.bridge.announceParticipation(
                         deviceId: self.deviceId, geographicHint: self.geographicHint)
+                    await self.refreshPointersServed()
                 }
             }
+        }
+    }
+
+    /// Syncs the "Pointers" stat from the coordinator's authoritative served count
+    /// for this device. The coordinator increments it whenever it attributes an
+    /// encrypted pointer to this device — the real, credited work — so this
+    /// reflects earnings-generating activity instead of staying pinned at 0.
+    private func refreshPointersServed() async {
+        if let n = await bridge.fetchPointersServed(deviceId: deviceId) {
+            pointersServedThisSession = n
         }
     }
 

@@ -20,6 +20,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
@@ -28,6 +29,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -41,24 +43,46 @@ import (
 
 	"github.com/open-inference-mesh/oim/internal/coordinator"
 	"github.com/open-inference-mesh/oim/internal/directory"
+	"github.com/open-inference-mesh/oim/internal/economics"
 	"github.com/open-inference-mesh/oim/internal/httpmw"
 	"github.com/open-inference-mesh/oim/internal/httptls"
+	"github.com/open-inference-mesh/oim/internal/metrics"
 	"github.com/open-inference-mesh/oim/internal/protocol"
 	"github.com/open-inference-mesh/oim/internal/settlement"
 	"github.com/open-inference-mesh/oim/internal/wallet"
 )
 
-// apiKeyStore maps generated oim_* API keys ↔ user IDs.
+// hashAPIKey returns the SHA-256 hex digest of a raw oim_* key — what actually
+// gets stored and compared (task: secrets hardening). Never store or compare
+// the raw key: a compromised database must not hand out live credentials, the
+// same reasoning as never storing a plaintext password.
+func hashAPIKey(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])
+}
+
+// apiKeyStore maps generated oim_* API keys ↔ user IDs. Only the SHA-256 hash
+// of a key is ever stored (byKey/DB) — the raw key exists only transiently, in
+// the return value of generate(), which the caller must show the user once
+// ("store this, it cannot be retrieved again" — with hashed storage that claim
+// is now literally true, not just aspirational).
+//
 // Both directions so we can look up by key (auth) and by user (revoke/check).
 //
 // db is nil for a pure in-memory store (tests, or a coordinator run without
 // --db-path) — behavior is identical to before persistence was added. When db
 // is set, keys survive a coordinator restart instead of silently invalidating
 // every user's saved key on every deploy.
+//
+// Upgrade note: this project has no production deployment yet (see README's
+// "not yet production-safe"), so there is no migration path from the old
+// plaintext column — any key generated before this change simply won't
+// validate anymore and must be regenerated. Deliberately not building a
+// migration shim for a pre-release security fix.
 type apiKeyStore struct {
 	mu     sync.RWMutex
-	byKey  map[string]string // oim_xxx → userID
-	byUser map[string]string // userID → oim_xxx
+	byKey  map[string]string // sha256(oim_xxx) → userID
+	byUser map[string]string // userID → sha256(oim_xxx)
 	db     *sql.DB
 }
 
@@ -116,27 +140,29 @@ func (s *apiKeyStore) generate(userID string) (string, error) {
 		return "", err
 	}
 	key := "oim_" + hex.EncodeToString(raw)
+	hashed := hashAPIKey(key)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.db != nil {
 		// INSERT OR REPLACE keyed on user_id (PRIMARY KEY) atomically replaces
 		// any prior key for this user — same semantics as the in-memory revoke+set below.
-		if _, err := s.db.Exec(`INSERT OR REPLACE INTO api_keys (user_id, api_key) VALUES (?, ?)`, userID, key); err != nil {
+		// Only the hash is ever written; the raw key never touches the database.
+		if _, err := s.db.Exec(`INSERT OR REPLACE INTO api_keys (user_id, api_key) VALUES (?, ?)`, userID, hashed); err != nil {
 			return "", fmt.Errorf("persist api key: %w", err)
 		}
 	}
 	if old, ok := s.byUser[userID]; ok {
 		delete(s.byKey, old) // revoke existing key
 	}
-	s.byKey[key] = userID
-	s.byUser[userID] = key
+	s.byKey[hashed] = userID
+	s.byUser[userID] = hashed
 	return key, nil
 }
 
 func (s *apiKeyStore) lookup(key string) (string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	uid, ok := s.byKey[key]
+	uid, ok := s.byKey[hashAPIKey(key)]
 	return uid, ok
 }
 
@@ -233,8 +259,17 @@ func (s *settlementRecordStore) store(r map[string]any) {
 
 func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiKey, dbPath string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64, tlsCert, tlsKey string) error {
 	registry := coordinator.NewNodeRegistry()
+	// Structured logging (task #20): OIM_LOG_FORMAT=json emits machine-parseable
+	// JSON logs for aggregation; the default stays human-readable text. Key money
+	// and security events (credit, debit) use slog with typed fields.
+	if os.Getenv("OIM_LOG_FORMAT") == "json" {
+		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+	}
+
 	coordReg := coordinator.NewCoordinationRegistry()
 	walletMgr := wallet.NewManager()
+	reservations := coordinator.NewReservationStore() // node-side pointer consumption (M8)
+	mx := metrics.New()                               // observability counters/gauges, exposed at GET /metrics (task #20)
 	assignments := coordinator.NewAssignmentStore()
 	measurements := coordinator.NewMeasurementStore()
 	settlementRecords := &settlementRecordStore{}
@@ -264,7 +299,7 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 		log.Printf("[coordinator] --db-path not set: ledger and api keys are in-memory only and will reset on restart")
 	}
 
-	// ctx is cancelled on SIGINT/SIGTERM to drain the job queue workers cleanly.
+	// ctx is canceled on SIGINT/SIGTERM to drain the job queue workers cleanly.
 	// Also deferred here so an early return (e.g. net.Listen failure) can't leak it —
 	// cancelCtx is idempotent, so the later explicit call in the shutdown goroutine is safe.
 	ctx, cancelCtx := context.WithCancel(context.Background())
@@ -280,6 +315,14 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 
 	// nodeUsers maps node_id → user_id so earned credits reach the right account.
 	var nodeUsers sync.Map // string → string
+
+	// creditedJobs records job IDs already credited from the coordinator's OWN
+	// observed token count (fast-lane). The node's self-reported /job-outcome must
+	// not also credit these — otherwise a node double-earns, and could inflate the
+	// self-report above what the coordinator actually saw (task #51: verified
+	// earnings). Fast-lane earnings are therefore coordinator-authoritative; the
+	// node's report is reputation-only for jobs the coordinator already observed.
+	var creditedJobs sync.Map // jobID → struct{}
 
 	// Separate, much stricter bucket just for startup-grant claims — the general
 	// write-path limiter (constructed below, applied to the whole mux) is tuned
@@ -385,6 +428,54 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 
 	// --- Job routing ---
 
+	// POST /v1/reserve-node — pins a specific node for an upcoming
+	// encrypted-pointer job (node-side pointer consumption, M8). A client needs
+	// the recipient node's ECDH public key BEFORE it can encrypt a payload, but
+	// normal dispatch only picks a node once the (already-encrypted) request
+	// arrives. This runs the SAME eligibility/scoring the fast-lane router uses
+	// (coordinator.PickBestNode), reserves that node for
+	// coordinator.ReservationTTL, and returns its public key + a reservation ID.
+	// The client then encrypts locally and submits /v1/chat/completions with
+	// oim_reservation_id, which dispatches straight to the reserved node.
+	mux.HandleFunc("POST /v1/reserve-node", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model       string `json:"model"`
+			Sensitivity string `json:"sensitivity"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse request: "+err.Error())
+			return
+		}
+		sensitivity := protocol.SensitivityModerate
+		if req.Sensitivity == string(protocol.SensitivityLow) {
+			sensitivity = protocol.SensitivityLow
+		} else if req.Sensitivity == string(protocol.SensitivityHighRequiresAttestation) {
+			sensitivity = protocol.SensitivityHighRequiresAttestation
+		}
+		job := protocol.JobSpec{ModelID: req.Model, Lane: protocol.JobLaneFast, Sensitivity: sensitivity}
+		node, err := coordinator.PickBestNode(job, registry)
+		if err != nil {
+			writeErr(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		if node.Manifest.ECDHPublicKey == "" {
+			writeErr(w, http.StatusServiceUnavailable, "selected node does not support encrypted-pointer jobs")
+			return
+		}
+		now := time.Now()
+		resID, err := reservations.Create(node.Manifest.NodeID, node.Manifest.ReachabilityEndpoint, now)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"reservation_id":  resID,
+			"node_id":         node.Manifest.NodeID,
+			"ecdh_public_key": node.Manifest.ECDHPublicKey,
+			"expires_at":      now.Add(coordinator.ReservationTTL).UTC().Format(time.RFC3339),
+		})
+	})
+
 	// POST /v1/chat/completions — OpenAI-compatible fast-lane dispatch.
 	// Accepts standard OpenAI format + optional oim_* extension fields.
 	// Credit check: if X-OIM-User-ID header is present, balance is checked before dispatch
@@ -394,6 +485,7 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 			Model       string           `json:"model"`
 			Messages    []map[string]any `json:"messages"`
 			MaxTokens   int              `json:"max_tokens"`
+			Stream      bool             `json:"stream"`
 			OIMJobID    string           `json:"oim_job_id"`
 			OIMSensitiv string           `json:"oim_sensitivity"`
 			OIMMaxPrice float64          `json:"oim_max_price_per_unit"`
@@ -406,6 +498,11 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 			OIMPayloadHash     string                  `json:"oim_payload_hash"`
 			OIMPayloadFetchURL string                  `json:"oim_payload_fetch_url"`
 			OIMEphemeralPubKey string                  `json:"oim_ephemeral_public_key"`
+			// OIMReservationID pins this job to the node reserved via
+			// POST /v1/reserve-node (node-side pointer consumption, M8) — the
+			// client encrypted its payload to THAT node's key, so this request
+			// must dispatch there, not wherever normal routing would otherwise pick.
+			OIMReservationID string `json:"oim_reservation_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeErr(w, http.StatusBadRequest, "parse request: "+err.Error())
@@ -422,10 +519,10 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 		// Anonymous / internal calls are allowed through (dev mode, node-to-node).
 		userID := r.Header.Get("X-OIM-User-ID")
 		if userID != "" {
-			rate := sensitivityRate(req.OIMSensitiv)
-			estimatedCost := float64(maxTok) / 1000.0 * rate
+			estimatedCost := economics.ConsumerCost(economics.LaneFast, req.OIMSensitiv, maxTok)
 			bal := ledger.GetBalance(userID)
 			if bal.Total < estimatedCost {
+				mx.Counter(`oim_rejections_total{reason="insufficient_credits"}`).Inc()
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusPaymentRequired)
 				json.NewEncoder(w).Encode(map[string]any{
@@ -466,17 +563,25 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 		// the assigned node and NEVER fetches it. Empty for legacy/plaintext.
 		payloadRef := req.OIMPayloadHash
 
+		// SSRF guard (task #53): the coordinator hands the fetch URL to a node,
+		// which DOES fetch it, so a malicious URL could make nodes hit internal
+		// targets (cloud metadata, loopback admin). Reject non-http(s), loopback,
+		// and link-local before the URL ever reaches a node.
+		if req.OIMPayloadFetchURL != "" {
+			if err := httpmw.ValidateFetchURL(req.OIMPayloadFetchURL); err != nil {
+				mx.Counter(`oim_rejections_total{reason="ssrf"}`).Inc()
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+
 		// Pointer-path attribution: when a request rides an encrypted pointer, the
 		// device hosting/serving that ciphertext is a coordination participant
 		// doing real work. It self-identifies via X-OIM-Pointer-Host so we credit
 		// the served pointer to it. A stale/unknown ID is simply ignored (the
 		// registry returns false) — attribution never affects routing or the reply.
 		if payloadRef != "" {
-			if host := r.Header.Get("X-OIM-Pointer-Host"); host != "" {
-				if coordReg.RecordPointerServed(host) {
-					log.Printf("[coordinator] pointer served host=%s job=%s", host, jobID)
-				}
-			}
+			creditPointerHost(ledger, coordReg, walletMgr, r.Header.Get("X-OIM-Pointer-Host"), jobID)
 		}
 
 		job := protocol.JobSpec{
@@ -491,11 +596,73 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 			PayloadEphemeralPubKey: req.OIMEphemeralPubKey,
 		}
 
-		result, err := coordinator.DispatchFastLane(r.Context(), job, req.Messages, registry, maxAttempts)
+		// Streaming (fast lane only): relays the assigned node's SSE response
+		// directly to the client instead of buffering the whole reply. Scoped
+		// out of the reservation (encrypted-pointer) path for now — combining
+		// both is more surface area than needed yet; a reservation request with
+		// stream:true is served buffered, same as before.
+		if req.Stream && req.OIMReservationID == "" {
+			servedBy, tokens, headersSent, streamErr := coordinator.DispatchFastLaneStreaming(r.Context(), job, req.Messages, registry, maxAttempts, w)
+			if streamErr != nil {
+				if !headersSent {
+					writeErr(w, http.StatusServiceUnavailable, streamErr.Error())
+				} else {
+					// The client already received a partial SSE stream — the
+					// connection is the only signal left; there is no status
+					// code left to change at this point.
+					log.Printf("[coordinator] streaming dispatch failed mid-stream job=%s: %v", jobID, streamErr)
+				}
+				return
+			}
+			mx.Counter(`oim_jobs_dispatched_total{lane="fast"}`).Inc()
+			// Same observed-token credit/debit accounting as the buffered path
+			// below — just sourced from the trailing SSE usage frame instead of
+			// one buffered JSON blob (task #51's coordinator-observed guarantee
+			// applies identically either way).
+			if servedBy != "" && tokens > 0 {
+				if _, dup := creditedJobs.LoadOrStore(jobID, struct{}{}); !dup {
+					creditNodeEarning(ledger, &nodeUsers, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, tokens)
+					mx.Counter("oim_credits_total").Inc()
+					mx.AddCounter("oim_tokens_served_total", int64(tokens))
+				}
+			}
+			if userID != "" {
+				actualCost := economics.ConsumerCost(economics.LaneFast, req.OIMSensitiv, tokens)
+				if !ledger.DebitAccount(userID, actualCost, jobID) {
+					log.Printf("[coordinator] debit race user=%s job=%s cost=%.4f", userID, jobID, actualCost)
+				} else {
+					mx.Counter("oim_debits_total").Inc()
+					slog.Info("debit", "user", userID, "job", jobID, "tokens", tokens, "cost", actualCost)
+				}
+			}
+			return
+		}
+
+		var result map[string]any
+		var err error
+		if req.OIMReservationID != "" {
+			// Encrypted-pointer job: the client already encrypted its payload to a
+			// SPECIFIC node's key via a prior POST /v1/reserve-node, so this must
+			// dispatch there — any other node couldn't decrypt it. An
+			// expired/unknown reservation fails outright rather than silently
+			// falling back to normal routing, which would dispatch undecryptable
+			// ciphertext to a node that can never serve it.
+			res, ok := reservations.Resolve(req.OIMReservationID, time.Now())
+			if !ok {
+				mx.Counter(`oim_rejections_total{reason="reservation_expired"}`).Inc()
+				writeErr(w, http.StatusConflict, "reservation_expired_or_unknown: re-reserve and re-encrypt")
+				return
+			}
+			result, err = coordinator.DispatchToResolvedNode(r.Context(), job, req.Messages, registry, res.NodeID, res.NodeEndpoint)
+		} else {
+			result, err = coordinator.DispatchFastLane(r.Context(), job, req.Messages, registry, maxAttempts)
+		}
 		if err != nil {
 			// X-OIM-Queue: true — hold the request in the coordinator queue instead of 503.
 			// Workers retry dispatch every ~400ms until a node accepts or the 30s timeout fires.
-			if r.Header.Get("X-OIM-Queue") == "true" {
+			// Not applicable to a reserved job — the reservation is already consumed
+			// and specific to one node, so there is nothing generic left to queue.
+			if r.Header.Get("X-OIM-Queue") == "true" && req.OIMReservationID == "" {
 				result, err = jobQueue.Enqueue(r.Context(), job, req.Messages, coordinator.DefaultQueueTimeout)
 			}
 			if err != nil {
@@ -504,18 +671,34 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 			}
 		}
 
-		// Debit after successful dispatch. Use actual completion_tokens from the response
-		// when available; fall back to the pre-dispatch estimate.
+		// Credit the serving node from the coordinator's OWN observed token count.
+		// This is the authoritative earning path for fast-lane: the coordinator
+		// proxied the response, so it counted the tokens itself — the node cannot
+		// inflate its earnings by lying in /job-outcome (task #51). Marked in
+		// creditedJobs so the later self-report can't double-credit.
+		mx.Counter(`oim_jobs_dispatched_total{lane="fast"}`).Inc()
+		observedTok := extractCompletionTokens(result, maxTok)
+		if servedBy, _ := result["oim_served_by_node_id"].(string); servedBy != "" && observedTok > 0 {
+			if _, dup := creditedJobs.LoadOrStore(jobID, struct{}{}); !dup {
+				creditNodeEarning(ledger, &nodeUsers, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, observedTok)
+				mx.Counter("oim_credits_total").Inc()
+				mx.AddCounter("oim_tokens_served_total", int64(observedTok))
+			}
+		}
+
+		// Debit after successful dispatch. The consumer pays the full matrix cost;
+		// the serving node earned only (1 − house edge) of it above, with the
+		// remainder booked to the treasury.
 		if userID != "" {
-			rate := sensitivityRate(req.OIMSensitiv)
 			actualTok := extractCompletionTokens(result, maxTok)
-			actualCost := float64(actualTok) / 1000.0 * rate
+			actualCost := economics.ConsumerCost(economics.LaneFast, req.OIMSensitiv, actualTok)
 			if !ledger.DebitAccount(userID, actualCost, jobID) {
 				// Balance may have shifted between check and debit (concurrent requests).
 				// Job is complete — log the race but don't fail the response.
 				log.Printf("[coordinator] debit race user=%s job=%s cost=%.4f", userID, jobID, actualCost)
 			} else {
-				log.Printf("[coordinator] debit user=%s job=%s tokens=%d cost=%.4f", userID, jobID, actualTok, actualCost)
+				mx.Counter("oim_debits_total").Inc()
+				slog.Info("debit", "user", userID, "job", jobID, "tokens", actualTok, "cost", actualCost)
 			}
 		}
 
@@ -621,6 +804,15 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 			writeErr(w, http.StatusServiceUnavailable, err.Error())
 			return
 		}
+		// Credit the serving node from the coordinator's OWN observed token count,
+		// at the background-lane rate (task #51). Like fast-lane, this makes the
+		// earning coordinator-authoritative — the node's self-reported /job-outcome
+		// can't inflate it. Recurring background jobs reuse the same job_id across
+		// cycles, and each executed cycle is a distinct earning, so this is NOT
+		// deduped by job_id (job-outcome no longer credits, so there's no double).
+		if observedTok := extractCompletionTokens(result, 2048); observedTok > 0 {
+			creditNodeEarning(ledger, &nodeUsers, nodeID, req.JobID, economics.LaneBackground, string(a.JobSpec.Sensitivity), observedTok)
+		}
 		log.Printf("[coordinator] background/execute job=%s node=%s continuation=%v", req.JobID, nodeID, isCont)
 		writeJSON(w, http.StatusOK, result)
 	})
@@ -652,12 +844,12 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 		writeJSON(w, http.StatusOK, map[string]string{"status": "stored"})
 	})
 
-	// POST /nodes/{id}/job-outcome — node reports job completion.
-	// When tokens_delivered > 0, credits the node's registered user at the moderate rate.
-	// This is the earning side of the credit ledger: node operators earn as they serve.
-	// Must be signed — this is the credit-minting endpoint; an unsigned version lets
-	// anyone POST success:true with an inflated token count for any node_id and mint
-	// unlimited credits (Fable security review #1).
+	// POST /nodes/{id}/job-outcome — node reports job completion. REPUTATION ONLY:
+	// this endpoint no longer credits (task #51). Every earning path is now driven
+	// by the coordinator's OWN observed token count — fast-lane proxy and
+	// background-lane /execute both dispatch through the coordinator, so it counts
+	// the tokens itself and a node cannot inflate earnings by self-reporting. The
+	// signed outcome is kept for latency/success reputation and audit.
 	mux.HandleFunc("POST /nodes/{id}/job-outcome", func(w http.ResponseWriter, r *http.Request) {
 		nodeID := r.PathValue("id")
 		var outcome protocol.JobOutcomeRequest
@@ -674,26 +866,9 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 			writeErr(w, http.StatusUnauthorized, err.Error())
 			return
 		}
-		log.Printf("[coordinator] job-outcome node=%s job=%s success=%v latency=%.0fms tokens=%d",
+		log.Printf("[coordinator] job-outcome(reputation) node=%s job=%s success=%v latency=%.0fms tokens=%d",
 			nodeID, outcome.JobID, outcome.Success, outcome.LatencyMs, outcome.TokensDelivered)
-
-		if outcome.Success && outcome.TokensDelivered > 0 {
-			accountKey, _ := nodeUsers.Load(nodeID)
-			if accountKey == nil {
-				accountKey = nodeID // fallback: credit node_id directly
-			}
-			earned := float64(outcome.TokensDelivered) / 1000.0 * 1.0 // moderate rate
-			_ = ledger.CreditAccount(settlement.CreditEntry{
-				UserID:            accountKey.(string),
-				Origin:            settlement.CreditOriginEarnedContrib,
-				Amount:            earned,
-				GrantedOrEarnedAt: time.Now(),
-				SourceReference:   outcome.JobID,
-			})
-			log.Printf("[coordinator] earned user=%s node=%s tokens=%d credits=%.4f",
-				accountKey, nodeID, outcome.TokensDelivered, earned)
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "recorded"})
+		writeJSON(w, http.StatusOK, map[string]string{"status": "recorded", "credit": "coordinator_observed"})
 	})
 
 	// GET /nodes/{id}/verify-tier?tolerance=0.20 — compare node's submitted benchmark
@@ -934,6 +1109,13 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 			writeErr(w, http.StatusBadRequest, "device_id required")
 			return
 		}
+		// Region is coordinator-assigned (not client-trusted) so the map/shield
+		// layer always has a placement region. Fall back to the device's locale
+		// hint only if this coordinator has no region of its own.
+		p.Region = regionHint
+		if p.Region == "" {
+			p.Region = p.GeographicHint
+		}
 		coordReg.Announce(p, time.Now())
 		writeJSON(w, http.StatusOK, map[string]any{"status": "announced", "device_id": p.DeviceID})
 	})
@@ -1075,6 +1257,17 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 		writeJSON(w, http.StatusOK, digest)
 	})
 
+	// GET /metrics/prometheus — Prometheus text exposition of coordinator
+	// counters/gauges (task #20). Separate from the dashboard's JSON /metrics.
+	// Live gauges are refreshed on each scrape from the registries.
+	mux.HandleFunc("GET /metrics/prometheus", func(w http.ResponseWriter, r *http.Request) {
+		mx.SetGauge("oim_nodes_registered", int64(len(registry.Snapshot())))
+		mx.SetGauge("oim_coordination_participants", int64(coordReg.Count()))
+		mx.SetGauge("oim_queue_depth", int64(jobQueue.Depth()))
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		w.Write([]byte(mx.Expose()))
+	})
+
 	// GET / — index for browsers and health checkers hitting the root.
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		digest := registry.HealthDigest(podID, regionHint, publicURL)
@@ -1112,7 +1305,32 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 	if rateLimitRPS > 0 {
 		log.Printf("[coordinator] rate limiting enabled: %.1f req/s per IP, burst %.0f", rateLimitRPS, rateLimitBurst)
 	}
-	srv := &http.Server{Handler: httpmw.SecurityHeaders(corsMiddleware(corsOrigins, rateLimitMiddleware(limiter, handler)))}
+	// Metrics: count every request + track in-flight as a gauge (task #20).
+	metricsMiddleware := func(next http.Handler) http.Handler {
+		reqs := mx.Counter("oim_http_requests_total")
+		inflight := mx.Gauge("oim_http_requests_in_flight")
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			reqs.Inc()
+			inflight.Inc()
+			defer inflight.Dec()
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	// Middleware order (outermost first): security headers → CORS → metrics →
+	// body-size cap → global concurrency limit → per-IP rate limit → auth/handler.
+	// The size cap and concurrency limit are the DDoS floor a per-IP limiter can't
+	// provide against a distributed flood (task #53).
+	chain := httpmw.SecurityHeaders(
+		corsMiddleware(corsOrigins,
+			metricsMiddleware(
+				httpmw.MaxBodyBytes(httpmw.DefaultMaxBodyBytes,
+					httpmw.LimitConcurrency(maxConcurrentRequests,
+						rateLimitMiddleware(limiter, handler))))))
+	srv := &http.Server{
+		Handler:           chain,
+		ReadHeaderTimeout: readHeaderTimeout, // slow-loris guard (task #53)
+	}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -1150,6 +1368,7 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 	scheme := "http"
 	if httptls.Enabled(tlsCert, tlsKey) {
 		scheme = "https"
+		httptls.WarnIfExpiringSoon(tlsCert, 30*24*time.Hour, "coordinator")
 	} else {
 		log.Printf("[coordinator] WARNING: serving PLAINTEXT HTTP — set --tls-cert/--tls-key before exposing beyond localhost")
 	}
@@ -1258,16 +1477,12 @@ func clientIP(r *http.Request) string {
 // a visitor's browser into hitting the coordinator with their session.
 func corsMiddleware(allowedOrigins []string, h http.Handler) http.Handler {
 	allowAll := len(allowedOrigins) == 0
-	allowed := make(map[string]bool, len(allowedOrigins))
-	for _, o := range allowedOrigins {
-		allowed[o] = true
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		switch {
 		case allowAll:
 			w.Header().Set("Access-Control-Allow-Origin", "*")
-		case origin != "" && allowed[origin]:
+		case origin != "" && originAllowed(origin, allowedOrigins):
 			// Echo back the specific matched origin (not "*") — required for any
 			// future credentialed-request support and more correct than a wildcard
 			// even without it: it tells the browser exactly which origin was vetted.
@@ -1284,18 +1499,120 @@ func corsMiddleware(allowedOrigins []string, h http.Handler) http.Handler {
 	})
 }
 
-// sensitivityRate returns credits charged per 1,000 output tokens for each sensitivity tier.
-// moderate (1.0) is the baseline — ~100 inference calls on the 100-credit startup grant.
-func sensitivityRate(sensitivity string) float64 {
-	switch sensitivity {
-	case string(protocol.SensitivityLow):
-		return 0.5 // bulk / non-private embeddings or classification
-	case string(protocol.SensitivityHighRequiresAttestation):
-		return 5.0 // Secure Enclave gate; attestation overhead justifies higher cost
-	default:
-		return 1.0 // moderate — the common case
+// originAllowed reports whether the request Origin matches the operator's CORS
+// allowlist (task #27). Matching is case-insensitive on scheme+host. Beyond
+// exact matches it supports a leading-`*.` wildcard so an operator can allow a
+// whole domain family — e.g. `https://*.mlxmesh.io` matches
+// `https://app.mlxmesh.io` and `https://dash.mlxmesh.io` but NOT the bare apex
+// `https://mlxmesh.io` (list that explicitly) nor a lookalike suffix
+// `https://evilmlxmesh.io`.
+func originAllowed(origin string, allowlist []string) bool {
+	origin = strings.ToLower(strings.TrimSpace(origin))
+	for _, entry := range allowlist {
+		entry = strings.ToLower(strings.TrimSpace(entry))
+		if entry == "" {
+			continue
+		}
+		if i := strings.Index(entry, "*."); i >= 0 {
+			// Wildcard sits in the host, after the scheme, e.g. "https://*.mlxmesh.io".
+			// Split into scheme prefix ("https://") and domain suffix ("mlxmesh.io");
+			// the origin must share the scheme and end in ".<suffix>" with a real
+			// label in between (so the apex and suffix lookalikes don't match).
+			schemePrefix, domainSuffix := entry[:i], entry[i+2:]
+			if !strings.HasPrefix(origin, schemePrefix) {
+				continue
+			}
+			host := origin[len(schemePrefix):]
+			if strings.HasSuffix(host, "."+domainSuffix) && len(host) > len(domainSuffix)+1 {
+				return true
+			}
+			continue
+		}
+		if origin == entry {
+			return true
+		}
 	}
+	return false
 }
+
+// maxConcurrentRequests bounds total in-flight requests across the whole server
+// (task #53). A distributed flood defeats per-IP limiting, so this caps aggregate
+// resource use; excess requests get 503 + Retry-After. Sized for a single
+// coordinator box — raise it behind bigger hardware or a load balancer.
+const maxConcurrentRequests = 256
+
+// readHeaderTimeout bounds how long a client may take to send request headers,
+// closing the slow-loris hold-open attack (task #53, #25).
+const readHeaderTimeout = 10 * time.Second
+
+// creditPointerHost attributes one served encrypted pointer to the coordination
+// participant that hosted it (self-identified via X-OIM-Pointer-Host) and, if
+// that device is linked to a wallet account, pays it the flat per-pointer
+// coordination reward out of the treasury. A stale/unknown/empty host is ignored
+// — attribution never affects routing or the reply. Extracted from the fast-lane
+// handler (task #21) so the money path is unit-testable and the handler stays
+// readable.
+func creditPointerHost(ledger *settlement.Ledger, coordReg *coordinator.CoordinationRegistry, walletMgr *wallet.Manager, host, jobID string) {
+	if host == "" || !coordReg.RecordPointerServed(host) {
+		return
+	}
+	log.Printf("[coordinator] pointer served host=%s job=%s", host, jobID)
+	// iOS devices do a security service, not compute, so this is small but
+	// nonzero — hosting pointers earns, it isn't just altruism.
+	acct, ok := walletMgr.AccountForDevice(host)
+	if !ok {
+		return
+	}
+	reward := economics.CoordinationReward(1)
+	_ = ledger.CreditAccount(settlement.CreditEntry{
+		UserID:            acct,
+		Origin:            settlement.CreditOriginEarnedContrib,
+		Amount:            reward,
+		GrantedOrEarnedAt: time.Now(),
+		SourceReference:   jobID + "-coord",
+	})
+	if ledger.GetBalance(economics.TreasuryAccount).Total >= reward {
+		_ = ledger.DebitAccount(economics.TreasuryAccount, reward, jobID+"-coord")
+	}
+	log.Printf("[coordinator] coordination reward acct=%s host=%s credits=%.4f", acct, host, reward)
+}
+
+// creditNodeEarning pays the account behind servedByNodeID for tokenCount output
+// tokens at the given lane/sensitivity, and credits the network treasury the
+// house-edge margin (economics.NetworkMargin). Provider reward is ALWAYS less
+// than what the consumer was charged — the treasury keeps the spread. Callers
+// must dedup by jobID (via creditedJobs) before calling.
+func creditNodeEarning(ledger *settlement.Ledger, nodeUsers *sync.Map, servedByNodeID, jobID string, lane economics.Lane, sensitivity string, tokenCount int) {
+	accountKey, _ := nodeUsers.Load(servedByNodeID)
+	if accountKey == nil {
+		accountKey = servedByNodeID // fallback: credit node_id directly
+	}
+	reward := economics.ProviderReward(lane, sensitivity, tokenCount)
+	margin := economics.NetworkMargin(lane, sensitivity, tokenCount)
+	_ = ledger.CreditAccount(settlement.CreditEntry{
+		UserID:            accountKey.(string),
+		Origin:            settlement.CreditOriginEarnedContrib,
+		Amount:            reward,
+		GrantedOrEarnedAt: time.Now(),
+		SourceReference:   jobID,
+	})
+	if margin > 0 {
+		_ = ledger.CreditAccount(settlement.CreditEntry{
+			UserID:            economics.TreasuryAccount,
+			Origin:            settlement.CreditOriginEarnedContrib,
+			Amount:            margin,
+			GrantedOrEarnedAt: time.Now(),
+			SourceReference:   jobID + "-margin",
+		})
+	}
+	slog.Info("earned",
+		"user", accountKey, "node", servedByNodeID, "lane", lane, "tier", sensitivity,
+		"tokens", tokenCount, "reward", reward, "margin", margin, "source", "observed")
+}
+
+// Pricing/rewards now live in internal/economics (ConsumerCost / ProviderReward /
+// NetworkMargin / CoordinationReward). The old sensitivityRate was replaced so the
+// debit and credit paths can never diverge and the house edge is always applied.
 
 // extractCompletionTokens reads usage.completion_tokens from a dispatch result.
 // Falls back to maxTok when the field is absent (stub-exo may not populate it).

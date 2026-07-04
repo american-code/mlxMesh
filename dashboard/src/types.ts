@@ -62,6 +62,8 @@ export interface CoordinationParticipant {
   role: string
   is_mobile: boolean
   geographic_hint: string
+  region?: string
+  pointers_served?: number
   last_seen_at: string
 }
 

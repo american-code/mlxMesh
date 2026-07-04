@@ -5,3 +5,4 @@ dist/
 vendor/
 .env
 ~/.config/oim/node_identity.json
+certs/

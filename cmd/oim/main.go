@@ -185,6 +185,7 @@ func nodeStartCmd() *cobra.Command {
 	var scheduleDays []string
 	var tlsCA string
 	var tlsSkipVerify bool
+	var tlsCert, tlsKey string
 
 	cmd := &cobra.Command{
 		Use:   "start",
@@ -290,6 +291,8 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 				GeoLng:                    geoLng,
 				ChaosDowntimePct:          chaosDowntimePct,
 				AttemptEnclaveAttestation: attemptEnclaveAttestation,
+				TLSCert:                   tlsCert,
+				TLSKey:                    tlsKey,
 			}
 
 			// Trust settings for an HTTPS coordinator (private CA or, for throwaway
@@ -311,6 +314,8 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 	cmd.Flags().StringVar(&coordinatorURL, "coordinator", "http://localhost:9000", "Pod coordinator URL (https:// for TLS)")
 	cmd.Flags().StringVar(&tlsCA, "tls-ca", "", "PEM CA file to trust for an HTTPS coordinator with a private/self-signed cert")
 	cmd.Flags().BoolVar(&tlsSkipVerify, "tls-skip-verify", false, "Skip coordinator TLS certificate verification (DEV ONLY — insecure)")
+	cmd.Flags().StringVar(&tlsCert, "tls-cert", "", "PEM certificate for this node's OWN job endpoint (coordinator dispatch). Self-signed is fine — the coordinator pins the exact fingerprint at registration, no shared CA needed. Omit for plain HTTP (default)")
+	cmd.Flags().StringVar(&tlsKey, "tls-key", "", "PEM private key matching --tls-cert")
 	cmd.Flags().StringVar(&listenAddr, "listen", ":8765", "Address for this node to listen for jobs")
 	cmd.Flags().StringVar(&exoURL, "exo-url", exoadapter.DefaultURL, "Exo HTTP endpoint")
 	cmd.Flags().StringVar(&reachabilityEndpoint, "reachability-endpoint", "", "Endpoint advertised to coordinator (overrides auto-derived; use for NAT/Docker)")

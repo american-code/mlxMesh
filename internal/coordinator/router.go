@@ -16,6 +16,7 @@
 package coordinator
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -28,7 +29,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/open-inference-mesh/oim/internal/httptls"
 	"github.com/open-inference-mesh/oim/internal/protocol"
+	"github.com/open-inference-mesh/oim/internal/sse"
 )
 
 // ScoreForFastLane computes a routing score using MEASURED throughput only.
@@ -61,6 +64,48 @@ func ScoreForFastLane(node protocol.CapabilityManifest, job protocol.JobSpec, in
 	return base / (1.0 + float64(inFlight)*0.5)
 }
 
+// rankCandidates scores candidates for job via ScoreForFastLane and returns
+// them sorted best-first, filtering out ineligible nodes (-Inf score). Shared
+// by DispatchFastLane and PickBestNode so "who is eligible and best" is
+// computed identically whether or not a dispatch immediately follows.
+func rankCandidates(candidates []NodeWithLoad, job protocol.JobSpec) []NodeWithLoad {
+	type scored struct {
+		score float64
+		node  NodeWithLoad
+	}
+	var ranked []scored
+	for _, n := range candidates {
+		s := ScoreForFastLane(n.Manifest, job, n.InFlight, n.EnclaveAttested)
+		if !math.IsInf(s, -1) {
+			ranked = append(ranked, scored{s, n})
+		}
+	}
+	sort.Slice(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })
+	out := make([]NodeWithLoad, len(ranked))
+	for i, r := range ranked {
+		out[i] = r.node
+	}
+	return out
+}
+
+// PickBestNode selects the best eligible node for job WITHOUT dispatching —
+// used by the coordinator's node-reservation endpoint (POST /v1/reserve-node),
+// which must hand a client a node's public key before any request exists to
+// dispatch (node-side pointer consumption, M8). Uses the identical
+// eligibility/scoring rules as DispatchFastLane, so a reservation reflects a
+// real, dispatchable choice.
+func PickBestNode(job protocol.JobSpec, registry *NodeRegistry) (NodeWithLoad, error) {
+	candidates, err := registry.CandidatesWithLoad(job.ModelID, job.QuantizationRequired)
+	if err != nil {
+		return NodeWithLoad{}, fmt.Errorf("fetch candidates: %w", err)
+	}
+	ranked := rankCandidates(candidates, job)
+	if len(ranked) == 0 {
+		return NodeWithLoad{}, fmt.Errorf("no eligible nodes available")
+	}
+	return ranked[0], nil
+}
+
 // DispatchFastLane selects the best eligible node (by measured TPS adjusted for current
 // load) and dispatches the job. On failure it marks that node unreachable and tries the
 // next — never retries the same node. In-flight counters are tracked atomically so that
@@ -76,33 +121,21 @@ func DispatchFastLane(
 	if err != nil {
 		return nil, fmt.Errorf("fetch candidates: %w", err)
 	}
-
-	type scored struct {
-		score float64
-		node  NodeWithLoad
-	}
-	var ranked []scored
-	for _, n := range candidates {
-		s := ScoreForFastLane(n.Manifest, job, n.InFlight, n.EnclaveAttested)
-		if !math.IsInf(s, -1) {
-			ranked = append(ranked, scored{s, n})
-		}
-	}
-	sort.Slice(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })
+	ranked := rankCandidates(candidates, job)
 
 	attempted := 0
-	for _, r := range ranked {
+	for _, node := range ranked {
 		if attempted >= maxAttempts {
 			break
 		}
 		attempted++
-		registry.IncrInFlight(r.node.Manifest.NodeID)
+		registry.IncrInFlight(node.Manifest.NodeID)
 		dispatchStart := time.Now()
-		result, err := dispatchToNode(ctx, job, messages, r.node.Manifest.ReachabilityEndpoint)
+		result, err := dispatchToNode(ctx, job, messages, node.Manifest.ReachabilityEndpoint, node.Manifest.TLSCertFingerprint)
 		elapsed := time.Since(dispatchStart)
-		registry.DecrInFlight(r.node.Manifest.NodeID)
+		registry.DecrInFlight(node.Manifest.NodeID)
 		if err != nil {
-			registry.MarkUnreachable(r.node.Manifest.NodeID)
+			registry.MarkUnreachable(node.Manifest.NodeID)
 			continue
 		}
 		// Tag the response with which node served it and on which lane, so a
@@ -110,7 +143,7 @@ func DispatchFastLane(
 		// coordinator needing to broadcast per-job routing to anyone else — every
 		// caller sees only the answer to its own request (proposal §7.1 privacy split).
 		if result != nil {
-			result["oim_served_by_node_id"] = r.node.Manifest.NodeID
+			result["oim_served_by_node_id"] = node.Manifest.NodeID
 			result["oim_lane"] = string(job.Lane)
 			result["oim_latency_ms"] = elapsed.Milliseconds()
 			// Measured from THIS request's own wall-clock time and actual completion
@@ -221,8 +254,13 @@ func (s *AssignmentStore) Get(jobID string) (*BackgroundAssignment, bool) {
 // just makes the call, incrementing/decrementing the node's in-flight counter
 // around it like every other dispatch path.
 func DispatchToResolvedNode(ctx context.Context, job protocol.JobSpec, messages []map[string]any, registry *NodeRegistry, nodeID, nodeEndpoint string) (map[string]any, error) {
+	// Manifest() may miss (e.g. a node deregistered between selection and
+	// dispatch) — an empty fingerprint just means httpClientForEndpoint falls
+	// back to a plain client for an http:// endpoint, or fails closed for an
+	// https:// one, same as any other unpinned dispatch.
+	manifest, _ := registry.Manifest(nodeID)
 	registry.IncrInFlight(nodeID)
-	result, err := dispatchToNode(ctx, job, messages, nodeEndpoint)
+	result, err := dispatchToNode(ctx, job, messages, nodeEndpoint, manifest.TLSCertFingerprint)
 	registry.DecrInFlight(nodeID)
 	if err != nil {
 		registry.MarkUnreachable(nodeID)
@@ -244,24 +282,176 @@ func completionTokensFromResult(result map[string]any) int {
 	return 0
 }
 
+// DispatchFastLaneStreaming is DispatchFastLane's streaming counterpart —
+// fast lane only (background lane stays buffered/polling by design). It
+// selects the best eligible node exactly like DispatchFastLane, but relays
+// the node's SSE response directly to clientW as it arrives instead of
+// buffering the whole reply, returning the serving node ID and the observed
+// completion-token count (read from the trailing SSE usage frame) once the
+// stream ends.
+//
+// headersSent distinguishes two failure modes for the caller: if a node
+// couldn't be reached AT ALL, headersSent is false and the caller can still
+// return a normal error status (exactly like DispatchFastLane failing). If a
+// node accepted the request and streaming began before it failed, headersSent
+// is true — the client has already received partial output over a 200
+// response, so nothing more can be done at the HTTP-status level; the caller
+// should just log and stop. Never retries once relay has started: an
+// in-progress stream can't be silently restarted on a different node without
+// corrupting what the client already received.
+func DispatchFastLaneStreaming(
+	ctx context.Context,
+	job protocol.JobSpec,
+	messages []map[string]any,
+	registry *NodeRegistry,
+	maxAttempts int,
+	clientW http.ResponseWriter,
+) (servedByNodeID string, tokens int, headersSent bool, err error) {
+	candidates, err := registry.CandidatesWithLoad(job.ModelID, job.QuantizationRequired)
+	if err != nil {
+		return "", 0, false, fmt.Errorf("fetch candidates: %w", err)
+	}
+	ranked := rankCandidates(candidates, job)
+
+	attempted := 0
+	for _, node := range ranked {
+		if attempted >= maxAttempts {
+			break
+		}
+		attempted++
+		registry.IncrInFlight(node.Manifest.NodeID)
+		started, tok, dispatchErr := dispatchToNodeStreaming(ctx, job, messages, node.Manifest.NodeID, node.Manifest.ReachabilityEndpoint, node.Manifest.TLSCertFingerprint, clientW)
+		registry.DecrInFlight(node.Manifest.NodeID)
+		if dispatchErr != nil {
+			if started {
+				return "", tok, true, dispatchErr
+			}
+			registry.MarkUnreachable(node.Manifest.NodeID)
+			continue
+		}
+		return node.Manifest.NodeID, tok, true, nil
+	}
+	return "", 0, false, fmt.Errorf("no eligible nodes available for job %s (tried %d)", job.JobID, attempted)
+}
+
+// dispatchToNodeStreaming is dispatchToNode's streaming counterpart: POSTs
+// stream:true to the node and relays its SSE response line-by-line to clientW
+// as it arrives, returning the completion-token count read from the trailing
+// SSE usage frame. started reports whether any bytes were relayed to clientW
+// before an error occurred — see DispatchFastLaneStreaming's doc comment for
+// why that distinction matters to the caller's retry logic.
+func dispatchToNodeStreaming(
+	ctx context.Context,
+	job protocol.JobSpec,
+	messages []map[string]any,
+	nodeID, nodeEndpoint, tlsFingerprint string,
+	clientW http.ResponseWriter,
+) (started bool, tokens int, err error) {
+	payload := map[string]any{
+		"model":    job.ModelID,
+		"messages": messages,
+		"stream":   true,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return false, 0, fmt.Errorf("marshal dispatch payload: %w", err)
+	}
+
+	// Same 120s ceiling as the buffered path (task #53) — a hung Exo must not
+	// hold a concurrency-limiter slot, or a node's in-flight counter, forever.
+	client := httpClientForEndpoint(nodeEndpoint, tlsFingerprint, 120*time.Second)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		nodeEndpoint+"/v1/chat/completions", bytes.NewReader(b))
+	if err != nil {
+		return false, 0, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("X-OIM-Job-ID", job.JobID)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, 0, fmt.Errorf("dispatch to %s: %w", nodeEndpoint, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return false, 0, fmt.Errorf("node %s returned HTTP %d: %s", nodeEndpoint, resp.StatusCode, body)
+	}
+
+	flusher, ok := clientW.(http.Flusher)
+	if !ok {
+		return false, 0, fmt.Errorf("streaming not supported by response writer")
+	}
+	// oim_served_by_node_id/oim_lane travel as response headers instead of the
+	// buffered path's trailing JSON fields (there's no buffered blob left to
+	// tag) — must be set before the first Write() locks in the header set.
+	clientW.Header().Set("X-OIM-Served-By-Node-Id", nodeID)
+	clientW.Header().Set("X-OIM-Lane", string(job.Lane))
+	clientW.Header().Set("Content-Type", "text/event-stream")
+	clientW.Header().Set("Cache-Control", "no-cache")
+	clientW.Header().Set("Connection", "keep-alive")
+	clientW.Header().Set("X-Accel-Buffering", "no")
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		started = true
+		fmt.Fprintf(clientW, "%s\n", line)
+		if strings.TrimSpace(line) == "" {
+			flusher.Flush() // blank line terminates one SSE event
+		}
+		if n := sse.ExtractUsageTokens(line); n > 0 {
+			tokens = n
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return started, tokens, fmt.Errorf("read node stream: %w", err)
+	}
+	return started, tokens, nil
+}
+
+// httpClientForEndpoint returns a plain client for an http:// node, or a
+// certificate-pinned one (task: coordinator->node TLS) for an https:// node —
+// nodes are independently operated and self-signed, so trust is TOFU
+// fingerprint-pinning against what was recorded at that node's registration,
+// not chain verification against a shared CA. tlsFingerprint empty on an
+// https:// endpoint always fails closed (see httptls.PinnedClientTLSConfig).
+func httpClientForEndpoint(nodeEndpoint, tlsFingerprint string, timeout time.Duration) *http.Client {
+	if strings.HasPrefix(nodeEndpoint, "https://") {
+		return httptls.PinnedClient(tlsFingerprint, timeout)
+	}
+	return &http.Client{Timeout: timeout}
+}
+
 // dispatchToNode makes a POST to the node's /v1/chat/completions endpoint and returns the response.
 func dispatchToNode(
 	ctx context.Context,
 	job protocol.JobSpec,
 	messages []map[string]any,
-	nodeEndpoint string,
+	nodeEndpoint, tlsFingerprint string,
 ) (map[string]any, error) {
 	payload := map[string]any{
 		"model":    job.ModelID,
 		"messages": messages,
 		"stream":   false,
 	}
+	// Encrypted-pointer path (M8): forward the pointer so the assigned node can
+	// fetch + decrypt it. Previously dropped silently here — the coordinator
+	// threaded these fields into JobSpec but never actually sent them onward,
+	// which is why no node ever consumed a pointer end-to-end.
+	if job.PayloadRef != "" {
+		payload["oim_payload_hash"] = job.PayloadRef
+		payload["oim_payload_fetch_url"] = job.PayloadFetchURL
+		payload["oim_ephemeral_public_key"] = job.PayloadEphemeralPubKey
+	}
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal dispatch payload: %w", err)
 	}
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := httpClientForEndpoint(nodeEndpoint, tlsFingerprint, 120*time.Second)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		nodeEndpoint+"/v1/chat/completions", bytes.NewReader(b))
 	if err != nil {
@@ -292,7 +482,7 @@ func dispatchToNode(
 //
 // Fast-lane guard: if job.Lane == JobLaneFast this function returns immediately
 // with an error — fast-lane jobs must never reach this code path. Callers should
-// enforce this at the dispatch layer; the check here is defence-in-depth.
+// enforce this at the dispatch layer; the check here is defense-in-depth.
 //
 // Fallback contract: any ErrNotImplemented from the decomposer causes RouteWithDecomposition
 // to fall back to single-node DispatchFastLane/AssignBackgroundJob routing. The caller
@@ -397,7 +587,7 @@ func RouteWithDecomposition(
 		replicaNode := podNodes[(verifyIdx+1)%len(podNodes)]
 
 		replicaJob, replicaMessages := buildSubTaskJob(analyticalTasks[verifyIdx])
-		replicaResult, err := dispatchToNode(ctx, replicaJob, replicaMessages, replicaNode.ReachabilityEndpoint)
+		replicaResult, err := dispatchToNode(ctx, replicaJob, replicaMessages, replicaNode.ReachabilityEndpoint, replicaNode.TLSCertFingerprint)
 		if err != nil {
 			verificationPassed = false // can't verify — fail closed, don't merge on faith
 		} else {
@@ -427,8 +617,8 @@ func RouteWithDecomposition(
 		}
 	}
 
-	mergeEndpoint := SelectMergeNode(podNodes, mergeInputs)
-	merged, err := ExecuteMerge(ctx, mergeInputs, job, mergeEndpoint)
+	mergeEndpoint, mergeTLSFingerprint := SelectMergeNode(podNodes, mergeInputs)
+	merged, err := ExecuteMerge(ctx, mergeInputs, job, mergeEndpoint, mergeTLSFingerprint)
 	if err != nil {
 		return nil, fmt.Errorf("RouteWithDecomposition job %s: merge: %w", job.JobID, err)
 	}
@@ -486,7 +676,7 @@ func DispatchSubTasksInParallel(
 			}
 
 			subJob, subMessages := buildSubTaskJob(w.subTask)
-			result, err := dispatchToNode(ctx, subJob, subMessages, w.node.ReachabilityEndpoint)
+			result, err := dispatchToNode(ctx, subJob, subMessages, w.node.ReachabilityEndpoint, w.node.TLSCertFingerprint)
 			if err != nil {
 				errCh <- fmt.Errorf("sub-task %s: dispatch: %w", w.subTask.SubTaskID, err)
 				return

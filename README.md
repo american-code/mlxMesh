@@ -11,7 +11,7 @@ A distributed inference protocol that turns geographically-spread machines into 
 Most distributed inference tools (e.g. [Exo](https://github.com/exo-explore/exo)) work within a single LAN cluster. `oim` adds a coordination layer *above* that: it federates multiple clusters across the internet into a routable mesh, with:
 
 - **Dual-lane routing** — fast lane for interactive jobs (resolver-routed, low-latency), background lane for recurring/batch jobs (scheduler-routed, sticky-session)
-- **MoE expert sharding** — the only WAN-viable strategy for large models (sequential token passing can't survive 20-150 ms inter-hop latency)
+- **MoE expert sharding** *(planner only — not wired into live dispatch; see below)* — the only WAN-viable strategy for large models (sequential token passing can't survive 20-150 ms inter-hop latency)
 - **Division-order accounting** — measured resource lines, not declared promises; credits from bootstrap grants decay as earned capacity grows
 - **Sensitivity tiers** — LOW / MODERATE / HIGH_REQUIRES_ATTESTATION (Secure Enclave gate on Apple Silicon)
 - **Ed25519 node identity** — derived from public key, never operator-chosen
@@ -125,16 +125,64 @@ Before dispatching, the coordinator checks the caller's credit balance. The flow
 1. GET /users/{user_id}/balance
    → { grant_balance, earned_balance, total }
 
-2. Estimate job cost:
-   cost_estimate = (max_tokens / 1000) * tier_rate
-   tier_rate: low=0.5, moderate=1.0, high_requires_attestation=5.0  (credits per 1k tokens)
-   → 100-credit startup grant ≈ 100 typical calls (2k tokens each, moderate tier)
+2. Estimate job cost:  cost = ConsumerCost(lane, sensitivity, max_tokens)   (see matrix below)
+   → 100-credit startup grant ≈ 100 typical fast/moderate calls (~1k tokens each)
 
-3. If total >= cost_estimate → dispatch
+3. If total >= cost → dispatch
    Else → 402 Payment Required  {"error": "insufficient_credits", "balance": ..., "required": ...}
 
-4. On completion: debit actual completion_tokens delivered (falls back to max_tokens if not reported)
+4. On completion: debit the consumer the observed cost; credit the serving node its
+   reward; book the spread to the treasury (see Cost / reward matrix).
 ```
+
+### Cost / reward matrix (the house edge)
+
+All pricing lives in [`internal/economics`](internal/economics/pricing.go) so the
+debit and credit paths can never diverge. The model is a **spread, not a
+transfer**: a provider is always paid *less* than the consumer is charged, and
+the difference — the **house edge (25%)** — accrues to the network treasury,
+which funds startup grants, iOS coordination rewards, and sustainability. This is
+the "casino math": credits are a sink, not a closed zero-sum loop, so the supply
+can't inflate to worthlessness or drain to zero.
+
+```
+consumer_cost   = 1.0 × lane × sensitivity   (credits per 1k output tokens)
+provider_reward = consumer_cost × (1 − 0.25)      ← node earns 75%
+network_margin  = consumer_cost − provider_reward ← treasury keeps 25%
+
+lane:         fast ×1.0 (interactive premium) · background ×0.5 (batch discount)
+sensitivity:  low ×0.5 · moderate ×1.0 · high_requires_attestation ×3.0
+```
+
+Per 1,000 output tokens:
+
+| Lane | Sensitivity | Consumer pays | Provider earns (75%) | Treasury (25%) |
+|------|-------------|--------------:|---------------------:|---------------:|
+| Fast | low | 0.50 | 0.375 | 0.125 |
+| Fast | moderate | 1.00 | 0.75 | 0.25 |
+| Fast | high | 3.00 | 2.25 | 0.75 |
+| Background | low | 0.25 | 0.1875 | 0.0625 |
+| Background | moderate | 0.50 | 0.375 | 0.125 |
+| Background | high | 1.50 | 1.125 | 0.375 |
+
+**iOS coordination job** (hosting an encrypted pointer): a flat **0.02 credits per
+pointer served**, paid to the device's linked wallet account out of the treasury —
+coordination is a lightweight security service, not compute, so it earns a small
+but nonzero reward. Fast-lane earnings are credited from the coordinator's *own
+observed* token count (not the node's self-report — see [Security model](#security-model--threat-analysis)),
+so a node can't inflate what it earns.
+
+> **Setup note — linking is required to earn.** A coordination device (or a
+> desktop node) only earns once its device/node ID is **linked** to a wallet
+> account (`POST /account/{address}/link-device`, or the iOS Account tab's
+> **"Link this iPad's participation"** button). An unlinked device announces and
+> is visible on the map, but has no account to pay — credits silently go
+> nowhere. Earlier builds regenerated the iOS device ID on every launch, which
+> made linking impossible and left participation permanently stuck at 0 credits;
+> the ID is now persisted per-install (see `DeviceIdentity.swift`).
+
+*These multipliers/edge are tunable constants in `internal/economics`; future
+work can layer reputation multipliers or streak bonuses on top of this base.*
 
 To check balance programmatically before submitting:
 
@@ -294,6 +342,22 @@ For a **public deploy**, use a real CA (Let's Encrypt / your cloud provider's
 cert manager) instead of the dev script, or terminate TLS at a load balancer.
 Automated cert issuance/renewal (ACME) is on the [release path](#path-to-release-safe-secure-scalable).
 
+**5. Coordinator→node dispatch over TLS too** — a node can serve its own job
+endpoint over HTTPS with `--tls-cert`/`--tls-key`. This uses a **different
+trust model** than steps 1-4 above: nodes are independently operated and
+self-signed (there's no shared CA to hand out), so instead of chain
+verification the coordinator **pins the exact certificate fingerprint**
+recorded at that node's registration — tamper-evident via the same Ed25519
+signature covering the rest of the manifest. A self-signed cert is genuinely
+fine here:
+
+```bash
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+  -keyout node.key -out node.crt -days 825 -subj "/CN=node" \
+  -addext "subjectAltName=IP:192.168.1.140"
+oim node start --tls-cert node.crt --tls-key node.key --reachability-endpoint https://192.168.1.140:8765 ...
+```
+
 ---
 
 ## CLI reference
@@ -314,6 +378,22 @@ go run ./tools/gen-compose > docker-compose.yml   # regenerate if needed
 docker compose up --build                          # heavy — needs several GB free
 # Dashboards/apps point at the directory on :9100 and coordinators on :9000/:9001
 ```
+
+### Node Setup (cluster topology view)
+
+The web dashboard's **Node Setup** tab shows an Exo-style per-device cluster
+diagram (each device's RAM / GPU load / temperature / power, wired in a ring),
+plus contribution controls (memory cap, models, schedule). It reads the **local
+node agent's** `/detect` endpoint, so point the "Local agent" bar at wherever
+your agent listens:
+
+- **Against the sim:** `http://localhost:8765` (node-us-1) or `http://localhost:8780`
+  (node-eu-1) — both are seeded as 3-device clusters so the diagram is populated.
+  Other sim nodes derive device count from memory (one device per ~48 GB).
+- **Against your own hardware:** run `oim node start` with Exo running, then point
+  the bar at that agent's `--listen` address. The diagram reflects Exo's live
+  topology. (iOS has no Node Setup — iOS devices join as the coordination layer,
+  not as compute nodes.)
 
 ---
 
@@ -347,11 +427,18 @@ Native clients: iOS · tvOS · watchOS ← M8 / M9  (OIMDashboard/)
 | M6 | **Done** | MoE expert-shard planner with proportional assignment and load imbalance detection |
 | M7 | **Stub** | Federated directory (multi-librarian) — `FederatedResolver`/`DHTResolver` are stubs; see [Path to release](#path-to-release-safe-secure-scalable) |
 
+**What remains of the original 7-milestone scope:** only **M7** (federated
+directory) — M1–M6 are complete and the core inference/credit/routing loop is
+verified working end-to-end. M7 is also entangled with the hardest open problem,
+federated ledger authority (see [Security model](#security-model--threat-analysis),
+item 3): decentralizing discovery is straightforward, but decentralizing *who is
+authoritative for credits* is the real work.
+
 **Extended scope** (built beyond the original plan — see [Beyond original scope](#beyond-original-scope)):
 
 | # | Status | Description |
 |---|--------|-------------|
-| M8 | **Done (client + coordinator plumbing)** | On-device routing + iOS coordination/security layer: on-device CoreML classifier, client-side payload encryption (P256 ECDH → AES-256-GCM), coordinator hint validation (escalate-only), coordination registry + served-pointer accounting, native iOS/tvOS/watchOS apps. **Gap:** node-side pointer *consumption* (fetch ciphertext + decrypt) is not yet built — the coordinator threads the pointer but no node fetches it. |
+| M8 | **Done** | On-device routing + iOS coordination/security layer: on-device CoreML classifier, client-side payload encryption (P256 ECDH → AES-256-GCM), coordinator hint validation (escalate-only), coordination registry + served-pointer accounting, native iOS/tvOS/watchOS apps, and now **full node-side pointer consumption**: a Go-native `internal/payloadcrypto` (ECDH-P256 → HKDF-SHA256 → AES-256-GCM, byte-compatible with the Swift client) lets the assigned node fetch and decrypt the ciphertext itself. A new `POST /v1/reserve-node` lets a client learn a specific node's public key (and reserve it) *before* encrypting, so privacy-mode jobs still get the coordinator's TPS-aware routing instead of picking a node blind. |
 | M9 | **Done** | Portable wallet identity: Ed25519 account key, `oim…` address = ledger user_id, challenge-response auth, account-signed device linking for credit consolidation, iCloud-Keychain sync + Base32 recovery key. Cross-language crypto (CryptoKit ↔ Go) verified. |
 
 ---
@@ -369,6 +456,131 @@ The original ARCHITECTURE spec defined a headless Go protocol (M1–M7). The fol
 
 ---
 
+### Known gaps at a glance
+
+Concrete things a tester will hit today, so nothing reads as "silently broken":
+
+- **Node Setup cluster topology is web-only and Exo-driven.** The dashboard's per-device diagram (RAM/GPU/temp/power ring) renders from the local agent's `/detect`, which parses Exo's `/state`. It now populates in the docker sim (stub-exo emits a topology; node-us-1 / node-eu-1 are 3-device clusters). Against a **real** Exo cluster it depends on Exo's `/state` field names (`topology.nodes`, `nodeMemory`, `nodeIdentities`, `nodeSystem`) — validate this against your Exo build (e.g. lab-02) since that schema hasn't been confirmed against a live instance. **iOS has no Node Setup** by design — iOS devices can't run Exo, so they contribute as the coordination/security layer, not as compute nodes.
+- **Webhook / async callback** submission is documented as a target but not implemented.
+- **M7 federation + progressive decentralization** are stubs; there is no public seed yet.
+- **MoE expert sharding is a planner, not a live feature.** `internal/coordinator/moe_planner.go` (assign experts to nodes by memory, route tokens to the expert-holding node, detect load imbalance) is implemented and tested (M6) but **not wired into any dispatch path** — no request is MoE-sharded across mesh nodes today. See the note below on why it wouldn't speed up the fast lane anyway. What *is* wired is **query decomposition** (`RouteWithDecomposition`), and only for the **background lane** (it refuses fast-lane jobs).
+
+Everything above is tracked in the release path below.
+
+### A note on MoE sharding and speed
+
+A common intuition is that sharding a model across nodes makes the **fast (interactive)
+lane** faster. It's the opposite. MoE expert-sharding across the *mesh* (WAN) is a
+**capacity** strategy, not a **latency** one: it lets you *run* a model too big for any
+single node by splitting its experts across nodes — but every token that activates a
+remote expert pays the 20–150 ms inter-hop latency, which is fatal for interactive use.
+So sharding belongs to the **background lane** (throughput/big-model capacity), and the
+fast lane stays **single-node** precisely to avoid those hops.
+
+Where sharding *does* make inference fast is **inside a local Exo cluster** (LAN,
+sub-millisecond links) — Exo itself tensor/expert-shards a big model across your cluster's
+devices (e.g. your 2 Mac Studios + MacBook Pro). The mesh node *wraps* that cluster, so
+local sharding already happens; the mesh's job is to route *between* clusters, where WAN
+latency rules out per-token sharding. **Fast-lane speed comes from good single-node
+routing (measured TPS, model present) + local Exo cluster sharding — not from mesh-level
+sharding.** Wiring the MoE planner into a real background-lane big-model path (with Exo
+expert-routing integration) is future work.
+
+---
+
+## Security model & threat analysis
+
+Because this is (a) open source and (b) a **credit-based** compute network, the
+first question is: *if anyone can read and fork the code, what stops them from
+minting credits, spoofing the system, or knocking it over?* Here is the honest
+answer, grounded in the current code.
+
+### Can queries actually flow through? Yes — verified.
+
+A node registers with a coordinator and a real `POST /v1/chat/completions` is
+dispatched fast-lane to that node and proxied back with `oim_served_by_node_id`,
+`oim_lane`, and measured `oim_tokens_per_sec`. The end-to-end path
+(credit gate → dispatch → node/Exo → response → debit) works today. It is usable
+**as a trusted-coordinator network right now**. It is *not yet* safe as an open,
+decentralized credit network — see the open items below.
+
+### What already holds
+
+- **The ledger is server-authoritative.** Credits live in the coordinator's
+  SQLite ledger. No client or node can write to it directly — every mutation
+  goes through a coordinator endpoint. Forking the *client* or *node* code cannot
+  fabricate a balance.
+- **The write path is Ed25519-signed.** `register`, `refresh`, `job-outcome`
+  (the credit-minting endpoint), `benchmark-result`, and settlement all require a
+  signature from the registered node key. You **cannot report earnings for a node
+  you don't control**, or impersonate another node's identity.
+- **Grants are Sybil-resistant.** The one-time startup grant requires a
+  proof-of-work nonce (18 bits) *and* a dedicated per-IP rate limit, so minting
+  thousands of throwaway `user_id`s to farm grants costs real CPU time. Claims are
+  idempotent against the ledger, surviving restarts.
+- **Wallet auth is challenge-response**; the account key never leaves the device,
+  and device-linking is account-signed (you can't attach your device to someone
+  else's balance).
+- **Per-IP rate limiting wraps every endpoint**; the job queue is bounded with
+  backpressure; sensitivity tiers + Secure-Enclave attestation gate sensitive
+  jobs; TLS 1.2+ is available; payloads can be client-encrypted.
+- **Node→coordinator calls are resilient, not naive.** All outbound coordinator
+  calls (register/refresh/reputation) retry transient failures (network errors,
+  5xx, 429) with exponential backoff + jitter, and permanent failures (4xx) fail
+  fast instead of hammering the server; a client-side token-bucket limiter caps
+  how fast a single node can call out, so a bug can't turn one node into a
+  self-inflicted flood. (`internal/httpx`, tasks #22/#24)
+
+### Open vulnerabilities
+
+1. ✅ **RESOLVED — Unverified self-reported earnings.** Both fast-lane and
+   background-lane earnings are now credited from the coordinator's **own observed**
+   token count (it dispatches/proxies every job, so it counts the tokens itself).
+   `/job-outcome` is **reputation-only and never credits**, so a node running
+   modified code cannot inflate its earnings. Verified end-to-end by the integration
+   suite (75/25 split, no double-credit). *(task #51 — done)*
+2. ✅ **RESOLVED — Earn/debit asymmetry.** Debit and credit are now derived from the
+   same coordinator-observed token count, so a node can never earn more than the
+   consumer was charged. *(task #51 — done)*
+3. **Federated ledger authority is unsolved (M7).** Today only the trusted seed
+   coordinator's ledger counts, so a forked *coordinator* mints credits that are
+   worthless to everyone else — the centralized seed is what makes credits safe.
+   The "network takes over at parity" vision has **no consensus, staking, or
+   verifiable-computation mechanism yet**. This is the fundamental unsolved
+   problem of decentralizing the credit system; the standard answers are a
+   trusted-committee ledger, staking + slashing, or verifiable/redundant-quorum
+   computation. None are built. *(task #52)*
+4. **DDoS — mostly hardened.** Per-IP rate limiting is now backed by a global
+   in-flight **concurrency cap** (503 + Retry-After), an 8 MiB **request-body cap**,
+   a `ReadHeaderTimeout` slow-loris guard, and an **SSRF allowlist** on the payload
+   fetch URL (blocks loopback + link-local/cloud-metadata). Remaining: a distributed
+   volumetric flood still needs an **upstream WAF/scrubbing layer** (Cloudflare or
+   equivalent), and read endpoints (`/topology`, `/nodes`, `/balance`) are still
+   unauthenticated. *(task #53 — core done)*
+
+### "How do I stop someone from modifying the code to mint credits?" — direct answer
+
+- **Modifying the client or node** does **not** let you mint: the coordinator owns
+  the ledger, so the worst a forked node can do is *lie about work delivered* to
+  inflate its own earnings. That is mitigated by signatures (no impersonation) +
+  rate limits (bounded volume) + — once wired — spot-checks/redundancy that catch
+  output fraud, plus tier-verification that catches capacity lies. Item #1 above is
+  what makes this fully airtight; until it lands, treat earned credits as
+  provisional.
+- **Modifying the coordinator** only matters in the *federated* model. In the
+  current seed model, a rogue coordinator's credits aren't honored anywhere else.
+  In the federated model this is item #3 — the open research problem, not a bug to
+  patch.
+
+**Bottom line:** run by a trusted operator (the seed), the credit system is sound
+against client/node tampering *except* for unverified earnings (#1/#2), which are
+fixable with existing machinery. True open decentralization (#3) needs a
+consensus/staking/proof design that does not yet exist here. A third-party
+security review of the credit, attestation, and settlement paths is on the
+release path.
+
+---
+
 ## Path to release (safe, secure, scalable)
 
 Everything above is a working **testbed** — a full multi-region mesh you can run locally and drive from real Apple hardware. It is **not yet production-safe**. The work below is what stands between the current state and a public release, grouped by the property it protects. Ordered roughly by priority within each group.
@@ -377,21 +589,26 @@ Everything above is a working **testbed** — a full multi-region mesh you can r
 
 | Item | Why it blocks release | Status |
 |------|----------------------|--------|
-| **TLS everywhere** (coordinator, directory, node reachability) | API keys and job payloads must not travel in plaintext | **Partial** — coordinator + directory serve HTTPS via `--tls-cert`/`--tls-key` (TLS 1.2 floor); Go nodes trust it via `--tls-ca` (or `--tls-skip-verify` for dev); Apple clients use https + a local-networking-only ATS policy. **Remaining:** coordinator→node dispatch is still plaintext, and cert management is manual (no ACME/auto-renew yet) |
-| **Node-side pointer consumption** | The encrypted-pointer path is only half-built: the coordinator threads the pointer but no node fetches/decrypts ciphertext, so "privacy mode" isn't end-to-end yet | Not started (M8 gap) |
-| **Secrets management** | API keys / signing keys live in SQLite + local files; needs a real secret store and key rotation | Partial |
-| **Auth on read endpoints + abuse limits** | `/topology`, `/nodes`, `/balance` are unauthenticated; add per-account quotas and external-facing rate limits (task #24) | Partial |
-| **Input hardening / DoS** | Request size caps, timeouts, and payload-pointer SSRF guards (a fetch URL is attacker-controlled) | Not started |
+| **TLS everywhere** (coordinator, directory, node reachability) | API keys and job payloads must not travel in plaintext | **Done** — coordinator + directory serve HTTPS via `--tls-cert`/`--tls-key` (TLS 1.2 floor); Go nodes trust it via `--tls-ca` (or `--tls-skip-verify` for dev); Apple clients use https + a local-networking-only ATS policy. **Coordinator→node dispatch is now TLS too**: a node opts in with its own `--tls-cert`/`--tls-key`, and the coordinator pins the exact certificate fingerprint recorded at that node's (Ed25519-signed) registration — TOFU pinning, not chain verification, since independently-operated nodes have no shared CA. Cert management is still manual (no ACME/auto-renew) |
+| **Node-side pointer consumption** | The encrypted-pointer path was only half-built: the coordinator threaded the pointer but no node fetched/decrypted ciphertext | **Done** — `internal/payloadcrypto` (Go-native ECDH-P256 → HKDF-SHA256 → AES-256-GCM, byte-compatible with the Swift client) lets the assigned node decrypt the payload itself. A new `POST /v1/reserve-node` resolves the recipient node *before* encryption so privacy-mode jobs keep the coordinator's TPS-aware routing |
+| **Secrets management** | API keys were stored and compared **in plaintext** in SQLite — a real, fixable vulnerability | **Done** — keys are now SHA-256-hashed at rest (only the hash is ever written or compared; the raw key exists only in the one-time `generate()` return value). TLS certs get a startup expiry warning (`WarnIfExpiringSoon`, 30-day window) across coordinator/directory/node. **Remaining:** node Ed25519 identity has no rotation by design (it's the node's permanent earnings anchor — rotating it would sever the trust chain, not improve it) |
+| **Auth on read endpoints + abuse limits** | `/topology`, `/nodes`, `/balance` are unauthenticated; needs per-account quotas and read-endpoint auth | Not started |
+| **Input hardening / DoS** (task #53) | ~~Only per-IP rate limiting~~ | **Done** — 8 MiB request-body cap, global in-flight concurrency limit (503 + Retry-After), `ReadHeaderTimeout` slow-loris guard, and an SSRF allowlist on the payload fetch URL (blocks loopback + link-local/cloud-metadata). Remaining: upstream WAF/scrubbing for volumetric floods |
+| **Outbound call resilience** (tasks #22, #24) | ~~A dropped connection silently failed a register/refresh; nothing bounded a node's own outbound call rate~~ | **Done** — `internal/httpx`: exponential backoff + jitter retry for transient node→coordinator failures (permanent 4xx fails fast), plus a client-side token-bucket limiter on outbound calls |
+| **CORS granularity** (task #27) | ~~Origin allowlist only supported exact matches~~ | **Done** — `*.domain.tld` wildcard-subdomain matching, case-insensitive, with an explicit apex/lookalike-suffix test matrix |
 | **Third-party security review** of the crypto + settlement paths | Wallet auth, attestation, and ledger debits are trust-critical | Not started |
 
 ### 🛡️ Safety & correctness — *blocks trusting the numbers*
 
 | Item | Why | Status |
 |------|-----|--------|
-| **Integration tests: coordinator ↔ node ↔ Exo** (task #18) | Unit tests are green, but the cross-process contract isn't covered end-to-end | Not started |
-| **Streaming (`stream: true`)** on `/v1/chat/completions` | Documented but unimplemented; interactive UX depends on it | Not started |
-| **Retry / backoff on inter-service HTTP** (task #22) | A single transient failure currently drops a job | Not started |
-| **Structured logging + metrics** (task #20) | No observability into routing decisions, debit races, or queue behavior in prod | Not started |
+| **Verified earnings — reconcile earn vs observed tokens** (task #51) | ~~Node self-reports and earns unverified~~ | **Done** — both fast-lane and background-lane earnings are now credited from the coordinator's OWN observed token count; `/job-outcome` is reputation-only and never credits, so a node cannot inflate earnings. Verified end-to-end (integration test) |
+| **Coordination-device credit attribution** | ~~The iOS device ID regenerated on every launch, so it could never be linked to a wallet — participation announced and appeared on the map, but earnings had nowhere to land and stayed at 0 forever~~ | **Done** — the device ID now persists per-install (`DeviceIdentity.swift`); Account has a one-tap "Link this iPad's participation"; the coordinator stamps a server-assigned `region` on announce (a missing field previously threw and crashed the web map's shield panel); the "Pointers" stat now syncs from the coordinator's own served-pointer count instead of sitting dead at 0 |
+| **Federated ledger authority** (task #52) | No consensus/staking/proof so a forked coordinator can't mint once the network federates (M7) | Not started |
+| **Integration tests: coordinator ↔ node ↔ Exo** (task #18) | ~~Cross-process contract uncovered~~ | **Done** — subprocess integration suite (`go test -tags integration ./tests/`) spins up real coordinator+node+stub-exo and asserts the full money path (75/25 split, no double-credit), 402-gating, SSRF rejection, and metrics exposure |
+| **Streaming (`stream: true`)** on `/v1/chat/completions` | Documented but unimplemented; interactive UX depends on it | **Done (fast lane)** — real SSE passthrough end-to-end (Exo → node → coordinator → client), each hop relaying chunks via `http.Flusher` as they arrive rather than buffering. Credit/debit accounting is unchanged — it reads the same observed-token count, now sourced from the trailing SSE usage frame instead of one JSON blob. Background lane intentionally stays buffered/polling (recurring jobs don't need it) |
+| **Structured logging + metrics** (task #20) | ~~No observability~~ | **Done** — `GET /metrics/prometheus` exposes request/dispatch/credit/debit/rejection counters + live gauges (nodes, queue depth, coordination participants); `OIM_LOG_FORMAT=json` emits structured slog with typed money-event fields |
+| **Maintainability & tooling** (tasks #21, #25, #26, #28) | ~~Large handler functions, magic numbers, no lint config, no perf baseline~~ | **Done** — coordination-reward logic extracted into a unit-testable `creditPointerHost()`; slow-loris timeout named; `.golangci.yml` added; allocation-bound perf regression tests on the metrics/pricing hot paths |
 | **Ledger reconciliation & audit trail** | Debits log but there's no periodic balance-integrity check | Not started |
 
 ### 📈 Scalability — *blocks growth past the seed*
@@ -402,19 +619,41 @@ Everything above is a working **testbed** — a full multi-region mesh you can r
 | **Progressive decentralization** (task #49) | EC2 seed → network takes over "at parity"; needs the handoff logic + a parity metric | Not started |
 | **Coordinator HA** | One coordinator per region with no failover or shared state | Not started |
 | **Ledger beyond SQLite** | SQLite won't survive multi-coordinator write load; needs Postgres/managed store | Not started |
-| **Load & perf regression tests** (task #28) | No baseline to catch throughput regressions | Not started |
 
 ### 🚀 Release engineering
 
 | Item | Status |
 |------|--------|
 | **Public seed deploy** — EC2 coordinator + directory as the bootstrap (task #42) | Not started |
-| CI: `golangci-lint` (task #26) + the Swift build/typecheck in a pipeline | Not started |
+| CI pipeline wiring | **Done** — `.github/workflows/ci.yml` runs on every push/PR: a `go` job (build, vet, `golangci-lint`, unit tests, and the `-tags integration` suite), a `dashboard` job (`npm ci && npm run build`, which typechecks via `tsc -b`), and a `swift` job (macOS runner, `xcodegen generate` + `xcodebuild` for the iOS/tvOS/watchOS schemes with `CODE_SIGNING_ALLOWED=NO` so it doesn't need the project's personal signing identity). `.golangci.yml` migrated to the v2 config format and the repo was brought to a clean `0 issues` baseline (misspellings, a few real slow-loris/file-permission gaps, dead unchecked-error patterns) rather than shipping lint wired to a repo that was never actually run through it |
 | Signed release binaries + reproducible Docker images | Not started |
 | App Store / TestFlight pipeline for the Apple apps | Not started |
 | Runbook + incident/on-call docs; SLOs | Not started |
 
-**Suggested sequencing for a first safe release:** TLS + node-side pointer consumption + input hardening (security floor) → integration tests + observability (trust the numbers) → EC2 seed (task #42) → M7 federation + progressive decentralization (scale past the seed).
+**Suggested sequencing for a first safe release:** auth on read endpoints + third-party security review (security floor) → ledger reconciliation/audit trail (trust the numbers) → EC2 seed (task #42) → M7 federation + progressive decentralization (scale past the seed).
+
+### Remaining work, distilled
+
+Everything tracked as a numbered task, and every concrete gap previously
+listed here (node-side pointer consumption, server-side streaming,
+coordinator→node TLS, secrets hardening, CI wiring), is now done. What's left
+is **three genuinely hard or infra-scoped items**, plus a short tail of
+smaller polish:
+
+| # | Item | Why it's still open |
+|---|------|----------------------|
+| #42 | **Public EC2 seed deploy** | Needs a real cloud decision (provider, domain, TLS cert via ACME, ops ownership) — an infra/ops task, not a code gap |
+| #49 | **Progressive decentralization** | Depends on #42 existing first, plus a "parity" metric that doesn't exist yet |
+| #52 | **Federated ledger authority (M7)** | The hard research problem: no consensus/staking/verifiable-compute design exists yet for *who* is authoritative for credits once more than one coordinator is trusted. This is what actually blocks open, trustless decentralization — everything else in this README is either done or schedulable engineering work |
+
+The remaining smaller polish: **auth on read endpoints** (`/topology`,
+`/nodes`, `/balance` are unauthenticated), a **third-party security review**
+of the crypto/settlement paths, a **ledger reconciliation/audit trail**,
+**coordinator HA** and **ledger beyond SQLite** (both needed only past a
+single-coordinator deployment), and **release engineering** (signed binaries,
+reproducible images, App Store/TestFlight, runbooks). None of these block
+running the mesh today under a trusted operator — they block a *public,
+unattended* release.
 
 ---
 

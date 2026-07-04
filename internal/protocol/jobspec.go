@@ -46,7 +46,7 @@ type JobSpec struct {
 	AllowDecomposition         bool `json:"allow_decomposition,omitempty"`
 	AllowDocumentSplitting     bool `json:"allow_document_splitting,omitempty"`
 	RequireDeterministicOutput bool `json:"require_deterministic_output,omitempty"` // enforces temperature=0; required for parallel checksum verification
-	MaxParallelNodes           int  `json:"max_parallel_nodes,omitempty"`            // ceiling on concurrent node usage; 0 treated as 1
+	MaxParallelNodes           int  `json:"max_parallel_nodes,omitempty"`           // ceiling on concurrent node usage; 0 treated as 1
 }
 
 // Validate rejects specs that violate the dual-lane contract.
