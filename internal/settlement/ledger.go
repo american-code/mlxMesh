@@ -74,10 +74,31 @@ type ledgerDebit struct {
 // before the in-memory slices are updated, so balances and grant history
 // survive a coordinator restart instead of silently resetting to zero.
 type Ledger struct {
-	mu      sync.RWMutex
-	entries []CreditEntry
-	debits  []ledgerDebit
-	db      *sql.DB
+	mu       sync.RWMutex
+	entries  []CreditEntry
+	debits   []ledgerDebit
+	db       *sql.DB
+	onCredit func(CreditEntry) // optional; see SetOnCredit
+}
+
+// SetOnCredit registers a callback fired (outside the ledger's lock) after
+// every successful credit, whether via CreditAccount or
+// ClaimStartupGrantOnce. Used to witness this pod's own credit issuance into
+// a signed, federatable history (internal/federation, task #52/M7) without
+// the settlement package needing to know that federation exists at all.
+func (l *Ledger) SetOnCredit(fn func(CreditEntry)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.onCredit = fn
+}
+
+func (l *Ledger) notifyCredit(entry CreditEntry) {
+	l.mu.RLock()
+	fn := l.onCredit
+	l.mu.RUnlock()
+	if fn != nil {
+		fn(entry)
+	}
 }
 
 func NewLedger() *Ledger { return &Ledger{} }
@@ -174,9 +195,15 @@ func (l *Ledger) loadFromDB() error {
 // When backed by SQLite, the row is committed to disk before this returns —
 // callers can treat a nil error as "durably recorded," not just "in memory."
 func (l *Ledger) CreditAccount(entry CreditEntry) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.creditLocked(entry)
+	err := func() error {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return l.creditLocked(entry)
+	}()
+	if err == nil {
+		l.notifyCredit(entry)
+	}
+	return err
 }
 
 // creditLocked performs the actual write (memory + optional SQLite) and must
@@ -210,17 +237,23 @@ func (l *Ledger) creditLocked(entry CreditEntry) error {
 // acquisition prevents two concurrent claims for the same user from both
 // succeeding (proposal §9.4).
 func (l *Ledger) ClaimStartupGrantOnce(entry CreditEntry) (claimed bool, err error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for _, e := range l.entries {
-		if e.UserID == entry.UserID && e.Origin == CreditOriginStartupGrant {
-			return false, nil
+	claimed, err = func() (bool, error) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		for _, e := range l.entries {
+			if e.UserID == entry.UserID && e.Origin == CreditOriginStartupGrant {
+				return false, nil
+			}
 		}
+		if err := l.creditLocked(entry); err != nil {
+			return false, err
+		}
+		return true, nil
+	}()
+	if claimed {
+		l.notifyCredit(entry)
 	}
-	if err := l.creditLocked(entry); err != nil {
-		return false, err
-	}
-	return true, nil
+	return claimed, err
 }
 
 // GetBalance returns the user's credit split by origin.

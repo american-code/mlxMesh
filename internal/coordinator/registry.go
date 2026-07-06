@@ -278,6 +278,18 @@ func (r *NodeRegistry) HealthDigest(podID, regionHint, coordinatorEndpoint strin
 	liveCount := 0
 	totalTPS := 0.0
 	totalMemGB := 0.0
+	// Real-vs-simulated split (task #49, progressive decentralization): the
+	// README flags "parity" — the network takes over from the EC2 seed once
+	// independently-operated capacity reaches parity with seed-hosted
+	// capacity — as an undefined metric. These sub-totals are the missing
+	// ingredient: every seeded demo node is tagged Simulated (OIM_SIMULATED_NODE),
+	// so real*/total gives an honest, live progress ratio instead of a made-up
+	// number. Deliberately NOT collapsed into one "parity %" here — what
+	// threshold counts as "at parity" is a policy decision for whoever
+	// eventually builds the handoff logic, not something to bake in silently.
+	realCount := 0
+	realTPS := 0.0
+	realMemGB := 0.0
 	for _, e := range r.entries {
 		if !e.isLive() {
 			continue
@@ -286,10 +298,18 @@ func (r *NodeRegistry) HealthDigest(podID, regionHint, coordinatorEndpoint strin
 		for _, m := range e.manifest.Models {
 			modelSet[m.ModelID] = true
 		}
+		nodeTPS := 0.0
 		if e.manifest.MeasuredSignature != nil {
-			totalTPS += e.manifest.MeasuredSignature.TokensPerSecDecode
+			nodeTPS = e.manifest.MeasuredSignature.TokensPerSecDecode
 		}
-		totalMemGB += e.manifest.DeclaredMemoryGB * e.manifest.DeclaredMemoryCapPct
+		nodeMemGB := e.manifest.DeclaredMemoryGB * e.manifest.DeclaredMemoryCapPct
+		totalTPS += nodeTPS
+		totalMemGB += nodeMemGB
+		if !e.manifest.Simulated {
+			realCount++
+			realTPS += nodeTPS
+			realMemGB += nodeMemGB
+		}
 	}
 	models := make([]string, 0, len(modelSet))
 	for m := range modelSet {
@@ -300,14 +320,17 @@ func (r *NodeRegistry) HealthDigest(podID, regionHint, coordinatorEndpoint strin
 		health = min(1.0, totalTPS/float64(liveCount)/100.0)
 	}
 	return protocol.PodHealthDigest{
-		PodID:                podID,
-		RegionHint:           regionHint,
-		CoordinatorEndpoint:  coordinatorEndpoint,
-		ServableModelIDs:     models,
-		AggregateHealthScore: health,
-		NodeCountApprox:      liveCount,
-		TotalMemoryGB:        totalMemGB,
-		AggregateToksPerSec:  totalTPS,
+		PodID:                   podID,
+		RegionHint:              regionHint,
+		CoordinatorEndpoint:     coordinatorEndpoint,
+		ServableModelIDs:        models,
+		AggregateHealthScore:    health,
+		NodeCountApprox:         liveCount,
+		TotalMemoryGB:           totalMemGB,
+		AggregateToksPerSec:     totalTPS,
+		RealNodeCountApprox:     realCount,
+		RealTotalMemoryGB:       realMemGB,
+		RealAggregateToksPerSec: realTPS,
 	}
 }
 

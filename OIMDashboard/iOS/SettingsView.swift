@@ -19,9 +19,9 @@ struct SettingsView: View {
                         .font(.system(.body, design: .monospaced))
                 }
             } header: {
-                Text("Directory URL")
+                Text("Directory URL(s)")
             } footer: {
-                Text("The oim-directory service endpoint. Coordinators and nodes are discovered automatically from here. Use https:// for any endpoint outside your local network — plaintext http is permitted only for LAN/local hosts. For a self-signed dev cert, install its CA on this device first (see scripts/gen-dev-certs.sh).")
+                Text("The oim-directory service endpoint. Coordinators and nodes are discovered automatically from here. Comma-separate multiple endpoints (e.g. \"https://directory.mlxmesh.net,https://directory2.mlxmesh.net\") to keep working if one is unreachable — tried in order, first to answer wins. Use https:// for any endpoint outside your local network — plaintext http is permitted only for LAN/local hosts. For a self-signed dev cert, install its CA on this device first (see scripts/gen-dev-certs.sh).")
             }
 
             Section {

@@ -31,7 +31,16 @@ type storedIdentity struct {
 
 // LoadOrCreate loads the keypair from disk, generating and persisting it on first run.
 func LoadOrCreate() (privateKey, publicKey []byte, err error) {
-	path := identityPath()
+	return LoadOrCreateAt(identityPath())
+}
+
+// LoadOrCreateAt is LoadOrCreate against an explicit path instead of the fixed
+// per-user node identity file. Coordinators use this (a coordinator's identity
+// file is named/located independently of a node's, and a single host can run
+// more than one coordinator — e.g. pod-us and pod-eu — each needing its own
+// keypair) but the load/generate logic is identical, so it's shared rather
+// than duplicated.
+func LoadOrCreateAt(path string) (privateKey, publicKey []byte, err error) {
 	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
 		return generate(path)
 	}

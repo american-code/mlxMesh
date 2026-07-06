@@ -425,14 +425,17 @@ Native clients: iOS · tvOS · watchOS ← M8 / M9  (OIMDashboard/)
 | M4 | **Done** | Centralized global directory with gossip sync and cache fallback |
 | M5 | **Done** | Division-order settlement ledger with SQLite persistence, startup grants with PoW |
 | M6 | **Done** | MoE expert-shard planner with proportional assignment and load imbalance detection |
-| M7 | **Stub** | Federated directory (multi-librarian) — `FederatedResolver`/`DHTResolver` are stubs; see [Path to release](#path-to-release-safe-secure-scalable) |
+| M7 | **Partial** | Federated *directory* (multi-librarian, `FederatedResolver`/`DHTResolver`) is still a stub. Federated ledger *authority* — the harder half of M7 — now has coordinator identity + signed, TOFU-pinned pod registration and cross-pod signed-ledger-event witnessing/audit (`internal/federation`); see [Security model](#security-model--threat-analysis) item 3 for exactly what's closed vs. still open |
 
-**What remains of the original 7-milestone scope:** only **M7** (federated
-directory) — M1–M6 are complete and the core inference/credit/routing loop is
-verified working end-to-end. M7 is also entangled with the hardest open problem,
-federated ledger authority (see [Security model](#security-model--threat-analysis),
-item 3): decentralizing discovery is straightforward, but decentralizing *who is
-authoritative for credits* is the real work.
+**What remains of the original 7-milestone scope:** **M7** (federated
+directory + ledger authority) — M1–M6 are complete and the core
+inference/credit/routing loop is verified working end-to-end. M7 was always
+entangled with the hardest open problem, federated ledger authority (see
+[Security model](#security-model--threat-analysis), item 3): decentralizing
+discovery is straightforward, but decentralizing *who is authoritative for
+credits* is the real work. That work is now partially done (impersonation
+prevention + witnessed audit trail); full open, permissionless federation
+(the directory half) is still a stub.
 
 **Extended scope** (built beyond the original plan — see [Beyond original scope](#beyond-original-scope)):
 
@@ -462,7 +465,7 @@ Concrete things a tester will hit today, so nothing reads as "silently broken":
 
 - **Node Setup cluster topology is web-only and Exo-driven.** The dashboard's per-device diagram (RAM/GPU/temp/power ring) renders from the local agent's `/detect`, which parses Exo's `/state`. It now populates in the docker sim (stub-exo emits a topology; node-us-1 / node-eu-1 are 3-device clusters). Against a **real** Exo cluster it depends on Exo's `/state` field names (`topology.nodes`, `nodeMemory`, `nodeIdentities`, `nodeSystem`) — validate this against your Exo build (e.g. lab-02) since that schema hasn't been confirmed against a live instance. **iOS has no Node Setup** by design — iOS devices can't run Exo, so they contribute as the coordination/security layer, not as compute nodes.
 - **Webhook / async callback** submission is documented as a target but not implemented.
-- **M7 federation + progressive decentralization** are stubs; there is no public seed yet.
+- **M7 federated directory is a stub; progressive decentralization is partially started.** A public seed IS now deployed (task #42) and clients/coordinators can be configured with multiple directory endpoints so no single instance is a hard dependency (task #49) — but there's still only one directory *instance* actually running, "parity" now has a real metric (real vs. simulated capacity, see below) but no defined threshold or automatic handoff logic, and `FederatedResolver`/`DHTResolver` remain stubs. (The ledger-authority half of M7 — coordinator identity, pod pinning, cross-pod signed-event witnessing — is now partially built; see [Security model](#security-model--threat-analysis) item 3.)
 - **MoE expert sharding is a planner, not a live feature.** `internal/coordinator/moe_planner.go` (assign experts to nodes by memory, route tokens to the expert-holding node, detect load imbalance) is implemented and tested (M6) but **not wired into any dispatch path** — no request is MoE-sharded across mesh nodes today. See the note below on why it wouldn't speed up the fast lane anyway. What *is* wired is **query decomposition** (`RouteWithDecomposition`), and only for the **background lane** (it refuses fast-lane jobs).
 
 Everything above is tracked in the release path below.
@@ -542,14 +545,45 @@ decentralized credit network — see the open items below.
 2. ✅ **RESOLVED — Earn/debit asymmetry.** Debit and credit are now derived from the
    same coordinator-observed token count, so a node can never earn more than the
    consumer was charged. *(task #51 — done)*
-3. **Federated ledger authority is unsolved (M7).** Today only the trusted seed
-   coordinator's ledger counts, so a forked *coordinator* mints credits that are
-   worthless to everyone else — the centralized seed is what makes credits safe.
-   The "network takes over at parity" vision has **no consensus, staking, or
-   verifiable-computation mechanism yet**. This is the fundamental unsolved
-   problem of decentralizing the credit system; the standard answers are a
-   trusted-committee ledger, staking + slashing, or verifiable/redundant-quorum
-   computation. None are built. *(task #52)*
+3. 🟡 **PARTIALLY ADDRESSED — Federated ledger authority (M7).** Each pod still
+   runs its own independent ledger (no shared source of truth), but two of the
+   three concrete gaps this used to describe are now closed:
+   - **Coordinator impersonation** — `PodHealthDigest` registration used to be
+     completely unauthenticated, so any coordinator could announce itself under
+     any `pod_id`. Coordinators now have their own Ed25519 identity
+     (`internal/identity.LoadOrCreateAt`, separate from node identity) and sign
+     every digest (`protocol.SignPodHealthDigest`); the directory
+     (`internal/directory.PinStore`) trust-on-first-use pins each `pod_id` to
+     the key that first registered it — persisted across restarts — and
+     rejects a different key later claiming the same `pod_id`. An
+     operator-curated `--authorized-pods` allowlist is available for
+     deployments that want to enumerate federation membership explicitly
+     instead of trusting whoever registers first.
+   - **No way to catch a rogue pod's claims** — every credit a pod issues
+     (grant or earned) is now also appended to a signed, sequenced,
+     per-pod event log (`internal/federation`). Peer pods pull and verify each
+     other's history (`GET /federation/ledger-events`, opt-in via
+     `--federation-key`) and can audit a peer's *live* balance claim against
+     that peer's own signed history (`GET /federation/audit/{user_id}`): a
+     claimed balance that exceeds everything the pod ever signed as credited
+     is provable, not just suspected. Re-signing a previously-witnessed
+     sequence number differently is detected outright
+     (`federation.ErrForkedHistory`). Verified live against the production
+     seed: a 100-credit grant issued on pod-us was witnessed by pod-eu and
+     `GET /federation/audit/{user_id}?peer_endpoint=...` returned
+     `claimed_balance: 100, witnessed_gross_credits: 100, consistent: true`.
+   - **Still open**: this is PKI-based trust among a curated/TOFU-pinned set of
+     pods, not Byzantine-fault-tolerant consensus or staking/slashing — a pod
+     that is itself compromised (or run by a bad actor from day one, before any
+     peer has witnessed it) can still misbehave undetected until a peer
+     actually audits it, and there's no automatic quarantine/eviction of a pod
+     caught misbehaving (an operator has to act on the log line). The project
+     deliberately has no native token (see below), so a staking/slashing
+     design would need to invent a stakeable asset from scratch — out of scope
+     here. Full open, permissionless decentralization (`FederatedResolver`/
+     `DHTResolver`) remains a stub. *(task #52 — narrowed and partially done;
+     see [Progressive decentralization](#path-to-release-safe-secure-scalable)
+     for what still blocks the "network takes over from the seed" vision)*
 4. **DDoS — mostly hardened.** Per-IP rate limiting is now backed by a global
    in-flight **concurrency cap** (503 + Retry-After), an 8 MiB **request-body cap**,
    a `ReadHeaderTimeout` slow-loris guard, and an **SSRF allowlist** on the payload
@@ -619,7 +653,7 @@ Everything above is a working **testbed** — a full multi-region mesh you can r
 |------|-----|--------|
 | **Verified earnings — reconcile earn vs observed tokens** (task #51) | ~~Node self-reports and earns unverified~~ | **Done** — both fast-lane and background-lane earnings are now credited from the coordinator's OWN observed token count; `/job-outcome` is reputation-only and never credits, so a node cannot inflate earnings. Verified end-to-end (integration test) |
 | **Coordination-device credit attribution** | ~~The iOS device ID regenerated on every launch, so it could never be linked to a wallet — participation announced and appeared on the map, but earnings had nowhere to land and stayed at 0 forever~~ | **Done** — the device ID now persists per-install (`DeviceIdentity.swift`); Account has a one-tap "Link this iPad's participation"; the coordinator stamps a server-assigned `region` on announce (a missing field previously threw and crashed the web map's shield panel); the "Pointers" stat now syncs from the coordinator's own served-pointer count instead of sitting dead at 0 |
-| **Federated ledger authority** (task #52) | No consensus/staking/proof so a forked coordinator can't mint once the network federates (M7) | Not started |
+| **Federated ledger authority** (task #52) | No consensus/staking/proof so a forked coordinator can't mint once the network federates (M7) | **Partially done, live in production** — coordinator identity + TOFU-pinned/allowlisted pod registration (`internal/directory.PinStore`) closes impersonation; signed, sequenced cross-pod ledger-event witnessing + a live-balance-vs-signed-history audit endpoint (`internal/federation`, `GET /federation/audit/{user_id}`) closes "no way to catch a rogue pod." Deployed to the live seed (pod-us + pod-eu each with distinct persisted identities, `--federation-key` witnessing enabled) and verified end-to-end: a 100-credit grant issued on pod-us was witnessed by pod-eu and audited (`claimed_balance: 100`, `witnessed_gross_credits: 100`, `consistent: true`). Still no BFT consensus or staking/slashing — see [Security model](#security-model--threat-analysis) item 3 |
 | **Integration tests: coordinator ↔ node ↔ Exo** (task #18) | ~~Cross-process contract uncovered~~ | **Done** — subprocess integration suite (`go test -tags integration ./tests/`) spins up real coordinator+node+stub-exo and asserts the full money path (75/25 split, no double-credit), 402-gating, SSRF rejection, and metrics exposure |
 | **Streaming (`stream: true`)** on `/v1/chat/completions` | Documented but unimplemented; interactive UX depends on it | **Done (fast lane)** — real SSE passthrough end-to-end (Exo → node → coordinator → client), each hop relaying chunks via `http.Flusher` as they arrive rather than buffering. Credit/debit accounting is unchanged — it reads the same observed-token count, now sourced from the trailing SSE usage frame instead of one JSON blob. Background lane intentionally stays buffered/polling (recurring jobs don't need it) |
 | **Structured logging + metrics** (task #20) | ~~No observability~~ | **Done** — `GET /metrics/prometheus` exposes request/dispatch/credit/debit/rejection counters + live gauges (nodes, queue depth, coordination participants); `OIM_LOG_FORMAT=json` emits structured slog with typed money-event fields |
@@ -631,8 +665,8 @@ Everything above is a working **testbed** — a full multi-region mesh you can r
 
 | Item | Why | Status |
 |------|-----|--------|
-| **M7 — federated directory** | Single centralized directory is a SPOF and a scale ceiling; `FederatedResolver`/`DHTResolver` are stubs | Stub |
-| **Progressive decentralization** (task #49) | EC2 seed → network takes over "at parity"; needs the handoff logic + a parity metric | Not started |
+| **M7 — federated directory** | Single centralized directory is a SPOF and a scale ceiling; `FederatedResolver`/`DHTResolver` are stubs | Stub (the ledger-authority half of M7 is now partially done — see the Security row above) |
+| **Progressive decentralization** (task #49) | EC2 seed → network takes over "at parity"; needs the handoff logic + a parity metric | **Partially done, live in production** — coordinators (`--directory`), the web dashboard (`VITE_DIRECTORY_URL`), and the Apple clients now accept a comma-separated list of directory endpoints and fall back through them in order, so no single directory instance is a hard client-side dependency. `PodHealthDigest` now carries `real_node_count_approx`/`real_total_memory_gb`/`real_aggregate_toks_per_sec` alongside the existing totals (`internal/coordinator/registry.go` `HealthDigest`) — a real, live "parity" ratio (real capacity ÷ total capacity) instead of an undefined metric, currently reporting the honest 0% (the live seed's ~58 nodes are all simulated). **Still missing**: an actual second directory *instance* deployed, a defined parity threshold, and the automatic handoff logic itself (today this is observability, not automation) |
 | **Coordinator HA** | One coordinator per region with no failover or shared state | Not started |
 | **Ledger beyond SQLite** | SQLite won't survive multi-coordinator write load; needs Postgres/managed store | Not started |
 
@@ -640,7 +674,7 @@ Everything above is a working **testbed** — a full multi-region mesh you can r
 
 | Item | Status |
 |------|--------|
-| **Public seed deploy** — EC2 coordinator + directory as the bootstrap (task #42) | Not started |
+| **Public seed deploy** — EC2 coordinator + directory as the bootstrap (task #42) | **Done** — live at mlxmesh.net (pod-us + pod-eu + directory), running the M7-signed/pinned build with an Elastic IP |
 | CI pipeline wiring | **Done** — `.github/workflows/ci.yml` runs on every push/PR: a `go` job (build, vet, `golangci-lint`, unit tests, and the `-tags integration` suite), a `dashboard` job (`npm ci && npm run build`, which typechecks via `tsc -b`), and a `swift` job (macOS runner, `xcodegen generate` + `xcodebuild` for the iOS/tvOS/watchOS schemes with `CODE_SIGNING_ALLOWED=NO` so it doesn't need the project's personal signing identity). `.golangci.yml` migrated to the v2 config format and the repo was brought to a clean `0 issues` baseline (misspellings, a few real slow-loris/file-permission gaps, dead unchecked-error patterns) rather than shipping lint wired to a repo that was never actually run through it |
 | Signed release binaries + reproducible Docker images | Not started |
 | App Store / TestFlight pipeline for the Apple apps | Not started |
@@ -653,14 +687,14 @@ Everything above is a working **testbed** — a full multi-region mesh you can r
 Everything tracked as a numbered task, and every concrete gap previously
 listed here (node-side pointer consumption, server-side streaming,
 coordinator→node TLS, secrets hardening, CI wiring), is now done. What's left
-is **three genuinely hard or infra-scoped items**, plus a short tail of
-smaller polish:
+is **two genuinely hard research problems, both partially solved**, plus a
+short tail of smaller polish:
 
 | # | Item | Why it's still open |
 |---|------|----------------------|
-| #42 | **Public EC2 seed deploy** | Needs a real cloud decision (provider, domain, TLS cert via ACME, ops ownership) — an infra/ops task, not a code gap |
-| #49 | **Progressive decentralization** | Depends on #42 existing first, plus a "parity" metric that doesn't exist yet |
-| #52 | **Federated ledger authority (M7)** | The hard research problem: no consensus/staking/verifiable-compute design exists yet for *who* is authoritative for credits once more than one coordinator is trusted. This is what actually blocks open, trustless decentralization — everything else in this README is either done or schedulable engineering work |
+| #42 | **Public EC2 seed deploy** | **Done** — a real EC2 seed (coordinator-us + coordinator-eu + directory) is live at mlxmesh.net with DNS/TLS/nginx |
+| #49 | **Progressive decentralization** | Partially done (multi-endpoint directory fallback across all clients, a real parity metric — see the Scalability table above). What's left needs an actual ops decision (deploy a second directory instance) plus a defined parity threshold and handoff automation — not just more code |
+| #52 | **Federated ledger authority (M7)** | Partially done: coordinator identity, TOFU-pinned/allowlisted pod registration, and cross-pod signed-ledger-event witnessing + audit now exist (`internal/federation`, `internal/directory.PinStore`). What's still open is the genuinely hard research problem — Byzantine-fault-tolerant consensus or staking/slashing so a pod that's compromised (not just impersonating another) can be automatically caught and quarantined, without inventing a stakeable token the project has deliberately avoided. This is what actually blocks fully open, trustless decentralization |
 
 The remaining smaller polish: **auth on read endpoints** (`/topology`,
 `/nodes`, `/balance`, and `/v1/reserve-node` all share the project's

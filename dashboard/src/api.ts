@@ -10,12 +10,27 @@ export interface TestQueryResult {
   latencyMs: number | null
 }
 
-const DIRECTORY = import.meta.env.VITE_DIRECTORY_URL ?? 'http://localhost:9100'
+// VITE_DIRECTORY_URL accepts a comma-separated list so this dashboard isn't
+// hard-dependent on any single directory instance (task #49, progressive
+// decentralization) — mirrors the coordinator's own --directory flag, which
+// accepts the same list-of-endpoints shape and registers with all of them.
+const DIRECTORIES = (import.meta.env.VITE_DIRECTORY_URL ?? 'http://localhost:9100')
+  .split(',')
+  .map((url: string) => url.trim())
+  .filter(Boolean)
 
 export async function fetchTopology(): Promise<TopologyResponse> {
-  const res = await fetch(`${DIRECTORY}/topology`)
-  if (!res.ok) throw new Error(`Directory returned ${res.status}`)
-  return res.json()
+  const errors: string[] = []
+  for (const directory of DIRECTORIES) {
+    try {
+      const res = await fetch(`${directory}/topology`)
+      if (!res.ok) throw new Error(`Directory returned ${res.status}`)
+      return await res.json()
+    } catch (e) {
+      errors.push(`${directory}: ${(e as Error).message}`)
+    }
+  }
+  throw new Error(`All configured directories unreachable — ${errors.join('; ')}`)
 }
 
 export async function fetchNodes(coordinatorURL: string): Promise<NodesResponse> {

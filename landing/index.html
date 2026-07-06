@@ -42,15 +42,132 @@
       <span class="btn btn-disabled" title="Not yet published">GitHub — coming soon</span>
     </div>
     <div class="hero-endpoints">
-      <span><i class="dot dot-live"></i> pod-us seed live</span>
+      <span><i class="dot dot-live"></i> pod-us + pod-eu seed live</span>
       <a href="https://us.mlxmesh.net/health">us.mlxmesh.net</a>
       <span>·</span>
+      <a href="https://eu.mlxmesh.net/health">eu.mlxmesh.net</a>
+      <span>·</span>
       <a href="https://directory.mlxmesh.net/health">directory.mlxmesh.net</a>
+    </div>
+
+    <div class="network-viz">
+      <svg viewBox="0 0 1200 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Animated diagram of mlxMesh's globally-distributed node network">
+        <line class="grid-line" x1="0" y1="95" x2="1200" y2="95" opacity="0.4"></line>
+        <line class="grid-line" x1="0" y1="190" x2="1200" y2="190" opacity="0.5"></line>
+        <line class="grid-line" x1="0" y1="285" x2="1200" y2="285" opacity="0.4"></line>
+
+        <!-- mesh backbone: static links between regional pods -->
+        <path class="route-mesh" d="M150,210 L440,140"></path>
+        <path class="route-mesh" d="M440,140 L760,110"></path>
+        <path class="route-mesh" d="M760,110 L1030,195"></path>
+        <path class="route-mesh" d="M150,210 Q 590,20 1030,195"></path>
+
+        <!-- satellite / leaf nodes -->
+        <g class="node-dot">
+          <circle cx="90" cy="150" r="3"></circle>
+          <circle cx="95" cy="262" r="3"></circle>
+          <circle cx="192" cy="160" r="3"></circle>
+          <circle cx="207" cy="270" r="3"></circle>
+          <circle cx="58" cy="222" r="3"></circle>
+          <circle cx="172" cy="118" r="3"></circle>
+
+          <circle cx="368" cy="88" r="3"></circle>
+          <circle cx="502" cy="94" r="3"></circle>
+          <circle cx="392" cy="202" r="3"></circle>
+          <circle cx="507" cy="188" r="3"></circle>
+          <circle cx="460" cy="58" r="3"></circle>
+          <circle cx="350" cy="176" r="3"></circle>
+
+          <circle cx="690" cy="68" r="3"></circle>
+          <circle cx="832" cy="74" r="3"></circle>
+          <circle cx="700" cy="170" r="3"></circle>
+          <circle cx="826" cy="164" r="3"></circle>
+          <circle cx="760" cy="48" r="3"></circle>
+          <circle cx="696" cy="140" r="3"></circle>
+
+          <circle cx="958" cy="140" r="3"></circle>
+          <circle cx="1092" cy="150" r="3"></circle>
+          <circle cx="974" cy="252" r="3"></circle>
+          <circle cx="1096" cy="240" r="3"></circle>
+          <circle cx="1030" cy="262" r="3"></circle>
+          <circle cx="958" cy="236" r="3"></circle>
+        </g>
+
+        <!-- live traffic: fast lane (interactive) -->
+        <path class="route-fast" d="M440,140 Q 470,115 502,94"></path>
+        <path class="route-fast" d="M760,110 Q 795,90 832,74"></path>
+        <path class="route-fast" d="M150,210 Q 170,185 192,160"></path>
+        <path class="route-fast" d="M1030,195 Q 1060,170 1092,150"></path>
+
+        <!-- live traffic: background lane (batch) -->
+        <path class="route-background" d="M150,210 Q 590,30 1030,195"></path>
+        <path class="route-background" d="M440,140 Q 600,60 760,110"></path>
+
+        <!-- regional hubs -->
+        <g>
+          <circle class="hub-ring" cx="150" cy="210" r="14"></circle>
+          <circle class="hub-dot" cx="150" cy="210" r="5"></circle>
+          <text class="hub-label" x="150" y="238" text-anchor="middle">us-west</text>
+
+          <circle class="hub-ring" cx="440" cy="140" r="14"></circle>
+          <circle class="hub-dot" cx="440" cy="140" r="5"></circle>
+          <text class="hub-label" x="440" y="168" text-anchor="middle">us-east</text>
+
+          <circle class="hub-ring" cx="760" cy="110" r="14"></circle>
+          <circle class="hub-dot" cx="760" cy="110" r="5"></circle>
+          <text class="hub-label" x="760" y="138" text-anchor="middle">eu-west</text>
+
+          <circle class="hub-ring" cx="1030" cy="195" r="14"></circle>
+          <circle class="hub-dot" cx="1030" cy="195" r="5"></circle>
+          <text class="hub-label" x="1030" y="223" text-anchor="middle">eu-central</text>
+        </g>
+      </svg>
+    </div>
+    <div class="viz-legend">
+      <span><i class="swatch" style="background:var(--blue)"></i> fast lane — interactive</span>
+      <span><i class="swatch" style="background:var(--amber)"></i> background lane — batch</span>
+      <span><i class="swatch" style="background:var(--border-strong)"></i> pod-to-pod backbone</span>
+      <span><i class="swatch" style="background:var(--green);border-radius:50%;width:6px;height:6px"></i> contributing node</span>
+    </div>
+
+    <div class="stats-strip" id="stats-strip">
+      <div class="stat-cell">
+        <div class="stat-value is-loading" id="stat-nodes">—</div>
+        <div class="stat-label">Nodes online</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-value is-loading" id="stat-regions">—</div>
+        <div class="stat-label">Regions</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-value is-loading" id="stat-memory">—</div>
+        <div class="stat-label">Committed memory</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-value is-loading" id="stat-tps">—</div>
+        <div class="stat-label">Aggregate tok/s</div>
+      </div>
     </div>
   </section>
 
   <section id="why" class="section">
     <h2>Why this exists</h2>
+
+    <h3>The infrastructure gap</h3>
+    <p class="section-lead">
+      The industry's answer to AI demand is more concentration: hundreds of billions in
+      debt-financed data centers, sized for real-time frontier-model queries — a workload
+      pattern that's a minority of how AI actually gets used in production. Most real usage
+      is background and asynchronous: a cron job reading server metrics, a batch
+      summarization pass, an anomaly check. None of it needs a $44M/MW data center.
+    </p>
+    <p class="section-lead">
+      Meanwhile over 40% of the world's GPU capacity sits idle at any given moment —
+      and millions of Apple Silicon Macs, with genuinely fast unified memory, go unused
+      overnight. mlxMesh exists to connect those two facts.
+    </p>
+
+    <h3>The trust problem</h3>
     <p class="section-lead">
       Tools like <a href="https://github.com/exo-explore/exo">Exo</a> turn one LAN into a
       single inference cluster. Federating clusters across the open internet isn't a bigger
@@ -177,6 +294,43 @@
     </span>
   </div>
 </footer>
+
+<script>
+(function () {
+  var DIRECTORY = 'https://directory.mlxmesh.net';
+  fetch(DIRECTORY + '/topology').then(function (r) {
+    if (!r.ok) throw new Error('bad status');
+    return r.json();
+  }).then(function (data) {
+    var pods = data.pods || [];
+    var nodes = 0, memory = 0, tps = 0;
+    var regions = {};
+    pods.forEach(function (p) {
+      nodes += p.node_count_approx || 0;
+      memory += p.total_memory_gb || 0;
+      tps += p.aggregate_toks_per_sec || 0;
+      if (p.region_hint) regions[p.region_hint] = true;
+    });
+    setStat('stat-nodes', nodes ? String(nodes) + '+' : '—');
+    setStat('stat-regions', Object.keys(regions).length ? String(Object.keys(regions).length) : '—');
+    setStat('stat-memory', memory ? Math.round(memory / 1024 * 10) / 10 + ' TB' : '—');
+    setStat('stat-tps', tps ? String(Math.round(tps)) : '—');
+  }).catch(function () {
+    // Directory unreachable from this client — leave placeholders rather than
+    // show a stale or invented number (the whole page's pitch is "measured,
+    // not declared," so this widget holds itself to the same standard).
+    var strip = document.getElementById('stats-strip');
+    if (strip) strip.style.opacity = '0.5';
+  });
+
+  function setStat(id, text) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text;
+    el.classList.remove('is-loading');
+  }
+})();
+</script>
 
 </body>
 </html>

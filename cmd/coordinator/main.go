@@ -34,6 +34,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -44,8 +45,10 @@ import (
 	"github.com/open-inference-mesh/oim/internal/coordinator"
 	"github.com/open-inference-mesh/oim/internal/directory"
 	"github.com/open-inference-mesh/oim/internal/economics"
+	"github.com/open-inference-mesh/oim/internal/federation"
 	"github.com/open-inference-mesh/oim/internal/httpmw"
 	"github.com/open-inference-mesh/oim/internal/httptls"
+	"github.com/open-inference-mesh/oim/internal/identity"
 	"github.com/open-inference-mesh/oim/internal/metrics"
 	"github.com/open-inference-mesh/oim/internal/protocol"
 	"github.com/open-inference-mesh/oim/internal/settlement"
@@ -194,11 +197,14 @@ func main() {
 }
 
 func rootCmd() *cobra.Command {
-	var listenAddr, podID, regionHint, directoryURL, publicURL, apiKey, dbPath string
+	var listenAddr, podID, regionHint, publicURL, apiKey, dbPath string
+	var directoryURLs []string
 	var maxDispatchAttempts, directoryIntervalSec, grantPoWBits int
 	var rateLimitRPS, rateLimitBurst, grantRateLimitPerHour float64
 	var corsOrigins []string
 	var tlsCert, tlsKey string
+	var identityPath, federationKey, federationDBPath string
+	var federationPollIntervalSec int
 
 	cmd := &cobra.Command{
 		Use:   "oim-coordinator",
@@ -210,9 +216,10 @@ and routes inference jobs to the best available node.
 Nodes register with: oim node start --coordinator http://<this-host>:<port>
 Optionally report aggregate health to a directory with --directory.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiKey, dbPath,
+			return runCoordinator(listenAddr, podID, regionHint, directoryURLs, publicURL, apiKey, dbPath,
 				maxDispatchAttempts, time.Duration(directoryIntervalSec)*time.Second, rateLimitRPS, rateLimitBurst,
-				corsOrigins, grantPoWBits, grantRateLimitPerHour, tlsCert, tlsKey)
+				corsOrigins, grantPoWBits, grantRateLimitPerHour, tlsCert, tlsKey,
+				identityPath, federationKey, federationDBPath, time.Duration(federationPollIntervalSec)*time.Second)
 		},
 	}
 	cmd.Flags().StringVar(&listenAddr, "listen", ":9000", "Address to listen on")
@@ -220,7 +227,7 @@ Optionally report aggregate health to a directory with --directory.`,
 	cmd.Flags().StringVar(&regionHint, "region", "us", "Geographic region hint (us/eu/apac)")
 	cmd.Flags().StringVar(&publicURL, "public-url", "", "Public URL clients use to reach this coordinator (reported to directory)")
 	cmd.Flags().IntVar(&maxDispatchAttempts, "max-attempts", 3, "Max nodes to try per fast-lane dispatch")
-	cmd.Flags().StringVar(&directoryURL, "directory", "", "Directory server URL for pod discovery registration (empty = disabled)")
+	cmd.Flags().StringSliceVar(&directoryURLs, "directory", nil, "Directory server URL(s) for pod discovery registration (repeatable or comma-separated; empty = disabled). Registers with ALL of them and, for reads (peer topology polling), tries each in order until one answers — no single directory instance is a hard dependency once more than one is configured (task #49)")
 	cmd.Flags().IntVar(&directoryIntervalSec, "directory-interval", 60, "Seconds between directory health-digest reports")
 	cmd.Flags().StringVar(&apiKey, "api-key", "", "Bearer token required for write operations (empty = disabled)")
 	cmd.Flags().StringVar(&dbPath, "db-path", "", "SQLite file for the credit ledger and API keys (empty = in-memory only, resets on restart)")
@@ -231,6 +238,10 @@ Optionally report aggregate health to a directory with --directory.`,
 	cmd.Flags().Float64Var(&grantRateLimitPerHour, "grant-rate-limit-per-hour", 6.0, "Startup-grant claims allowed per client IP per hour, independent of the general write-path rate limit (0 disables)")
 	cmd.Flags().StringVar(&tlsCert, "tls-cert", "", "Path to the TLS certificate (PEM). Set with --tls-key to serve HTTPS; unset serves plain HTTP")
 	cmd.Flags().StringVar(&tlsKey, "tls-key", "", "Path to the TLS private key (PEM). Required together with --tls-cert")
+	cmd.Flags().StringVar(&identityPath, "identity-path", "", "Path for this coordinator's own Ed25519 identity (task #52, M7) — signs PodHealthDigest and ledger-event federation data. Empty = ~/.config/oim/coordinator_identity.json. Distinct from any node's identity; two coordinators on one host need different paths")
+	cmd.Flags().StringVar(&federationKey, "federation-key", "", "Bearer credential peer coordinators use to pull this pod's signed ledger-event history (GET /federation/ledger-events, /federation/audit/*) and this pod uses to pull theirs. Empty = federation witnessing disabled (task #52, M7 is opt-in like the other hardening features)")
+	cmd.Flags().StringVar(&federationDBPath, "federation-db-path", "", "SQLite file for this pod's own signed ledger-event history and witnessed peer history (empty = in-memory only, resets on restart). Deliberately a SEPARATE flag from --db-path: coordinators sharing one --db-path/volume for ledger merging must NOT also share a federation store, or their self-event sequence numbers collide")
+	cmd.Flags().IntVar(&federationPollIntervalSec, "federation-poll-interval", 30, "Seconds between polling peer pods (discovered via --directory) for new signed ledger events")
 	return cmd
 }
 
@@ -257,7 +268,7 @@ func (s *settlementRecordStore) store(r map[string]any) {
 	s.records = append(s.records, r)
 }
 
-func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiKey, dbPath string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64, tlsCert, tlsKey string) error {
+func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string, publicURL, apiKey, dbPath string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64, tlsCert, tlsKey, identityPath, federationKey, federationDBPath string, federationPollInterval time.Duration) error {
 	registry := coordinator.NewNodeRegistry()
 	// Structured logging (task #20): OIM_LOG_FORMAT=json emits machine-parseable
 	// JSON logs for aggregation; the default stays human-readable text. Key money
@@ -298,6 +309,66 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 		apiKeys = newAPIKeyStore()
 		log.Printf("[coordinator] --db-path not set: ledger and api keys are in-memory only and will reset on restart")
 	}
+
+	// Coordinator identity + federated ledger witnessing (task #52, M7): a
+	// coordinator's own Ed25519 keypair, distinct from any node's, used to
+	// sign the PodHealthDigest sent to the directory and every credit-issuance
+	// event in this pod's federation history — see internal/federation and
+	// internal/directory's PinStore for what these signatures are checked
+	// against on the receiving end.
+	coordIdentityPath := identityPath
+	if coordIdentityPath == "" {
+		home, _ := os.UserHomeDir()
+		coordIdentityPath = home + "/.config/oim/coordinator_identity.json"
+	}
+	coordPriv, coordPub, err := identity.LoadOrCreateAt(coordIdentityPath)
+	if err != nil {
+		return fmt.Errorf("load coordinator identity: %w", err)
+	}
+	log.Printf("[coordinator] identity public key: %s", hex.EncodeToString(coordPub))
+
+	// federationDBPath is its OWN flag, not derived from --db-path: two
+	// coordinators can (and, on the current EC2 seed, do) share one --db-path
+	// volume/file for ledger merging — deriving the federation path from that
+	// would make them silently share one federation store too, corrupting
+	// each other's signed self-event sequence numbers. Explicit and separate
+	// keeps this safe regardless of how --db-path is deployed.
+	fedStore, err := federation.NewStore(federationDBPath)
+	if err != nil {
+		return fmt.Errorf("open federation store: %w", err)
+	}
+	if federationDBPath == "" {
+		log.Printf("[coordinator] --federation-db-path not set: federation witnessing state is in-memory only and will reset on restart")
+	}
+
+	// Every credit this pod issues (grant or earned) becomes a signed,
+	// sequenced federation event — so a peer pod that witnesses this pod's
+	// history can catch a future balance claim that contradicts it (see
+	// GET /federation/audit/{user_id} below). Runs synchronously on the credit
+	// path but is local disk I/O only (no network), same cost class as the
+	// ledger's own SQLite write it's piggybacking on.
+	ledger.SetOnCredit(func(entry settlement.CreditEntry) {
+		evtType := federation.EventEarnedContrib
+		if entry.Origin == settlement.CreditOriginStartupGrant {
+			evtType = federation.EventStartupGrant
+		}
+		evt := federation.LedgerEvent{
+			PodID:     podID,
+			Sequence:  fedStore.NextSequence(),
+			EventType: evtType,
+			UserID:    entry.UserID,
+			Amount:    entry.Amount,
+			IssuedAt:  entry.GrantedOrEarnedAt.UTC().Format(time.RFC3339Nano),
+		}
+		signed, err := federation.Sign(evt, coordPriv, coordPub)
+		if err != nil {
+			log.Printf("[coordinator] federation: sign event failed (credit still recorded in ledger): %v", err)
+			return
+		}
+		if err := fedStore.AppendSelfEvent(signed); err != nil {
+			log.Printf("[coordinator] federation: append event failed (credit still recorded in ledger): %v", err)
+		}
+	})
 
 	// ctx is canceled on SIGINT/SIGTERM to drain the job queue workers cleanly.
 	// Also deferred here so an early return (e.g. net.Listen failure) can't leak it —
@@ -1271,6 +1342,104 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 		writeJSON(w, http.StatusOK, digest)
 	})
 
+	// GET /federation/identity — this pod's coordinator identity (task #52,
+	// M7). Public and non-sensitive, same sensitivity class as GET /health:
+	// a pod_id and public key don't need protecting, only the ledger-event
+	// history below does.
+	mux.HandleFunc("GET /federation/identity", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, federation.IdentityResponse{
+			PodID:     podID,
+			PublicKey: hex.EncodeToString(coordPub),
+		})
+	})
+
+	// GET /federation/ledger-events?since=N — this pod's own signed
+	// credit-issuance history, for a peer to pull and witness (task #52, M7).
+	// Gated by --federation-key rather than the general admin --api-key: it
+	// exposes every user_id + amount this pod has ever credited, which is a
+	// meaningfully bigger exposure than any single-user balance lookup, and
+	// is meant for pod-operator-to-pod-operator federation, not end users.
+	// GET requests bypass authMiddleware by design (dashboard reads need no
+	// auth) so this checks its own bearer token rather than relying on it.
+	mux.HandleFunc("GET /federation/ledger-events", func(w http.ResponseWriter, r *http.Request) {
+		if !federationAuthorized(r, federationKey) {
+			writeErr(w, http.StatusUnauthorized, "federation-key required")
+			return
+		}
+		since := uint64(0)
+		if s := r.URL.Query().Get("since"); s != "" {
+			parsed, err := strconv.ParseUint(s, 10, 64)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, "invalid since: "+err.Error())
+				return
+			}
+			since = parsed
+		}
+		events := fedStore.SelfEventsSince(since)
+		if events == nil {
+			events = []federation.LedgerEvent{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"pod_id": podID, "events": events})
+	})
+
+	// GET /federation/audit/{user_id}?peer_endpoint=<url> — checks a peer
+	// pod's LIVE, self-reported balance for user_id against that same peer's
+	// own witnessed signed credit history (task #52, M7). A peer can spend
+	// credits down over time (so balance < witnessed gross credits is
+	// normal), but balance can never legitimately EXCEED everything that pod
+	// has ever signed as credited to this user — if it does, the peer is
+	// either minting credits its own signed history doesn't back, or
+	// crediting silently without emitting an event at all. Either way, this
+	// is the concrete "verifiable" check the debt-collector balance sum
+	// (dashboard/src/api.ts fetchBalanceAllPods) can't provide on its own.
+	mux.HandleFunc("GET /federation/audit/{user_id}", func(w http.ResponseWriter, r *http.Request) {
+		if !federationAuthorized(r, federationKey) {
+			writeErr(w, http.StatusUnauthorized, "federation-key required")
+			return
+		}
+		userID := r.PathValue("user_id")
+		peerEndpoint := r.URL.Query().Get("peer_endpoint")
+		if peerEndpoint == "" {
+			writeErr(w, http.StatusBadRequest, "peer_endpoint query param required")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		client := federation.NewClient()
+
+		ident, err := client.FetchIdentity(ctx, peerEndpoint)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, "fetch peer identity: "+err.Error())
+			return
+		}
+		since := fedStore.WitnessedHighWatermark(ident.PodID)
+		events, err := client.FetchEventsSince(ctx, peerEndpoint, federationKey, since)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, "fetch peer events: "+err.Error())
+			return
+		}
+		var rejectedEvents []string
+		for _, evt := range events {
+			if err := fedStore.StoreWitnessedEvent(evt); err != nil {
+				rejectedEvents = append(rejectedEvents, fmt.Sprintf("seq=%d: %v", evt.Sequence, err))
+			}
+		}
+		balance, err := client.FetchBalance(ctx, peerEndpoint, userID)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, "fetch peer balance: "+err.Error())
+			return
+		}
+		witnessed := fedStore.WitnessedGrossCredits(ident.PodID, userID)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"peer_pod_id":              ident.PodID,
+			"user_id":                  userID,
+			"claimed_balance":          balance.Total,
+			"witnessed_gross_credits":  witnessed,
+			"consistent":               balance.Total <= witnessed,
+			"rejected_events_detected": rejectedEvents, // non-empty = signature/fork red flag, independent of the balance check
+		})
+	})
+
 	// GET /metrics/prometheus — Prometheus text exposition of coordinator
 	// counters/gauges (task #20). Separate from the dashboard's JSON /metrics.
 	// Live gauges are refreshed on each scrape from the registries.
@@ -1278,6 +1447,17 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 		mx.SetGauge("oim_nodes_registered", int64(len(registry.Snapshot())))
 		mx.SetGauge("oim_coordination_participants", int64(coordReg.Count()))
 		mx.SetGauge("oim_queue_depth", int64(jobQueue.Depth()))
+		// Real-vs-simulated capacity split (task #49, progressive
+		// decentralization) — the missing "parity" ingredient, exposed here
+		// too so it's scrapeable without polling the directory. Memory/tps
+		// gauges are int64-only, so scaled x1000 for sub-GB/sub-tok precision;
+		// consumers divide back down.
+		digest := registry.HealthDigest(podID, regionHint, publicURL)
+		mx.SetGauge("oim_nodes_real", int64(digest.RealNodeCountApprox))
+		mx.SetGauge("oim_capacity_memory_gb_total_x1000", int64(digest.TotalMemoryGB*1000))
+		mx.SetGauge("oim_capacity_memory_gb_real_x1000", int64(digest.RealTotalMemoryGB*1000))
+		mx.SetGauge("oim_capacity_toks_per_sec_total_x1000", int64(digest.AggregateToksPerSec*1000))
+		mx.SetGauge("oim_capacity_toks_per_sec_real_x1000", int64(digest.RealAggregateToksPerSec*1000))
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		w.Write([]byte(mx.Expose()))
 	})
@@ -1300,6 +1480,9 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 				"GET  /users/{id}/balance",
 				"POST /users/{id}/startup-grant",
 				"POST /settlement/records",
+				"GET  /federation/identity",
+				"GET  /federation/ledger-events  (requires --federation-key)",
+				"GET  /federation/audit/{user_id}?peer_endpoint=  (requires --federation-key)",
 			},
 		})
 	})
@@ -1351,10 +1534,15 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 	done := make(chan struct{})
 
 	// Optional: report aggregate pod health to the directory on a recurring schedule.
-	if directoryURL != "" {
-		resolver := directory.NewCentralizedResolver([]string{directoryURL})
+	// Registering against MULTIPLE directories (task #49, progressive
+	// decentralization) means no single directory instance going down takes
+	// this pod off the map — CentralizedResolver.RegisterPod already pushes
+	// to every configured endpoint and only reports an error if ALL of them
+	// rejected it.
+	if len(directoryURLs) > 0 {
+		resolver := directory.NewCentralizedResolver(directoryURLs)
 		go func() {
-			reportToDirectory(resolver, registry, podID, regionHint, publicURL)
+			reportToDirectory(resolver, registry, podID, regionHint, publicURL, coordPriv, coordPub)
 			ticker := time.NewTicker(directoryInterval)
 			defer ticker.Stop()
 			for {
@@ -1362,11 +1550,22 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 				case <-done:
 					return
 				case <-ticker.C:
-					reportToDirectory(resolver, registry, podID, regionHint, publicURL)
+					reportToDirectory(resolver, registry, podID, regionHint, publicURL, coordPriv, coordPub)
 				}
 			}
 		}()
-		log.Printf("[coordinator] reporting to directory %s every %s", directoryURL, directoryInterval)
+		log.Printf("[coordinator] reporting to directories %v every %s", directoryURLs, directoryInterval)
+	}
+
+	// Optional: witness peer pods' signed credit-issuance history (task #52,
+	// M7). Only runs when both --directory (to discover peers) and
+	// --federation-key (to authenticate the pull) are set — opt-in, like the
+	// rest of the security hardening in this codebase.
+	if len(directoryURLs) > 0 && federationKey != "" {
+		go pollFederationPeers(done, directoryURLs, federationKey, podID, fedStore, federationPollInterval)
+		log.Printf("[coordinator] federation witnessing enabled: polling peers via %v every %s", directoryURLs, federationPollInterval)
+	} else if len(directoryURLs) > 0 {
+		log.Printf("[coordinator] federation witnessing disabled: set --federation-key to enable (task #52, M7)")
 	}
 
 	go func() {
@@ -1393,14 +1592,108 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 	return nil
 }
 
-func reportToDirectory(resolver *directory.CentralizedResolver, registry *coordinator.NodeRegistry, podID, regionHint, publicURL string) {
+// federationAuthorized checks the request's Bearer token against
+// federationKey. GET requests never pass through authMiddleware (it leaves
+// all reads open so the dashboard needs no auth) so federation endpoints that
+// need protecting check this directly rather than relying on that middleware.
+// An empty federationKey always denies — federation witnessing is opt-in
+// (see --federation-key), and these two handlers are only reached with a
+// zero-value key when an operator wired federation up incompletely.
+func federationAuthorized(r *http.Request, federationKey string) bool {
+	if federationKey == "" {
+		return false
+	}
+	auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return auth == federationKey
+}
+
+func reportToDirectory(resolver *directory.CentralizedResolver, registry *coordinator.NodeRegistry, podID, regionHint, publicURL string, coordPriv, coordPub []byte) {
 	digest := registry.HealthDigest(podID, regionHint, publicURL)
+	// Signed with this coordinator's own identity (task #52, M7) so the
+	// directory's PinStore can verify it wasn't forged and bind pod_id to
+	// this specific key — see internal/directory.PinStore.Verify.
+	signed, err := protocol.SignPodHealthDigest(digest, coordPriv, coordPub)
+	if err != nil {
+		log.Printf("[coordinator] sign digest for directory report: %v", err)
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := resolver.RegisterPod(ctx, digest); err != nil {
+	if err := resolver.RegisterPod(ctx, signed); err != nil {
 		log.Printf("[coordinator] directory report: %v", err)
 	} else {
 		log.Printf("[coordinator] reported to directory: pod=%s models=%v", podID, digest.ServableModelIDs)
+	}
+}
+
+// pollFederationPeers periodically discovers peer pods via the directory's
+// topology and pulls each one's new signed ledger events, storing them as
+// witnessed history (task #52, M7). A malformed or impersonating peer logs
+// loudly rather than being silently dropped — this IS the detection
+// mechanism, not just plumbing.
+func pollFederationPeers(done <-chan struct{}, directoryURLs []string, federationKey, selfPodID string, fedStore *federation.Store, interval time.Duration) {
+	client := federation.NewClient()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	poll := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		// Try each configured directory in order — one being down doesn't stop
+		// federation witnessing as long as ANY of them has current topology
+		// (task #49, progressive decentralization: no single directory is a
+		// hard dependency once more than one is configured).
+		var topo struct {
+			Pods []protocol.PodHealthDigest `json:"pods"`
+		}
+		fetched := false
+		for _, dirURL := range directoryURLs {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, dirURL+"/topology", nil)
+			if err != nil {
+				continue
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				log.Printf("[coordinator] federation: fetch topology from %s: %v", dirURL, err)
+				continue
+			}
+			decodeErr := json.NewDecoder(resp.Body).Decode(&topo)
+			resp.Body.Close()
+			if decodeErr != nil {
+				log.Printf("[coordinator] federation: parse topology from %s: %v", dirURL, decodeErr)
+				continue
+			}
+			fetched = true
+			break
+		}
+		if !fetched {
+			log.Printf("[coordinator] federation: all %d configured director(ies) unreachable this cycle", len(directoryURLs))
+			return
+		}
+		for _, pod := range topo.Pods {
+			if pod.PodID == selfPodID || pod.CoordinatorEndpoint == "" {
+				continue
+			}
+			since := fedStore.WitnessedHighWatermark(pod.PodID)
+			events, err := client.FetchEventsSince(ctx, pod.CoordinatorEndpoint, federationKey, since)
+			if err != nil {
+				log.Printf("[coordinator] federation: pull from pod=%s: %v", pod.PodID, err)
+				continue
+			}
+			for _, evt := range events {
+				if err := fedStore.StoreWitnessedEvent(evt); err != nil {
+					log.Printf("[coordinator] federation: REJECTED event from pod=%s seq=%d: %v", evt.PodID, evt.Sequence, err)
+				}
+			}
+		}
+	}
+	poll()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			poll()
+		}
 	}
 }
 

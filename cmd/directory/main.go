@@ -49,6 +49,7 @@ func rootCmd() *cobra.Command {
 	var podTTLSec int
 	var corsOrigins []string
 	var tlsCert, tlsKey string
+	var podPinsPath, authorizedPodsPath string
 
 	cmd := &cobra.Command{
 		Use:   "oim-directory",
@@ -61,7 +62,7 @@ individual node data, job payloads, or settlement data (proposal §7.1).
 Bootstrap-stage HA: run two instances with --peer pointing at each other.
 Each instance forwards received digests to its peer — one-hop only, no loops.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDirectory(listenAddr, peerURL, time.Duration(podTTLSec)*time.Second, corsOrigins, tlsCert, tlsKey)
+			return runDirectory(listenAddr, peerURL, time.Duration(podTTLSec)*time.Second, corsOrigins, tlsCert, tlsKey, podPinsPath, authorizedPodsPath)
 		},
 	}
 	cmd.Flags().StringVar(&listenAddr, "listen", ":9100", "Address to listen on")
@@ -70,20 +71,47 @@ Each instance forwards received digests to its peer — one-hop only, no loops.`
 	cmd.Flags().StringSliceVar(&corsOrigins, "cors-origin", nil, "Allowed browser origin(s) for CORS (repeatable or comma-separated; empty = allow any origin, dev-friendly default)")
 	cmd.Flags().StringVar(&tlsCert, "tls-cert", "", "Path to the TLS certificate (PEM). Set with --tls-key to serve HTTPS; unset serves plain HTTP")
 	cmd.Flags().StringVar(&tlsKey, "tls-key", "", "Path to the TLS private key (PEM). Required together with --tls-cert")
+	cmd.Flags().StringVar(&podPinsPath, "pod-pins-path", "directory_pod_pins.json", "Where to persist trust-on-first-use pod_id->pubkey pins (task #52, M7) so a restart doesn't reset trust and let an impersonator claim an existing pod_id")
+	cmd.Flags().StringVar(&authorizedPodsPath, "authorized-pods", "", "Path to a JSON {pod_id: hex_pubkey} allowlist. When set, ONLY listed pod_ids are accepted (no trust-on-first-use auto-learning) — for deployments that want to enumerate federation membership explicitly")
 	return cmd
 }
 
-func runDirectory(listenAddr, peerURL string, podTTL time.Duration, corsOrigins []string, tlsCert, tlsKey string) error {
+func runDirectory(listenAddr, peerURL string, podTTL time.Duration, corsOrigins []string, tlsCert, tlsKey, podPinsPath, authorizedPodsPath string) error {
 	store := directory.NewPodStore(podTTL)
 	gossip := directory.NewGossip(store, peerURL)
+
+	var pins *directory.PinStore
+	var err error
+	if authorizedPodsPath != "" {
+		pins, err = directory.NewAllowlistPinStore(authorizedPodsPath)
+		if err != nil {
+			return fmt.Errorf("load authorized-pods allowlist: %w", err)
+		}
+		log.Printf("[directory] strict allowlist mode: only pod_ids in %s are accepted", authorizedPodsPath)
+	} else {
+		pins, err = directory.NewPinStore(podPinsPath)
+		if err != nil {
+			return fmt.Errorf("load pod pin store: %w", err)
+		}
+		log.Printf("[directory] trust-on-first-use pod pinning: %s", podPinsPath)
+	}
 
 	mux := http.NewServeMux()
 
 	// POST /pods/register — pod coordinator reports aggregate health.
+	// Verified against pins BEFORE being stored or gossiped (task #52, M7) —
+	// an unsigned digest, or one signed by a key other than the one already
+	// pinned/allowlisted for that pod_id, is rejected outright rather than
+	// silently overwriting the topology entry for an existing pod.
 	mux.HandleFunc("POST /pods/register", func(w http.ResponseWriter, r *http.Request) {
 		var digest protocol.PodHealthDigest
 		if err := json.NewDecoder(r.Body).Decode(&digest); err != nil {
 			writeErr(w, http.StatusBadRequest, "parse digest: "+err.Error())
+			return
+		}
+		if err := pins.Verify(digest); err != nil {
+			log.Printf("[directory] REJECTED registration: %v", err)
+			writeErr(w, http.StatusUnauthorized, err.Error())
 			return
 		}
 		gossip.ReceivePodDigest(digest)
@@ -118,11 +146,19 @@ func runDirectory(listenAddr, peerURL string, podTTL time.Duration, corsOrigins 
 	})
 
 	// POST /gossip/digest — receive a forwarded digest from a peer directory.
-	// Stored directly; NOT re-propagated (prevents loop amplification).
+	// Stored directly; NOT re-propagated (prevents loop amplification). Verified
+	// against the same pin/allowlist store as a direct registration — a peer
+	// directory is a transport, not an authority; it forwarding a digest doesn't
+	// make an unsigned or impersonating one trustworthy.
 	mux.HandleFunc("POST /gossip/digest", func(w http.ResponseWriter, r *http.Request) {
 		var digest protocol.PodHealthDigest
 		if err := json.NewDecoder(r.Body).Decode(&digest); err != nil {
 			writeErr(w, http.StatusBadRequest, "parse digest: "+err.Error())
+			return
+		}
+		if err := pins.Verify(digest); err != nil {
+			log.Printf("[directory] REJECTED gossiped digest: %v", err)
+			writeErr(w, http.StatusUnauthorized, err.Error())
 			return
 		}
 		store.Upsert(digest) // direct store, no further propagation

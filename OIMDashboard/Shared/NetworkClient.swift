@@ -1,7 +1,17 @@
 import Foundation
 
 enum NetworkClient {
+    // Accepts a comma-separated list (e.g. entered once in Settings as
+    // "https://directory.mlxmesh.net,https://directory2.mlxmesh.net") so this
+    // app isn't hard-dependent on any single directory instance (task #49,
+    // progressive decentralization) — mirrors the coordinator's own
+    // --directory flag and the web dashboard's VITE_DIRECTORY_URL, both of
+    // which accept the same list-of-endpoints shape.
     static var directoryURL = "http://192.168.1.135:9100"
+
+    private static var directoryCandidates: [String] {
+        directoryURL.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
 
     static let decoder: JSONDecoder = {
         let d = JSONDecoder()
@@ -10,9 +20,23 @@ enum NetworkClient {
     }()
 
     static func fetchTopology() async throws -> TopologyResponse {
-        let url = URL(string: "\(directoryURL)/topology")!
-        let (data, _) = try await URLSession.shared.data(from: url)
-        return try decoder.decode(TopologyResponse.self, from: data)
+        var lastError: Error = NetworkError.message("no directory configured")
+        for candidate in directoryCandidates {
+            guard let url = URL(string: "\(candidate)/topology") else { continue }
+            do {
+                let (data, _) = try await URLSession.shared.data(from: url)
+                let topology = try decoder.decode(TopologyResponse.self, from: data)
+                // Reachability-substitution below (resolvedCoordinator) needs to know
+                // WHICH host actually answered, not just the configured list — pin the
+                // winner as primary so it's used for the rest of this session, same
+                // self-healing shape as the Go coordinator trying its endpoints in order.
+                directoryURL = candidate
+                return topology
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError
     }
 
     static func fetchNodes(coordinatorURL: String) async throws -> NodesResponse {
