@@ -16,7 +16,6 @@
 package coordinator
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -352,6 +351,16 @@ func dispatchToNodeStreaming(
 		"messages": messages,
 		"stream":   true,
 	}
+	// Encrypted-pointer path (M8): same forwarding as the buffered dispatchToNode
+	// below — a streaming request with a payload pointer (legal since streaming
+	// is gated only on the absence of a reservation, not the absence of a
+	// pointer) must still let the node fetch+decrypt it, or the node silently
+	// runs inference on the empty placeholder messages instead.
+	if job.PayloadRef != "" {
+		payload["oim_payload_hash"] = job.PayloadRef
+		payload["oim_payload_fetch_url"] = job.PayloadFetchURL
+		payload["oim_ephemeral_public_key"] = job.PayloadEphemeralPubKey
+	}
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return false, 0, fmt.Errorf("marshal dispatch payload: %w", err)
@@ -379,34 +388,18 @@ func dispatchToNodeStreaming(
 		return false, 0, fmt.Errorf("node %s returned HTTP %d: %s", nodeEndpoint, resp.StatusCode, body)
 	}
 
-	flusher, ok := clientW.(http.Flusher)
-	if !ok {
-		return false, 0, fmt.Errorf("streaming not supported by response writer")
-	}
 	// oim_served_by_node_id/oim_lane travel as response headers instead of the
 	// buffered path's trailing JSON fields (there's no buffered blob left to
-	// tag) — must be set before the first Write() locks in the header set.
+	// tag) — must be set before sse.Relay's first Write() locks in the header
+	// set. Harmless to set even if clientW turns out not to be an
+	// http.Flusher below — sse.Relay's own check is what actually gates
+	// whether streaming proceeds.
 	clientW.Header().Set("X-OIM-Served-By-Node-Id", nodeID)
 	clientW.Header().Set("X-OIM-Lane", string(job.Lane))
-	clientW.Header().Set("Content-Type", "text/event-stream")
-	clientW.Header().Set("Cache-Control", "no-cache")
-	clientW.Header().Set("Connection", "keep-alive")
-	clientW.Header().Set("X-Accel-Buffering", "no")
+	sse.SetHeaders(clientW)
 
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	for scanner.Scan() {
-		line := scanner.Text()
-		started = true
-		fmt.Fprintf(clientW, "%s\n", line)
-		if strings.TrimSpace(line) == "" {
-			flusher.Flush() // blank line terminates one SSE event
-		}
-		if n := sse.ExtractUsageTokens(line); n > 0 {
-			tokens = n
-		}
-	}
-	if err := scanner.Err(); err != nil {
+	started, tokens, err = sse.Relay(clientW, resp.Body)
+	if err != nil {
 		return started, tokens, fmt.Errorf("read node stream: %w", err)
 	}
 	return started, tokens, nil

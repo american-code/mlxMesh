@@ -47,6 +47,45 @@ enum NetworkClient {
         return comps.string ?? endpoint
     }
 
+    // MARK: - API key (demo credential for "Try the mesh")
+
+    // /v1/chat/completions is the metered, Bearer-gated path — correctly so,
+    // it's the endpoint that actually spends compute. Unlike balance/grant
+    // (always open or PoW-protected for exactly this bootstrap reason), a
+    // caller here needs a real credential. Stored device-locally, same trust
+    // level as the existing oim_user_id (not the iCloud-Keychain-backed
+    // wallet key below, which is a stronger, portable identity).
+    private static let apiKeyDefaultsKey = "oim_api_key"
+
+    static var storedApiKey: String? {
+        get { UserDefaults.standard.string(forKey: apiKeyDefaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: apiKeyDefaultsKey) }
+    }
+
+    static func generateApiKey(coordinatorURL: String, userId: String) async throws -> String {
+        var req = URLRequest(url: URL(string: "\(resolvedCoordinator(coordinatorURL))/users/\(userId)/api-key")!)
+        req.httpMethod = "POST"
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try Self.ensureOK(resp, data)
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        guard let key = obj["api_key"] as? String else {
+            throw NetworkError.message("api-key response missing api_key")
+        }
+        return key
+    }
+
+    // ensureDemoCredentials makes "Try the mesh" work with zero visible setup:
+    // mint (or reuse) this device's API key, then best-effort claim the
+    // startup grant so there's a balance to spend from. Mirrors the web
+    // dashboard's identical bootstrap (see dashboard/src/api.ts ensureDemoCredentials).
+    static func ensureDemoCredentials(coordinatorURL: String, userId: String) async throws -> String {
+        if let existing = storedApiKey { return existing }
+        let key = try await generateApiKey(coordinatorURL: coordinatorURL, userId: userId)
+        storedApiKey = key
+        try? await claimStartupGrant(coordinatorURL: coordinatorURL, userId: userId)
+        return key
+    }
+
     // MARK: - Balance
 
     static func fetchBalance(coordinatorURL: String, userId: String) async throws -> Balance {
@@ -145,16 +184,32 @@ enum NetworkClient {
     // reply plus this-request-measured throughput/latency, exactly like the web
     // dashboard's "Try the mesh" (coordinator tags oim_tokens_per_sec /
     // oim_latency_ms on the response).
-    static func submitTestQuery(coordinatorURL: String, prompt: String, model: String = "llama-3.2-3b") async throws -> TestQueryResult {
+    static func submitTestQuery(coordinatorURL: String, prompt: String, model: String = "llama-3.2-3b", userId: String) async throws -> TestQueryResult {
+        let apiKey = try await ensureDemoCredentials(coordinatorURL: coordinatorURL, userId: userId)
+        do {
+            return try await Self.doSubmitTestQuery(coordinatorURL: coordinatorURL, prompt: prompt, model: model, apiKey: apiKey)
+        } catch NetworkError.message(let msg) where msg.contains("401") || msg.lowercased().contains("unauthorized") {
+            // Stored key is stale (e.g. minted against a coordinator whose
+            // ledger/api-key store has since reset) — mint a fresh one and
+            // retry exactly once rather than leaving the user stuck.
+            storedApiKey = nil
+            let freshKey = try await ensureDemoCredentials(coordinatorURL: coordinatorURL, userId: userId)
+            return try await Self.doSubmitTestQuery(coordinatorURL: coordinatorURL, prompt: prompt, model: model, apiKey: freshKey)
+        }
+    }
+
+    private static func doSubmitTestQuery(coordinatorURL: String, prompt: String, model: String, apiKey: String) async throws -> TestQueryResult {
         var req = URLRequest(url: URL(string: "\(resolvedCoordinator(coordinatorURL))/v1/chat/completions")!)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         req.httpBody = try JSONSerialization.data(withJSONObject: [
             "model": model,
             "messages": [["role": "user", "content": prompt]],
             "max_tokens": 256,
         ])
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try Self.ensureOK(resp, data)  // surfaces insufficient_credits / auth errors instead of silently "(empty response)"
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
         let choices = obj["choices"] as? [[String: Any]]
         let message = choices?.first?["message"] as? [String: Any]

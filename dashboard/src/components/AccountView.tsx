@@ -1,19 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { Balance } from '../types'
-import { fetchBalance, claimStartupGrant, generateApiKey, checkApiKeyExists, revokeApiKey } from '../api'
-
-// ── Persistent anonymous user ID ───────────────────────────────────────────
-
-const USER_ID_KEY = 'oim_user_id'
-
-function getOrCreateUserId(): string {
-  let id = localStorage.getItem(USER_ID_KEY)
-  if (!id) {
-    id = crypto.randomUUID()
-    localStorage.setItem(USER_ID_KEY, id)
-  }
-  return id
-}
+import type { Balance, PodHealthDigest } from '../types'
+import { fetchBalanceAllPods, claimStartupGrant, generateApiKey, checkApiKeyExists, revokeApiKey } from '../api'
+import { getOrCreateUserId } from '../identity'
 
 // ── Gauge SVG ─────────────────────────────────────────────────────────────
 // 260° sweep arc (bottom notch), two-segment: earned (green) then grant (amber)
@@ -94,7 +82,13 @@ function CreditGauge({ earned, grant }: GaugeProps) {
 // ── Account View ───────────────────────────────────────────────────────────
 
 interface Props {
+  // Primary coordinator — used for actions that must target one pod (claiming
+  // the startup grant, managing the API key). Balance display instead queries
+  // every pod in `pods` (see fetchBalanceAllPods) since ledgers aren't
+  // federated yet and the primary pod may not be the one holding this wallet's
+  // credits.
   coordinatorURL: string | null
+  pods: PodHealthDigest[]
 }
 
 // ── API Key panel ─────────────────────────────────────────────────────────────
@@ -287,7 +281,7 @@ const microBtn: React.CSSProperties = {
 
 // ── Account View ───────────────────────────────────────────────────────────────
 
-export function AccountView({ coordinatorURL }: Props) {
+export function AccountView({ coordinatorURL, pods }: Props) {
   const [userId] = useState(getOrCreateUserId)
   const [balance, setBalance] = useState<Balance | null>(null)
   const [loading, setLoading] = useState(false)
@@ -296,17 +290,17 @@ export function AccountView({ coordinatorURL }: Props) {
   const [claimMsg, setClaimMsg] = useState<string | null>(null)
 
   const loadBalance = useCallback(async () => {
-    if (!coordinatorURL) return
+    if (pods.length === 0) return
     setLoading(true)
     setError(null)
     try {
-      setBalance(await fetchBalance(coordinatorURL, userId))
+      setBalance(await fetchBalanceAllPods(pods, userId))
     } catch (e) {
       setError((e as Error).message)
     } finally {
       setLoading(false)
     }
-  }, [coordinatorURL, userId])
+  }, [pods, userId])
 
   useEffect(() => { loadBalance() }, [loadBalance])
 
@@ -408,14 +402,14 @@ export function AccountView({ coordinatorURL }: Props) {
             background: '#f8514918', border: '1px solid #f8514940',
             borderRadius: 6, color: '#f85149', fontSize: 12,
           }}>
-            {error} · {coordinatorURL ? 'Coordinator may not be running' : 'No coordinator connected'}
+            {error} · {pods.length > 0 ? 'One or more coordinators may not be running' : 'No coordinator connected'}
           </div>
         )}
 
         <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
           <button
             onClick={loadBalance}
-            disabled={loading || !coordinatorURL}
+            disabled={loading || pods.length === 0}
             style={btnStyle('#1c2128', '#30363d', loading)}
           >
             {loading ? 'Refreshing…' : '↺ Refresh'}

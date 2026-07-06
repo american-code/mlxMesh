@@ -7,6 +7,13 @@
       "runtimeArgs": ["run", "dev"],
       "cwd": "/Users/melton/open-inference-mesh/dashboard",
       "port": 5173
+    },
+    {
+      "name": "mlxmesh-landing",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8420"],
+      "cwd": "/Users/melton/open-inference-mesh/landing",
+      "port": 8420
     }
   ]
 }

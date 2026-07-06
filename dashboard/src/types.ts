@@ -26,6 +26,10 @@ export interface NodeSnapshot {
   cluster_chip_families?: string[]
   last_seen_at: string
   in_flight_jobs: number
+  // Decorative/seed capacity, not a real operator's hardware — labeled
+  // distinctly wherever nodes are rendered so it's never mistaken for
+  // measured real capacity.
+  simulated?: boolean
 }
 
 export interface PodMetrics {

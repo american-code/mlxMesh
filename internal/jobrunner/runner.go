@@ -5,11 +5,9 @@
 package jobrunner
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/open-inference-mesh/oim/internal/exoadapter"
 	"github.com/open-inference-mesh/oim/internal/governor"
@@ -90,31 +88,9 @@ func (r *Runner) ExecuteFastLaneStreaming(
 	}
 	defer resp.Body.Close()
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		return 0, false, fmt.Errorf("streaming not supported by response writer")
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-
-	tokens := 0
-	started := false
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	for scanner.Scan() {
-		line := scanner.Text()
-		started = true
-		fmt.Fprintf(w, "%s\n", line)
-		if strings.TrimSpace(line) == "" {
-			flusher.Flush() // blank line terminates one SSE event
-		}
-		if n := sse.ExtractUsageTokens(line); n > 0 {
-			tokens = n
-		}
-	}
-	if err := scanner.Err(); err != nil {
+	sse.SetHeaders(w)
+	started, tokens, err := sse.Relay(w, resp.Body)
+	if err != nil {
 		return tokens, started, fmt.Errorf("read exo stream: %w", err)
 	}
 	return tokens, started, nil

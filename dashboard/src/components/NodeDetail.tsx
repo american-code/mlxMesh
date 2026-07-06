@@ -53,13 +53,24 @@ export function NodeDetail({ node, onClose }: Props) {
       </div>
 
       {/* Status badge */}
-      <div style={{
-        display: 'inline-flex', alignItems: 'center', gap: 7,
-        background: `${color}18`, border: `1px solid ${color}44`,
-        borderRadius: 6, padding: '5px 12px', marginBottom: 20,
-      }}>
-        <div style={{ width: 8, height: 8, borderRadius: '50%', background: color }} />
-        <span style={{ color, fontSize: 13, fontWeight: 600 }}>{STATUS_LABELS[status]}</span>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+        <div style={{
+          display: 'inline-flex', alignItems: 'center', gap: 7,
+          background: `${color}18`, border: `1px solid ${color}44`,
+          borderRadius: 6, padding: '5px 12px',
+        }}>
+          <div style={{ width: 8, height: 8, borderRadius: '50%', background: color }} />
+          <span style={{ color, fontSize: 13, fontWeight: 600 }}>{STATUS_LABELS[status]}</span>
+        </div>
+        {node.simulated && (
+          <div style={{
+            display: 'inline-flex', alignItems: 'center',
+            background: 'transparent', border: '1px dashed #7d8590',
+            borderRadius: 6, padding: '5px 12px',
+          }} title="Decorative seed capacity, not a real operator's node">
+            <span style={{ color: '#7d8590', fontSize: 13, fontWeight: 600 }}>DEMO</span>
+          </div>
+        )}
       </div>
 
       {/* Stat grid */}

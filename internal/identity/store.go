@@ -84,16 +84,24 @@ func load(path string) (privateKey, publicKey []byte, err error) {
 
 // LoadOrCreateECDH loads this node's P-256 key-agreement keypair, generating
 // and persisting it — alongside the existing Ed25519 identity, in the same
-// file — on first use. Ensures the identity file exists first (idempotent
-// with LoadOrCreate), so callers may call this independently of load order.
+// file — on first use. Callers may call this independently of load order
+// (LoadOrCreate isn't a prerequisite): a single read is enough on every
+// startup after the first, since the identity file already exists; only the
+// very first-ever startup pays a second read, to let LoadOrCreate generate
+// the Ed25519 identity before this backfills the ECDH key onto it.
 func LoadOrCreateECDH() (*ecdh.PrivateKey, error) {
 	path := identityPath()
-	if _, _, err := LoadOrCreate(); err != nil {
-		return nil, fmt.Errorf("ensure identity: %w", err)
-	}
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read identity: %w", err)
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("read identity: %w", err)
+		}
+		if _, _, err := LoadOrCreate(); err != nil {
+			return nil, fmt.Errorf("ensure identity: %w", err)
+		}
+		if b, err = os.ReadFile(path); err != nil {
+			return nil, fmt.Errorf("read identity: %w", err)
+		}
 	}
 	var stored storedIdentity
 	if err := json.Unmarshal(b, &stored); err != nil {
@@ -119,8 +127,18 @@ func LoadOrCreateECDH() (*ecdh.PrivateKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode identity: %w", err)
 	}
+	// os.WriteFile's mode argument only applies when it CREATES the file; on an
+	// already-existing file (the normal case here — LoadOrCreate() above just
+	// ensured it exists) it truncates content without touching permissions. If
+	// this file ever existed with looser permissions (e.g. restored from a
+	// backup, or manually chmod'd), the private key rewrite here would
+	// silently leave it that way. Chmod explicitly so this rewrite always
+	// tightens to 0600 regardless of the file's prior mode.
 	if err := os.WriteFile(path, nb, 0o600); err != nil {
 		return nil, fmt.Errorf("persist ecdh key: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return nil, fmt.Errorf("tighten identity file permissions: %w", err)
 	}
 	return priv, nil
 }

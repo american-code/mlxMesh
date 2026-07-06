@@ -615,6 +615,17 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 				return
 			}
 			mx.Counter(`oim_jobs_dispatched_total{lane="fast"}`).Inc()
+			// A node that streamed content but sent no (or a malformed) trailing
+			// SSE usage frame leaves tokens==0 — the coordinator-observed-billing
+			// invariant (task #51) then correctly refuses to guess a cost, but
+			// that silently means $0 for the consumer and no pay for the node.
+			// Surfaced here rather than left silent, so a node/backend that
+			// doesn't honor stream_options.include_usage shows up in logs/metrics
+			// instead of quietly giving away free inference.
+			if servedBy != "" && tokens == 0 {
+				mx.Counter(`oim_rejections_total{reason="stream_missing_usage_frame"}`).Inc()
+				log.Printf("[coordinator] streaming job=%s served_by=%s completed with no usage frame — not billed, node not credited", jobID, servedBy)
+			}
 			// Same observed-token credit/debit accounting as the buffered path
 			// below — just sourced from the trailing SSE usage frame instead of
 			// one buffered JSON blob (task #51's coordinator-observed guarantee
@@ -626,7 +637,10 @@ func runCoordinator(listenAddr, podID, regionHint, directoryURL, publicURL, apiK
 					mx.AddCounter("oim_tokens_served_total", int64(tokens))
 				}
 			}
-			if userID != "" {
+			// tokens==0 means no observed usage — never invent a cost for it
+			// (see the missing-usage-frame log above); skip the ledger write
+			// entirely rather than recording a meaningless $0.00 debit.
+			if userID != "" && tokens > 0 {
 				actualCost := economics.ConsumerCost(economics.LaneFast, req.OIMSensitiv, tokens)
 				if !ledger.DebitAccount(userID, actualCost, jobID) {
 					log.Printf("[coordinator] debit race user=%s job=%s cost=%.4f", userID, jobID, actualCost)
@@ -1390,17 +1404,59 @@ func reportToDirectory(resolver *directory.CentralizedResolver, registry *coordi
 	}
 }
 
-// authMiddleware requires a Bearer token for all write operations (POST, DELETE).
-// GET requests and CORS preflight are always open so the dashboard can read without auth.
-// /nodes/stream is also always open since EventSource cannot send Authorization headers.
+// isSelfAuthenticatingWrite reports whether a POST endpoint already verifies
+// its own credential — an Ed25519 signature over a registered node/account
+// key, or a caller-must-be-reachable-before-they-have-any-token bootstrap
+// step (wallet challenge/auth, first api-key mint, startup-grant claim,
+// already PoW/rate-limited) — so gating it behind the coordinator's admin
+// Bearer token would be redundant at best and a hard lockout at worst: no
+// node has any way to send that token, and a brand-new user/wallet can't
+// reach the ONE endpoint that would mint their first credential.
+// /settlement/records is included even though it can't verify a signature at
+// the HTTP layer (the caller hasn't been resolved to a node yet) — an
+// unsigned or forged record is inert (settlement.VerifySettlementRecord runs
+// inside the handler and only credits on success), so gating it here would
+// only block legitimate nodes, not attackers.
+func isSelfAuthenticatingWrite(method, path string) bool {
+	if method != http.MethodPost {
+		return false // DELETE (deregister node, revoke api-key) stays admin-gated
+	}
+	switch {
+	case path == "/nodes/register",
+		path == "/settlement/records",
+		path == "/account/challenge",
+		path == "/account/auth",
+		path == "/coordination/announce",
+		path == "/coordination/withdraw":
+		return true
+	case strings.HasPrefix(path, "/nodes/") &&
+		(strings.HasSuffix(path, "/refresh") ||
+			strings.HasSuffix(path, "/attest-enclave") ||
+			strings.HasSuffix(path, "/benchmark-result") ||
+			strings.HasSuffix(path, "/job-outcome")):
+		return true
+	case strings.HasPrefix(path, "/users/") &&
+		(strings.HasSuffix(path, "/startup-grant") || strings.HasSuffix(path, "/api-key")):
+		return true
+	case strings.HasPrefix(path, "/account/") && strings.HasSuffix(path, "/link-device"):
+		return true
+	}
+	return false
+}
+
+// authMiddleware requires a Bearer token for write operations (POST, DELETE)
+// that don't already authenticate themselves some other way (see
+// isSelfAuthenticatingWrite). GET requests and CORS preflight are always open
+// so the dashboard can read without auth. /nodes/stream is also always open
+// since EventSource cannot send Authorization headers.
 // Two token forms are accepted:
 //   - The static admin key (--api-key flag) — grants full access, no user attribution
 //   - A per-user oim_* key (generated via POST /users/{id}/api-key) — the user ID is
 //     injected as X-OIM-User-ID so the credit gate can debit the right account
 func authMiddleware(adminKey string, keys *apiKeyStore, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Reads and preflight are open
-		if r.Method == http.MethodGet || r.Method == http.MethodOptions {
+		// Reads, preflight, and self-authenticating/bootstrap writes are open
+		if r.Method == http.MethodGet || r.Method == http.MethodOptions || isSelfAuthenticatingWrite(r.Method, r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -6,3 +6,11 @@ vendor/
 .env
 ~/.config/oim/node_identity.json
 certs/
+# Compiled binaries occasionally land at repo root from a bare `go build -o
+# <name> ./cmd/...` run outside bin/ — never intended to be committed.
+/jobgen
+/stub-exo
+/oim
+/oim-coordinator
+/oim-directory
+*.bck.yml

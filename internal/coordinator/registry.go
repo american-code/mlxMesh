@@ -331,6 +331,9 @@ type NodeSnapshot struct {
 	LastSeenAt           string                     `json:"last_seen_at"`
 	InFlightJobs         int                        `json:"in_flight_jobs"` // currently dispatched jobs
 	ECDHPublicKey        string                     `json:"ecdh_public_key,omitempty"`
+	// Simulated is decorative/seed capacity, not a real operator's hardware —
+	// see protocol.CapabilityManifest.Simulated.
+	Simulated bool `json:"simulated,omitempty"`
 }
 
 // Snapshot returns a point-in-time view of all registered nodes (live and recently stale).
@@ -372,6 +375,7 @@ func (r *NodeRegistry) Snapshot() []NodeSnapshot {
 			LastSeenAt:           e.lastSeen.UTC().Format("2006-01-02T15:04:05Z"),
 			InFlightJobs:         int(atomic.LoadInt32(&e.inFlight)),
 			ECDHPublicKey:        e.manifest.ECDHPublicKey,
+			Simulated:            e.manifest.Simulated,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })

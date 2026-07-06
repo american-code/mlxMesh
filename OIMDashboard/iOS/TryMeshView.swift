@@ -96,7 +96,7 @@ struct TryMeshView: View {
         stats = nil
         defer { sending = false }
         do {
-            let result = try await NetworkClient.submitTestQuery(coordinatorURL: url, prompt: trimmed)
+            let result = try await NetworkClient.submitTestQuery(coordinatorURL: url, prompt: trimmed, userId: getOrCreateUserId())
             reply = result.content
             stats = (result.tokensPerSec, result.latencyMs)
         } catch {

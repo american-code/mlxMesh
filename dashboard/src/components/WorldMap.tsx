@@ -174,6 +174,10 @@ export function WorldMap({ nodes, selected, onNodeClick, userLocation, activeRou
             {isSel && (
               <circle r={s + 7} fill="none" stroke={color} strokeOpacity={0.9} strokeWidth={2} />
             )}
+            {/* Dashed ring — decorative/seed capacity, not a real operator's node */}
+            {node.simulated && (
+              <circle r={s + 4} fill="none" stroke="#7d8590" strokeOpacity={0.8} strokeWidth={1} strokeDasharray="2,2" />
+            )}
 
             {isExo ? (
               <>

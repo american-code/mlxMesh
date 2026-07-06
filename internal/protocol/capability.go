@@ -81,6 +81,12 @@ type CapabilityManifest struct {
 	// transit without invalidating the Ed25519 signature over the whole
 	// manifest. Empty means this node serves plain HTTP (unchanged default).
 	TLSCertFingerprint string `json:"tls_cert_fingerprint,omitempty"`
+	// Simulated marks a node seeded via the OIM_SIMULATED_NODE backdoor
+	// (internal/capability.AssembleManifest) rather than a real operator
+	// contributing real hardware. Rides the existing manifest signature so it
+	// can't be stripped in transit — the dashboard and API consumers use this
+	// to label demo capacity distinctly from measured real capacity.
+	Simulated bool `json:"simulated,omitempty"`
 }
 
 // Bytes serializes the manifest to canonical JSON bytes for signing.

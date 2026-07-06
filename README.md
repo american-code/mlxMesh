@@ -555,8 +555,23 @@ decentralized credit network — see the open items below.
    a `ReadHeaderTimeout` slow-loris guard, and an **SSRF allowlist** on the payload
    fetch URL (blocks loopback + link-local/cloud-metadata). Remaining: a distributed
    volumetric flood still needs an **upstream WAF/scrubbing layer** (Cloudflare or
-   equivalent), and read endpoints (`/topology`, `/nodes`, `/balance`) are still
-   unauthenticated. *(task #53 — core done)*
+   equivalent), and read endpoints (`/topology`, `/nodes`, `/balance`) — plus the
+   newer `POST /v1/reserve-node` — share the project's existing "auth is opt-in via
+   `--api-key`, off by default" posture rather than being individually gated. A
+   security review of the reservation endpoint specifically confirmed reservation
+   churn has **no side effect on real dispatch** (it never touches a node's
+   in-flight counter or routing score — verified against the code, not assumed),
+   so spamming it can't starve a node the way a first pass at the review suggested;
+   it inherits the same tracked, not-yet-built read-endpoint-auth gap as everything
+   else here, not a new one.
+5. ✅ **RESOLVED — Streaming billing edge case.** A streaming job whose node
+   response ends with no (or a malformed) trailing SSE usage frame used to silently
+   debit the consumer $0 and credit the node nothing, with no signal that anything
+   was wrong. Now logged (`oim_rejections_total{reason="stream_missing_usage_frame"}`
+   + a coordinator log line) so a backend that doesn't honor
+   `stream_options.include_usage` shows up in monitoring instead of quietly giving
+   away free inference. Billing itself is unchanged (never invents a cost it didn't
+   observe) — this is an observability fix, not a new charge.
 
 ### "How do I stop someone from modifying the code to mint credits?" — direct answer
 
@@ -596,7 +611,7 @@ Everything above is a working **testbed** — a full multi-region mesh you can r
 | **Input hardening / DoS** (task #53) | ~~Only per-IP rate limiting~~ | **Done** — 8 MiB request-body cap, global in-flight concurrency limit (503 + Retry-After), `ReadHeaderTimeout` slow-loris guard, and an SSRF allowlist on the payload fetch URL (blocks loopback + link-local/cloud-metadata). Remaining: upstream WAF/scrubbing for volumetric floods |
 | **Outbound call resilience** (tasks #22, #24) | ~~A dropped connection silently failed a register/refresh; nothing bounded a node's own outbound call rate~~ | **Done** — `internal/httpx`: exponential backoff + jitter retry for transient node→coordinator failures (permanent 4xx fails fast), plus a client-side token-bucket limiter on outbound calls |
 | **CORS granularity** (task #27) | ~~Origin allowlist only supported exact matches~~ | **Done** — `*.domain.tld` wildcard-subdomain matching, case-insensitive, with an explicit apex/lookalike-suffix test matrix |
-| **Third-party security review** of the crypto + settlement paths | Wallet auth, attestation, and ledger debits are trust-critical | Not started |
+| **Third-party security review** of the crypto + settlement paths | Wallet auth, attestation, and ledger debits are trust-critical | Not started — an internal multi-angle review of this session's diff (crypto/TLS trust boundary, secrets/auth, DoS/resource exhaustion) found the AES-GCM/HKDF/ECDH crypto and the TLS-pinning fail-closed logic sound, and fixed one real gap (identity-file permissions not tightened on rewrite — internal/identity/store.go). Several DoS claims from that pass were checked against the actual code and refuted (reservation creation never touches a node's in-flight counter, so it can't starve routing) rather than taken at face value. This is not a substitute for an outside reviewer, just cheaper due diligence before one |
 
 ### 🛡️ Safety & correctness — *blocks trusting the numbers*
 
@@ -609,6 +624,7 @@ Everything above is a working **testbed** — a full multi-region mesh you can r
 | **Streaming (`stream: true`)** on `/v1/chat/completions` | Documented but unimplemented; interactive UX depends on it | **Done (fast lane)** — real SSE passthrough end-to-end (Exo → node → coordinator → client), each hop relaying chunks via `http.Flusher` as they arrive rather than buffering. Credit/debit accounting is unchanged — it reads the same observed-token count, now sourced from the trailing SSE usage frame instead of one JSON blob. Background lane intentionally stays buffered/polling (recurring jobs don't need it) |
 | **Structured logging + metrics** (task #20) | ~~No observability~~ | **Done** — `GET /metrics/prometheus` exposes request/dispatch/credit/debit/rejection counters + live gauges (nodes, queue depth, coordination participants); `OIM_LOG_FORMAT=json` emits structured slog with typed money-event fields |
 | **Maintainability & tooling** (tasks #21, #25, #26, #28) | ~~Large handler functions, magic numbers, no lint config, no perf baseline~~ | **Done** — coordination-reward logic extracted into a unit-testable `creditPointerHost()`; slow-loris timeout named; `.golangci.yml` added; allocation-bound perf regression tests on the metrics/pricing hot paths |
+| **Code review of this session's diff** | An 8-angle review (correctness + reuse/simplification/efficiency/altitude/conventions) against v0.10→v0.11 | **Done** — found and fixed 2 real correctness bugs (streaming dispatch silently dropped the encrypted-pointer fields the buffered path forwards; a stream ending with no usage frame billed $0 with no signal), deduplicated the SSE relay loop shared by the node↔Exo and coordinator↔node hops into `internal/sse.Relay`, and untracked two compiled binaries (~19 MB) that had been accidentally committed at the repo root. One design note (TLS endpoint+fingerprint threaded as two loose strings instead of one struct) logged as a follow-up task, not fixed yet — low urgency, no known bug from it |
 | **Ledger reconciliation & audit trail** | Debits log but there's no periodic balance-integrity check | Not started |
 
 ### 📈 Scalability — *blocks growth past the seed*
@@ -647,13 +663,18 @@ smaller polish:
 | #52 | **Federated ledger authority (M7)** | The hard research problem: no consensus/staking/verifiable-compute design exists yet for *who* is authoritative for credits once more than one coordinator is trusted. This is what actually blocks open, trustless decentralization — everything else in this README is either done or schedulable engineering work |
 
 The remaining smaller polish: **auth on read endpoints** (`/topology`,
-`/nodes`, `/balance` are unauthenticated), a **third-party security review**
-of the crypto/settlement paths, a **ledger reconciliation/audit trail**,
-**coordinator HA** and **ledger beyond SQLite** (both needed only past a
-single-coordinator deployment), and **release engineering** (signed binaries,
-reproducible images, App Store/TestFlight, runbooks). None of these block
-running the mesh today under a trusted operator — they block a *public,
-unattended* release.
+`/nodes`, `/balance`, and `/v1/reserve-node` all share the project's
+opt-in-via-`--api-key` posture rather than individual gating), a
+**third-party security review** of the crypto/settlement paths (an internal
+multi-angle pass already happened — see the security table above — but that's
+not a substitute for an outside reviewer), a **ledger reconciliation/audit
+trail**, **coordinator HA** and **ledger beyond SQLite** (both needed only
+past a single-coordinator deployment), **release engineering** (signed
+binaries, reproducible images, App Store/TestFlight, runbooks), and one
+logged code-quality follow-up (**#59**, threading the node TLS endpoint +
+fingerprint as a struct instead of two loose strings — a swap-risk cleanup,
+not a known live bug). None of these block running the mesh today under a
+trusted operator — they block a *public, unattended* release.
 
 ---
 

@@ -9,7 +9,8 @@ import { NodeDetail } from './components/NodeDetail'
 import { AccountView } from './components/AccountView'
 import { NodeSetupView } from './components/NodeSetupView'
 import { BackpressurePanel } from './components/BackpressurePanel'
-import { submitTestQuery } from './api'
+import { runTestQueryWithAutoAuth } from './api'
+import { getOrCreateUserId } from './identity'
 import type { NodeSnapshot, PodHealthDigest } from './types'
 import {
   computeNodeStatus, STATUS_COLORS, STATUS_LABELS,
@@ -18,6 +19,14 @@ import {
 
 type Tab = 'network' | 'account' | 'node'
 type GraphMode = 'hub' | 'geo'
+
+// Marketing-mode deploys (e.g. the public seed's app.mlxmesh.net) show only the
+// Network view — Account/Node Setup are for operators managing their own
+// contribution, not visitors browsing the network. Off by default so the
+// dashboard ships with full functionality everywhere else (local dev,
+// self-hosted operators).
+const MARKETING_MODE = import.meta.env.VITE_MARKETING_MODE === 'true'
+const VISIBLE_TABS: Tab[] = MARKETING_MODE ? ['network'] : ['network', 'account', 'node']
 
 export default function App() {
   const { data: topology, error: topoError, lastUpdated, refresh } = useTopology()
@@ -56,6 +65,7 @@ export default function App() {
   const offlineCount  = allNodes.filter(n => ['stale', 'unreachable'].includes(computeNodeStatus(n))).length
   const totalTps      = allNodes.reduce((s, n) => s + n.measured_toks_per_sec, 0)
   const totalMem      = allNodes.reduce((s, n) => s + n.committed_memory_gb, 0)
+  const simulatedCount = allNodes.filter(n => n.simulated).length
 
   // Resolve a served node_id + this browser's own location (falling back to the
   // nearest live node as a rough origin when geolocation was denied) into an
@@ -122,24 +132,26 @@ export default function App() {
           <span style={{ fontWeight: 700, fontSize: 15, letterSpacing: '-0.01em' }}>
             mlxMesh
           </span>
-          <div style={{
-            display: 'flex', background: '#1c2128',
-            border: '1px solid #30363d', borderRadius: 7,
-            padding: 2, gap: 2, marginLeft: 8,
-          }}>
-            {(['network', 'account', 'node'] as Tab[]).map(t => (
-              <button key={t} onClick={() => setTab(t)} style={{
-                background: tab === t ? '#2d333b' : 'transparent',
-                border: 'none', borderRadius: 5,
-                color: tab === t ? '#e6edf3' : '#7d8590',
-                padding: '3px 12px', cursor: 'pointer', fontSize: 12,
-                fontWeight: tab === t ? 600 : 400,
-                transition: 'all 0.15s',
-              }}>
-                {t === 'network' ? 'Network' : t === 'account' ? 'Account' : 'Node Setup'}
-              </button>
-            ))}
-          </div>
+          {VISIBLE_TABS.length > 1 && (
+            <div style={{
+              display: 'flex', background: '#1c2128',
+              border: '1px solid #30363d', borderRadius: 7,
+              padding: 2, gap: 2, marginLeft: 8,
+            }}>
+              {VISIBLE_TABS.map(t => (
+                <button key={t} onClick={() => setTab(t)} style={{
+                  background: tab === t ? '#2d333b' : 'transparent',
+                  border: 'none', borderRadius: 5,
+                  color: tab === t ? '#e6edf3' : '#7d8590',
+                  padding: '3px 12px', cursor: 'pointer', fontSize: 12,
+                  fontWeight: tab === t ? 600 : 400,
+                  transition: 'all 0.15s',
+                }}>
+                  {t === 'network' ? 'Network' : t === 'account' ? 'Account' : 'Node Setup'}
+                </button>
+              ))}
+            </div>
+          )}
           {topoError && (
             <span style={{
               color: '#f85149', fontSize: 12,
@@ -189,7 +201,7 @@ export default function App() {
       </header>
 
       {tab === 'account' && (
-        <AccountView coordinatorURL={pods[0]?.coordinator_endpoint ?? null} />
+        <AccountView coordinatorURL={pods[0]?.coordinator_endpoint ?? null} pods={pods} />
       )}
 
       {tab === 'node' && <NodeSetupView />}
@@ -210,6 +222,7 @@ export default function App() {
               {pods.length > 0 && (
                 <span style={{ color: '#7d8590', fontWeight: 400, marginLeft: 8 }}>
                   {pods.length} region{pods.length !== 1 ? 's' : ''} · {allNodes.length} nodes
+                  {simulatedCount > 0 && ` (${simulatedCount} demo)`}
                 </span>
               )}
             </span>
@@ -220,7 +233,7 @@ export default function App() {
           </div>
           {allNodes.length === 0 ? (
             <div style={{ height: 220, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#7d8590', fontSize: 14 }}>
-              Connecting to network…
+              No nodes yet — be the first to contribute
             </div>
           ) : (
             <WorldMap
@@ -378,10 +391,15 @@ function TryTheMesh({
     setReply(null)
     setStats(null)
     try {
+      // The coordinator requires an authenticated caller for /v1/chat/completions
+      // (it's the metered path) — transparently provision this device's demo
+      // wallet (API key + startup grant) so a first-time visitor doesn't have
+      // to visit Account first just to see the mesh respond. Retries once with
+      // a freshly minted key if the stored one turns out to be stale.
       // llama-3.2-3b is the one model every simulated node serves — a reasonable
       // default so "Try the mesh" works without asking the user to pick a model
       // they don't yet know is available.
-      const result = await submitTestQuery(coordinatorURL, prompt.trim(), 'llama-3.2-3b')
+      const result = await runTestQueryWithAutoAuth(coordinatorURL, prompt.trim(), 'llama-3.2-3b', getOrCreateUserId())
       setReply(result.content || '(empty response)')
       setStats({ tokensPerSec: result.tokensPerSec, latencyMs: result.latencyMs })
       onServed(result.servedByNodeId, result.lane)

@@ -104,6 +104,15 @@ enum LocalNetwork {
     }
 }
 
+enum LocalPayloadServerError: Error, LocalizedError {
+    /// The listener never reported .ready or .failed within the timeout — e.g.
+    /// a Simulator networking hiccup that leaves the socket in limbo.
+    case notReady
+    var errorDescription: String? {
+        "the local pointer host never became ready (no port bound within 3s)"
+    }
+}
+
 /// Minimal local HTTP server that serves encrypted payloads to assigned nodes.
 /// Runs only while a job is in-flight. Serves exactly `GET /payload/{hash}`;
 /// every other route is 404. Entries auto-remove after first successful GET or a
@@ -124,17 +133,27 @@ final class LocalPayloadServer {
     /// via a semaphore signaled from the listener's own callback queue — the
     /// previous version busy-waited ON that same serial queue, which starved the
     /// ready callback and left the port stuck at 0.
+    ///
+    /// Throws on a genuine bind failure (e.g. the Simulator's networking stack
+    /// rejecting the listener's socket options) or on timing out with no state
+    /// transition at all — previously both cases fell through silently to
+    /// `return 0`, so Participate looked like it succeeded (no error banner)
+    /// while the pointer host was actually dead.
     func start() throws -> UInt16 {
         if let existing = currentPort(), existing != 0 { return existing }
 
         let l = try NWListener(using: .tcp)
         let ready = DispatchSemaphore(value: 0)
+        var listenerError: NWError?
         l.newConnectionHandler = { [weak self] conn in self?.handle(conn) }
         l.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
                 self?.queue.async { self?.port = l.port?.rawValue ?? 0; ready.signal() }
-            case .failed, .cancelled:
+            case .failed(let error):
+                listenerError = error
+                ready.signal()
+            case .cancelled:
                 ready.signal()
             default:
                 break
@@ -143,7 +162,14 @@ final class LocalPayloadServer {
         queue.async { self.listener = l }
         l.start(queue: queue)
         _ = ready.wait(timeout: .now() + 3) // off the listener's queue — no starvation
-        return currentPort() ?? 0
+        if let listenerError {
+            throw listenerError
+        }
+        let boundPort = currentPort() ?? 0
+        guard boundPort != 0 else {
+            throw LocalPayloadServerError.notReady
+        }
+        return boundPort
     }
 
     private func currentPort() -> UInt16? {

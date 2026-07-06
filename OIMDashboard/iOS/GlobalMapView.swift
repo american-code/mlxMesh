@@ -16,7 +16,7 @@ struct GlobalMapView: View {
             // KNN proximity edges
             ForEach(knnEdges) { edge in
                 MapPolyline(coordinates: [edge.from, edge.to])
-                    .stroke(edge.color.opacity(0.35), lineWidth: 1.2)
+                    .stroke(edge.color.opacity(0.35), lineWidth: 2.9)
             }
 
             // Node markers

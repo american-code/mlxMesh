@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mlxMesh — a routable AI compute fabric</title>
+<meta name="description" content="mlxMesh federates geographically-spread machines into a single, routable AI inference mesh — measured performance accounting, strict privacy tiers, no native token. Open source under AGPL-3.0.">
+<link rel="icon" type="image/png" href="assets/favicon-32.png">
+<link rel="apple-touch-icon" href="assets/favicon-180.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a href="/" class="brand">
+      <img src="assets/favicon-32.png" alt="" width="24" height="24">
+      <span>mlxMesh</span>
+    </a>
+    <nav class="nav-links">
+      <a href="#why">Why</a>
+      <a href="#what-it-is">What it is</a>
+      <a href="#how-it-works">How it works</a>
+      <a href="#license">License</a>
+      <a href="https://app.mlxmesh.net" class="nav-cta">Launch Dashboard →</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <section class="hero">
+    <img src="assets/logo-512.png" alt="mlxMesh" class="hero-logo">
+    <h1>A routable AI compute fabric,<br>not another single-cluster tool.</h1>
+    <p class="hero-sub">
+      mlxMesh federates geographically-spread machines into one distributed inference
+      network — with strict privacy tiers, measured (not declared) performance
+      accounting, and no native token.
+    </p>
+    <div class="hero-actions">
+      <a href="https://app.mlxmesh.net" class="btn btn-primary">Launch Dashboard →</a>
+      <span class="btn btn-disabled" title="Not yet published">GitHub — coming soon</span>
+    </div>
+    <div class="hero-endpoints">
+      <span><i class="dot dot-live"></i> pod-us seed live</span>
+      <a href="https://us.mlxmesh.net/health">us.mlxmesh.net</a>
+      <span>·</span>
+      <a href="https://directory.mlxmesh.net/health">directory.mlxmesh.net</a>
+    </div>
+  </section>
+
+  <section id="why" class="section">
+    <h2>Why this exists</h2>
+    <p class="section-lead">
+      Tools like <a href="https://github.com/exo-explore/exo">Exo</a> turn one LAN into a
+      single inference cluster. Federating clusters across the open internet isn't a bigger
+      version of that problem — it's a trust problem: routing jobs to machines you don't
+      operate, verifying they actually did the work, and paying out fairly, with no shared
+      owner in the middle.
+    </p>
+    <p class="section-lead">
+      The usual answer is a blockchain and a token — let market speculation fund the
+      security budget. That pattern tends to decouple token price from actual network
+      utility, then collapse when sentiment turns. mlxMesh borrows the idea decentralized
+      ledgers got right — verify cryptographically, don't trust an operator's word — without
+      adopting a speculative asset to do it. Credits are internal ledger accounting, settled
+      off-chain, sized to compute actually delivered.
+    </p>
+  </section>
+
+  <section id="what-it-is" class="section">
+    <h2>What it is</h2>
+    <p class="section-lead">
+      Most distributed inference tools (e.g. <a href="https://github.com/exo-explore/exo">Exo</a>)
+      work within a single LAN cluster. mlxMesh adds a coordination layer <em>above</em>
+      that: it federates multiple clusters across the internet into a routable mesh.
+    </p>
+    <div class="grid">
+      <div class="card">
+        <h3>Dual-lane routing</h3>
+        <p>Fast lane for interactive jobs (resolver-routed, low-latency), background
+        lane for recurring/batch jobs (scheduler-routed, sticky-session).</p>
+      </div>
+      <div class="card">
+        <h3>Division-order accounting</h3>
+        <p>Measured resource lines, not declared promises — credits from bootstrap
+        grants decay as earned capacity grows.</p>
+      </div>
+      <div class="card">
+        <h3>Sensitivity tiers</h3>
+        <p>LOW / MODERATE / HIGH_REQUIRES_ATTESTATION, with a Secure Enclave gate
+        on Apple Silicon for the strictest tier.</p>
+      </div>
+      <div class="card">
+        <h3>Ed25519 node identity</h3>
+        <p>Every node's identity is derived from its public key — never
+        operator-chosen, never spoofable.</p>
+      </div>
+      <div class="card">
+        <h3>iOS coordination layer</h3>
+        <p>iPhone/iPad devices classify on-device and host encrypted payload
+        pointers, adding a privacy layer without becoming compute nodes.</p>
+      </div>
+      <div class="card">
+        <h3>Portable wallet identity</h3>
+        <p>An Ed25519 account key, iCloud-Keychain synced and seed-recoverable,
+        that consolidates credits across a user's devices.</p>
+      </div>
+    </div>
+    <p class="section-note">
+      Native SwiftUI clients for iOS/iPadOS, tvOS, and watchOS render live topology
+      and drive contribution/coordination directly from Apple hardware.
+    </p>
+  </section>
+
+  <section id="how-it-works" class="section">
+    <h2>How it works</h2>
+    <p class="section-lead">
+      Under the hood, mlxMesh leans on a handful of ideas borrowed from fields that solved
+      these exact problems long before distributed AI existed.
+    </p>
+    <div class="grid">
+      <div class="card">
+        <h3>Measured, not declared</h3>
+        <p>Oil &amp; gas division orders allocate revenue by measured production at the
+        wellhead, not a well's theoretical output. mlxMesh settles the same way — a node's
+        payout tracks independently verified tokens delivered on a given job, not whatever
+        throughput it claimed at registration.</p>
+      </div>
+      <div class="card">
+        <h3>A cryptographic chain of custody</h3>
+        <p>Every node's identity is its own public key — nothing to spoof, nothing an
+        operator picks. Privacy-sensitive job payloads are sealed end-to-end before they
+        ever reach routing infrastructure, and coordinator-to-node dispatch pins the exact
+        certificate seen at registration — the same trust-on-first-use model SSH uses,
+        since a permissionless network has no shared certificate authority to hand out.</p>
+      </div>
+      <div class="card">
+        <h3>Backpressure, not brute force</h3>
+        <p>Every pod tracks queue depth and in-flight jobs the way message brokers like
+        MQTT signal saturation back through a pipeline — instead of silently dropping jobs
+        or piling up an unbounded queue, the network throttles and reports backpressure so
+        it degrades predictably under load instead of falling over.</p>
+      </div>
+      <div class="card">
+        <h3>Sybil resistance without a paywall</h3>
+        <p>Free bootstrap credits are gated behind a small proof-of-work challenge — the
+        same shape of idea Hashcash and Bitcoin popularized — so minting disposable
+        identities to farm credits costs real computation, not just a button click.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="license" class="section">
+    <h2>Open source, AGPL-3.0</h2>
+    <p class="section-lead">
+      mlxMesh is licensed under the <strong>GNU Affero General Public License v3.0</strong>.
+      Free to use, modify, and distribute under AGPL-3.0 — network users (SaaS) get
+      access to the source, and derivative works stay AGPL-3.0. Commercial use
+      outside those terms (proprietary SaaS, closed-source integration) requires a
+      separate commercial license.
+    </p>
+    <div class="license-row">
+      <span class="badge">AGPL-3.0</span>
+      <span class="badge badge-muted">GitHub repo — coming soon</span>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <span>© 2026 mlxMesh</span>
+    <span class="footer-links">
+      <a href="https://app.mlxmesh.net">Dashboard</a>
+      <span class="footer-disabled">GitHub (coming soon)</span>
+    </span>
+  </div>
+</footer>
+
+</body>
+</html>
