@@ -94,6 +94,30 @@ func TestAuthMiddleware_NodeRegistrationNotLockedOut(t *testing.T) {
 	}
 }
 
+// adminAuthorized gates /admin/reconcile: admin key required, fail closed when
+// none is configured.
+func TestAdminAuthorized(t *testing.T) {
+	req := func(token string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/admin/reconcile", nil)
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		return r
+	}
+	if adminAuthorized(req("secret"), "") {
+		t.Error("no admin key configured must fail closed even with a token present")
+	}
+	if adminAuthorized(req(""), "secret") {
+		t.Error("missing token must be rejected")
+	}
+	if adminAuthorized(req("wrong"), "secret") {
+		t.Error("wrong token must be rejected")
+	}
+	if !adminAuthorized(req("secret"), "secret") {
+		t.Error("matching admin key must be accepted")
+	}
+}
+
 // authorizeUserRead is the gate for per-user reads under --protect-user-reads.
 func TestAuthorizeUserRead(t *testing.T) {
 	keys := newAPIKeyStore()

@@ -37,6 +37,7 @@ import (
 	"github.com/open-inference-mesh/oim/internal/identity"
 	"github.com/open-inference-mesh/oim/internal/nodeconfig"
 	"github.com/open-inference-mesh/oim/internal/protocol"
+	"github.com/open-inference-mesh/oim/internal/version"
 )
 
 func main() {
@@ -59,7 +60,18 @@ Quickstart:
 	}
 	root.AddCommand(nodeCmd())
 	root.AddCommand(benchCmd())
+	root.AddCommand(versionCmd())
 	return root
+}
+
+func versionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print build version, commit, and date",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Println("oim " + version.String())
+		},
+	}
 }
 
 // --- node subcommands ---

@@ -1,0 +1,10 @@
+# Appfile — App Store Connect / Apple Developer identity for fastlane.
+#
+# Values are read from environment variables so no account identifiers are
+# committed. Set these in CI secrets (see .github/workflows/testflight.yml) or a
+# local .env before running `fastlane beta`.
+
+app_identifier(ENV["OIM_APP_IDENTIFIER"] || "com.openinferencemesh.app")
+apple_id(ENV["OIM_APPLE_ID"])            # Apple ID email of the account
+itc_team_id(ENV["OIM_ITC_TEAM_ID"])      # App Store Connect team id
+team_id(ENV["OIM_DEV_TEAM_ID"] || "WXDFFW3882")  # Developer Portal team id

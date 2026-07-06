@@ -1,0 +1,59 @@
+# TestFlight distribution for the mlxMesh Apple apps.
+#
+# Manual-dispatch only (not on every push) — a TestFlight upload is a deliberate
+# release action, and it consumes an App Store Connect build number. This
+# workflow is a SCAFFOLD: it runs `fastlane ios preflight` (build + credential
+# check, no upload) by default, and only runs `beta` (real upload) when the
+# required secrets are present AND the operator opts in via the input.
+#
+# Secrets the operator must add to the repo (Settings → Secrets → Actions)
+# before `beta` can work:
+#   OIM_ASC_KEY_ID        App Store Connect API key id
+#   OIM_ASC_ISSUER_ID     App Store Connect issuer id
+#   OIM_ASC_KEY_CONTENT   base64 of the .p8 API key file
+#   OIM_APPLE_ID          Apple ID email
+#   OIM_ITC_TEAM_ID       App Store Connect team id
+#   MATCH_PASSWORD / signing assets (if using fastlane match)
+
+name: testflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: "fastlane lane to run"
+        type: choice
+        default: preflight
+        options: [preflight, beta]
+
+jobs:
+  testflight:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app || true
+
+      - name: Install tooling
+        run: |
+          brew install xcodegen
+          gem install fastlane --no-document
+
+      - name: Guard — beta requires credentials
+        if: ${{ inputs.lane == 'beta' }}
+        env:
+          OIM_ASC_KEY_ID: ${{ secrets.OIM_ASC_KEY_ID }}
+        run: |
+          if [ -z "$OIM_ASC_KEY_ID" ]; then
+            echo "::error::beta lane requires App Store Connect secrets (OIM_ASC_*). Configure them first; see fastlane/Fastfile." && exit 1
+          fi
+
+      - name: Run fastlane
+        env:
+          OIM_ASC_KEY_ID: ${{ secrets.OIM_ASC_KEY_ID }}
+          OIM_ASC_ISSUER_ID: ${{ secrets.OIM_ASC_ISSUER_ID }}
+          OIM_ASC_KEY_CONTENT: ${{ secrets.OIM_ASC_KEY_CONTENT }}
+          OIM_APPLE_ID: ${{ secrets.OIM_APPLE_ID }}
+          OIM_ITC_TEAM_ID: ${{ secrets.OIM_ITC_TEAM_ID }}
+        run: fastlane ios ${{ inputs.lane }}

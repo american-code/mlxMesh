@@ -36,6 +36,7 @@ import (
 	"github.com/open-inference-mesh/oim/internal/httpmw"
 	"github.com/open-inference-mesh/oim/internal/httptls"
 	"github.com/open-inference-mesh/oim/internal/protocol"
+	"github.com/open-inference-mesh/oim/internal/version"
 )
 
 // directoryMaxConcurrentRequests bounds total in-flight requests across the
@@ -87,6 +88,7 @@ Each instance forwards received digests to its peer — one-hop only, no loops.`
 }
 
 func runDirectory(listenAddr, peerURL string, podTTL time.Duration, corsOrigins []string, tlsCert, tlsKey, podPinsPath, authorizedPodsPath string, rateLimitRPS, rateLimitBurst float64, trustedProxies []string) error {
+	log.Printf("[directory] oim-directory %s", version.String())
 	store := directory.NewPodStore(podTTL)
 	gossip := directory.NewGossip(store, peerURL)
 

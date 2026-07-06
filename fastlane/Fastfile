@@ -1,0 +1,78 @@
+# Fastfile — TestFlight / App Store distribution for the mlxMesh Apple apps.
+#
+# STATUS: scaffold. The build path is proven (CI already compiles all three
+# schemes with xcodegen). What this adds is *distribution*, which cannot run
+# without Apple credentials the operator must provision — see the TODO block and
+# .github/workflows/testflight.yml. Every credential is read from the
+# environment; nothing secret is committed.
+#
+# Prerequisites the operator must supply once:
+#   - Apple Developer Program membership (team WXDFFW3882 or your own).
+#   - An App Store Connect API key (Issuer ID, Key ID, .p8) — set as
+#     OIM_ASC_KEY_ID / OIM_ASC_ISSUER_ID / OIM_ASC_KEY_CONTENT (base64 of the .p8).
+#   - Signing assets: either fastlane `match` (a private certs repo) or manually
+#     managed distribution certificate + provisioning profiles.
+#   - App records created in App Store Connect for each bundle id in project.yml
+#     (com.openinferencemesh.app and its .watchkitapp / .tv variants).
+
+default_platform(:ios)
+
+APP_STORE_CONNECT_API_KEY = lambda do
+  app_store_connect_api_key(
+    key_id: ENV.fetch("OIM_ASC_KEY_ID"),
+    issuer_id: ENV.fetch("OIM_ASC_ISSUER_ID"),
+    key_content: ENV.fetch("OIM_ASC_KEY_CONTENT"), # base64-encoded .p8
+    is_key_content_base64: true,
+    in_house: false,
+  )
+end
+
+platform :ios do
+  desc "Generate the Xcode project from project.yml (source of truth)."
+  lane :gen do
+    sh("command -v xcodegen >/dev/null || brew install xcodegen")
+    Dir.chdir("../OIMDashboard") { sh("xcodegen generate") }
+  end
+
+  desc "Build and upload the iOS app to TestFlight."
+  lane :beta do
+    gen
+    api_key = APP_STORE_CONNECT_API_KEY.call
+
+    # TODO(operator): provision signing before enabling upload. With match:
+    #   match(type: "appstore", api_key: api_key, readonly: is_ci)
+    # or set manual codesigning in the build_app call below.
+
+    build_app(
+      project: "OIMDashboard/OIMDashboard.xcodeproj",
+      scheme: "OIMDashboard",
+      export_method: "app-store",
+      output_directory: "build",
+      # TODO(operator): export_options with your provisioning profile mapping.
+    )
+
+    upload_to_testflight(
+      api_key: api_key,
+      skip_waiting_for_build_processing: true,
+      distribute_external: false, # internal testers first
+    )
+  end
+
+  desc "Preflight: verify credentials + signing are wired WITHOUT uploading."
+  lane :preflight do
+    UI.user_error!("OIM_ASC_KEY_ID not set — see fastlane/Fastfile prerequisites") unless ENV["OIM_ASC_KEY_ID"]
+    gen
+    build_app(
+      project: "OIMDashboard/OIMDashboard.xcodeproj",
+      scheme: "OIMDashboard",
+      skip_archive: true,
+      skip_codesigning: true,
+      destination: "generic/platform=iOS",
+    )
+    UI.success("Preflight OK: project generates and builds. Provision signing + ASC key to enable `beta`.")
+  end
+end
+
+# tvOS and watchOS ship as part of the iOS app’s TestFlight build (the watch app
+# is embedded; tvOS is a separate scheme — add a `platform :tvos` beta lane
+# mirroring the above once the tvOS app record + signing exist).

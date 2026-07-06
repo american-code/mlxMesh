@@ -53,6 +53,7 @@ import (
 	"github.com/open-inference-mesh/oim/internal/metrics"
 	"github.com/open-inference-mesh/oim/internal/protocol"
 	"github.com/open-inference-mesh/oim/internal/settlement"
+	"github.com/open-inference-mesh/oim/internal/version"
 	"github.com/open-inference-mesh/oim/internal/wallet"
 )
 
@@ -275,6 +276,7 @@ func (s *settlementRecordStore) store(r map[string]any) {
 }
 
 func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string, publicURL, apiKey, dbPath string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64, tlsCert, tlsKey, identityPath, federationKey, federationDBPath string, federationPollInterval time.Duration, protectUserReads bool, userQuotaPerHour float64, trustedProxies []string) error {
+	log.Printf("[coordinator] oim-coordinator %s", version.String())
 	proxyNets, err := httpmw.ParseTrustedProxies(trustedProxies)
 	if err != nil {
 		return err
@@ -1476,8 +1478,29 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		mx.SetGauge("oim_capacity_memory_gb_real_x1000", int64(digest.RealTotalMemoryGB*1000))
 		mx.SetGauge("oim_capacity_toks_per_sec_total_x1000", int64(digest.AggregateToksPerSec*1000))
 		mx.SetGauge("oim_capacity_toks_per_sec_real_x1000", int64(digest.RealAggregateToksPerSec*1000))
+		// Ledger integrity (reconciliation): expose the invariant as a gauge so
+		// an overdraft anywhere in the books trips an alert, not just a log line.
+		rec := ledger.Reconcile()
+		mx.SetGauge("oim_ledger_consistent", boolGauge(rec.Consistent))
+		mx.SetGauge("oim_ledger_anomalies", int64(len(rec.Anomalies)))
+		mx.SetGauge("oim_ledger_credits_total_x1000", int64(rec.TotalCredits*1000))
+		mx.SetGauge("oim_ledger_debits_total_x1000", int64(rec.TotalDebits*1000))
+		mx.SetGauge("oim_ledger_outstanding_x1000", int64(rec.TotalOutstanding*1000))
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		w.Write([]byte(mx.Expose()))
+	})
+
+	// GET /admin/reconcile — full ledger audit report (task: ledger
+	// reconciliation & audit trail). Admin-key gated: it exposes network-wide
+	// credit/debit totals and any user whose account violates credits>=debits.
+	// GET bypasses authMiddleware (dashboard reads are open), so this checks the
+	// admin bearer token itself, constant-time.
+	mux.HandleFunc("GET /admin/reconcile", func(w http.ResponseWriter, r *http.Request) {
+		if !adminAuthorized(r, apiKey) {
+			writeErr(w, http.StatusUnauthorized, "admin API key required")
+			return
+		}
+		writeJSON(w, http.StatusOK, ledger.Reconcile())
 	})
 
 	// GET / — index for browsers and health checkers hitting the root.
@@ -1501,6 +1524,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 				"GET  /federation/identity",
 				"GET  /federation/ledger-events  (requires --federation-key)",
 				"GET  /federation/audit/{user_id}?peer_endpoint=  (requires --federation-key)",
+				"GET  /admin/reconcile  (requires --api-key)",
 			},
 		})
 	})
@@ -1607,6 +1631,10 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		log.Printf("[coordinator] federation witnessing disabled: set --federation-key to enable (task #52, M7)")
 	}
 
+	// Ledger integrity audit (task: ledger reconciliation & audit trail) — always
+	// on; cheap and unconditional so the books are provably consistent at all times.
+	go runLedgerReconciliation(done, ledger, mx, reconcileInterval)
+
 	go func() {
 		<-quit
 		cancelCtx() // stop job queue workers
@@ -1661,6 +1689,61 @@ func authorizeUserRead(r *http.Request, id string, protect bool, adminKey string
 		}
 	}
 	return false
+}
+
+// adminAuthorized gates admin-only read endpoints (e.g. GET /admin/reconcile,
+// which exposes network-wide credit/debit totals and names accounts). Requires
+// the static admin --api-key; fails closed when no admin key is configured, so
+// financial detail is never served unauthenticated. Constant-time compare.
+func adminAuthorized(r *http.Request, adminKey string) bool {
+	if adminKey == "" {
+		return false
+	}
+	auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return subtle.ConstantTimeCompare([]byte(auth), []byte(adminKey)) == 1
+}
+
+// boolGauge maps a bool to the 1/0 convention Prometheus gauges use.
+func boolGauge(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// runLedgerReconciliation periodically audits the ledger for the credits>=debits
+// invariant (task: ledger reconciliation & audit trail). It never mutates the
+// ledger — it reads a consistent snapshot, updates the integrity gauges, and
+// logs loudly on any anomaly so a corruption/bug surfaces immediately instead
+// of being discovered when a balance is questioned later.
+func runLedgerReconciliation(done <-chan struct{}, ledger *settlement.Ledger, mx *metrics.Registry, interval time.Duration) {
+	check := func() {
+		rec := ledger.Reconcile()
+		mx.SetGauge("oim_ledger_consistent", boolGauge(rec.Consistent))
+		mx.SetGauge("oim_ledger_anomalies", int64(len(rec.Anomalies)))
+		if rec.Consistent {
+			slog.Info("ledger reconciled", "users", rec.UserCount, "credits", rec.TotalCredits,
+				"debits", rec.TotalDebits, "outstanding", rec.TotalOutstanding)
+			return
+		}
+		for _, a := range rec.Anomalies {
+			log.Printf("[coordinator] LEDGER ANOMALY user=%s kind=%s credits=%.4f debits=%.4f: %s",
+				a.UserID, a.Kind, a.CreditTotal, a.DebitTotal, a.Detail)
+		}
+		slog.Error("ledger reconciliation FAILED — credits<debits somewhere in the books",
+			"anomalies", len(rec.Anomalies), "total_credits", rec.TotalCredits, "total_debits", rec.TotalDebits)
+	}
+	check() // audit once at startup so a corrupt DB is caught on boot, not 5 min later
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			check()
+		}
+	}
 }
 
 func federationAuthorized(r *http.Request, federationKey string) bool {
@@ -1947,6 +2030,12 @@ func originAllowed(origin string, allowlist []string) bool {
 	}
 	return false
 }
+
+// reconcileInterval is how often the coordinator audits its own ledger for the
+// credits>=debits invariant in the background. Cheap (an in-memory single pass)
+// so a tight-ish cadence is fine; the point is to surface a corruption/bug fast
+// via logs + the oim_ledger_consistent gauge rather than discover it later.
+const reconcileInterval = 5 * time.Minute
 
 // maxConcurrentRequests bounds total in-flight requests across the whole server
 // (task #53). A distributed flood defeats per-IP limiting, so this caps aggregate
