@@ -18,10 +18,14 @@ const ReservationTTL = 30 * time.Second
 // Node-side pointer consumption (M8) needs this: a client must know the
 // recipient's ECDH public key BEFORE it can encrypt a payload, but normal
 // dispatch only picks a node once the (already-encrypted) request arrives.
+//
+// The full NodeTarget (endpoint + TLS fingerprint) is captured at reservation
+// time from the same manifest that supplied the ECDH key the client encrypts
+// to — so the pin dispatched against is always the one paired with that
+// endpoint, even if the node re-registers within the TTL.
 type Reservation struct {
-	NodeID       string
-	NodeEndpoint string
-	ExpiresAt    time.Time
+	Target    NodeTarget
+	ExpiresAt time.Time
 }
 
 // ReservationStore is a short-lived, in-memory TTL store — same lifecycle
@@ -36,9 +40,9 @@ func NewReservationStore() *ReservationStore {
 	return &ReservationStore{items: make(map[string]Reservation)}
 }
 
-// Create reserves nodeID/nodeEndpoint under a fresh random ID, valid for
-// ReservationTTL from now. Opportunistically evicts expired entries.
-func (s *ReservationStore) Create(nodeID, nodeEndpoint string, now time.Time) (string, error) {
+// Create reserves target under a fresh random ID, valid for ReservationTTL
+// from now. Opportunistically evicts expired entries.
+func (s *ReservationStore) Create(target NodeTarget, now time.Time) (string, error) {
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
 		return "", fmt.Errorf("generate reservation id: %w", err)
@@ -52,7 +56,7 @@ func (s *ReservationStore) Create(nodeID, nodeEndpoint string, now time.Time) (s
 			delete(s.items, k)
 		}
 	}
-	s.items[id] = Reservation{NodeID: nodeID, NodeEndpoint: nodeEndpoint, ExpiresAt: now.Add(ReservationTTL)}
+	s.items[id] = Reservation{Target: target, ExpiresAt: now.Add(ReservationTTL)}
 	return id, nil
 }
 

@@ -479,7 +479,7 @@ func TestDispatchToResolvedNodeHitsCorrectEndpoint(t *testing.T) {
 	nodeID := reg.Manifest.NodeID
 
 	job := protocol.JobSpec{JobID: "resolved-dispatch-job", ModelID: "llama-3.2-3b", Lane: protocol.JobLaneBackground}
-	result, err := coordinator.DispatchToResolvedNode(context.Background(), job, []map[string]any{{"role": "user", "content": "hi"}}, r, nodeID, srv.URL)
+	result, err := coordinator.DispatchToResolvedNode(context.Background(), job, []map[string]any{{"role": "user", "content": "hi"}}, r, coordinator.NodeTarget{NodeID: nodeID, Endpoint: srv.URL})
 	if err != nil {
 		t.Fatalf("DispatchToResolvedNode: %v", err)
 	}
@@ -508,7 +508,7 @@ func TestDispatchToResolvedNodeMarksUnreachableOnFailure(t *testing.T) {
 	job := protocol.JobSpec{JobID: "unreachable-dispatch-job", ModelID: "llama-3.2-3b", Lane: protocol.JobLaneBackground}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, err := coordinator.DispatchToResolvedNode(ctx, job, []map[string]any{{"role": "user", "content": "hi"}}, r, nodeID, badEndpoint)
+	_, err := coordinator.DispatchToResolvedNode(ctx, job, []map[string]any{{"role": "user", "content": "hi"}}, r, coordinator.NodeTarget{NodeID: nodeID, Endpoint: badEndpoint})
 	if err == nil {
 		t.Fatal("expected an error dispatching to an unreachable endpoint")
 	}

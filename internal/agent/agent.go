@@ -631,7 +631,10 @@ func fetchAndDecryptPayload(ctx context.Context, fetchURL, ephemeralPubKeyB64 st
 	if err != nil {
 		return nil, fmt.Errorf("build fetch request: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(httpReq)
+	// SafeFetchClient re-validates every redirect hop — the initial
+	// ValidateFetchURL above only covers the first URL, and the default client
+	// would otherwise follow a 302 to a loopback/metadata target unchecked.
+	resp, err := httpmw.SafeFetchClient(30 * time.Second).Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("fetch payload: %w", err)
 	}

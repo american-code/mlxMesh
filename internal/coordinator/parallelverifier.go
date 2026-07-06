@@ -105,7 +105,7 @@ func VerifySplitPair(left, right SplitVerificationResult, tolerance float64) boo
 	return left.OutputChecksum == right.OutputChecksum
 }
 
-// TriggerFullRerunIfDiverged runs the original unsplit job on fallbackNodeEndpoint
+// TriggerFullRerunIfDiverged runs the original unsplit job on fallbackTarget
 // when left and right split checksums do not match. Returns the fallback result
 // when a rerun is triggered, or (nil, nil) when checksums matched.
 //
@@ -119,7 +119,7 @@ func TriggerFullRerunIfDiverged(
 	ctx context.Context,
 	jobID string,
 	splitResults []SplitVerificationResult,
-	fallbackNodeEndpoint, fallbackTLSFingerprint string,
+	fallbackTarget NodeTarget,
 	job protocol.JobSpec,
 	messages []map[string]any,
 ) (map[string]any, error) {
@@ -135,13 +135,13 @@ func TriggerFullRerunIfDiverged(
 		return nil, nil // no divergence; no rerun needed
 	}
 
-	if fallbackNodeEndpoint == "" {
+	if fallbackTarget.Endpoint == "" {
 		return nil, fmt.Errorf("trigger full rerun job %s: no fallback node endpoint provided", jobID)
 	}
 
 	// Full re-run of the original unsplit job on the fallback node.
 	// dispatchToNode is defined in router.go (same package).
-	result, err := dispatchToNode(ctx, job, messages, fallbackNodeEndpoint, fallbackTLSFingerprint)
+	result, err := dispatchToNode(ctx, job, messages, fallbackTarget)
 	if err != nil {
 		return nil, fmt.Errorf("trigger full rerun job %s: fallback dispatch: %w", jobID, err)
 	}

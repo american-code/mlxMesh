@@ -165,7 +165,7 @@ func TestSpotCheckSkipsAtRateZero(t *testing.T) {
 	// sampleRate=0 always skips — returns true regardless of verifier.
 	ctx := context.Background()
 	ok, err := coordinator.SpotCheckFastLane(ctx, "job-skip", nil, "llama-3.2-3b",
-		map[string]any{}, "http://localhost:19999", 0.0)
+		map[string]any{}, coordinator.NodeTarget{NodeID: "verifier-1", Endpoint: "http://localhost:19999"}, 0.0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestSpotCheckConsistentOutputs(t *testing.T) {
 	ctx := context.Background()
 	ok, err := coordinator.SpotCheckFastLane(ctx, "job-check", []map[string]any{
 		{"role": "user", "content": "what is the answer?"},
-	}, "llama-3.2-3b", primaryResult, srv.URL, 1.0)
+	}, "llama-3.2-3b", primaryResult, coordinator.NodeTarget{NodeID: "verifier-1", Endpoint: srv.URL}, 1.0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestSpotCheckInconsistentOutputs(t *testing.T) {
 	ctx := context.Background()
 	ok, err := coordinator.SpotCheckFastLane(ctx, "job-diverge", []map[string]any{
 		{"role": "user", "content": "what is the answer?"},
-	}, "llama-3.2-3b", primaryResult, srv.URL, 1.0)
+	}, "llama-3.2-3b", primaryResult, coordinator.NodeTarget{NodeID: "verifier-1", Endpoint: srv.URL}, 1.0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

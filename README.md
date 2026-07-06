@@ -191,7 +191,7 @@ curl https://<coordinator>/users/<user_id>/balance
 # { "grant_balance": 100.00, "earned_balance": 0.00, "total": 100.00 }
 ```
 
-To claim the one-time startup grant (100 credits — enough for ~50,000 tokens at the default rate):
+To claim the one-time startup grant (100 credits — enough for ~100,000 output tokens at the default fast/moderate rate of 1 credit per 1k tokens):
 
 ```bash
 curl -X POST https://<coordinator>/users/<user_id>/startup-grant
@@ -225,7 +225,7 @@ def run_mesh_job(prompt: str, user_id: str) -> str:
 ```
 
 **Streaming pattern** — useful for long-running summarization where you want partial results.
-> **Status:** server-side token streaming (`stream: true`) is **not yet implemented** on `/v1/chat/completions` — the coordinator currently buffers and returns the full completion. The example below is the target API shape; see [Path to release](#path-to-release-safe-secure-scalable). (The `/nodes/stream` SSE endpoint that powers the live dashboards *is* implemented.)
+> **Status:** server-side token streaming (`stream: true`) **is implemented on the fast lane** — real SSE passthrough at every hop (Exo → node → coordinator → client), with billing read from the trailing usage frame. The background lane intentionally stays buffered/polling (recurring jobs don't need token-by-token delivery). Streaming is not available for jobs submitted with a `reservation_id` (encrypted-pointer reservations return buffered responses).
 
 ```python
 with httpx.stream("POST", f"{coordinator}/v1/chat/completions",
@@ -246,7 +246,7 @@ with httpx.stream("POST", f"{coordinator}/v1/chat/completions",
 
 | Requirement | Version |
 |-------------|---------|
-| Go | 1.22+ |
+| Go | 1.25+ (per `go.mod`) |
 | [Exo](https://github.com/exo-explore/exo) | running locally at `http://localhost:52415` |
 
 `oim` wraps Exo as a black-box HTTP API for Milestone 1. Apple Silicon (M-series) with unified memory is the reference platform.
@@ -370,8 +370,9 @@ oim bench run       Benchmark a model and save MeasuredSignature
 oim bench compare   Compare claimed vs measured performance
 ```
 
-To run the full local simulation mesh (2 regions, ~60 containers, live traffic + a
-coordination participant) instead of a single node:
+To run the full local simulation mesh (2 regions, ~110 containers — every
+simulated node is an agent + stub-exo pair — plus live traffic and coordination
+participants) instead of a single node:
 
 ```bash
 go run ./tools/gen-compose > docker-compose.yml   # regenerate if needed
@@ -400,7 +401,7 @@ your agent listens:
 ## Architecture overview
 
 ```
-Global Directory (librarian)         ← M4 (centralized) → M7 (federated, stubbed)
+Global Directory (librarian)         ← M4 (centralized) → M7 (ledger authority partial; directory federation stubbed)
         │
         ▼
 Pod Coordinators (1 per region)      ← M2
@@ -454,7 +455,7 @@ The original ARCHITECTURE spec defined a headless Go protocol (M1–M7). The fol
 - **Encrypted-pointer privacy path.** Client-side P256 ECDH + HKDF-SHA256 + AES-256-GCM; the coordinator sees only a metadata pointer (hash + fetch URL + ephemeral pubkey), never plaintext. Served-pointer counts are attributed per device.
 - **Portable wallet (M9).** Credit consolidation + recovery across devices without a blockchain.
 - **Native Apple apps** (`OIMDashboard/`) — live topology, "Try the mesh," network-load/backpressure, coordination layer, wallet, and a tvOS global-map view.
-- **Simulation harness** — `tools/jobgen` (incl. `--pointer-host` mode) + `tools/gen-compose` produce a 60+ container multi-region mesh with continuous traffic and a live coordination participant, for device-free testing.
+- **Simulation harness** — `tools/jobgen` (incl. `--pointer-host` mode) + `tools/gen-compose` produce a 100+ container multi-region mesh with continuous traffic and live coordination participants, for device-free testing.
 - **Operational hardening already landed** — SQLite persistence, write-path signing, rate limiting, configurable CORS, security headers, config validation, dynamic queue capacity.
 
 ---
@@ -587,7 +588,13 @@ decentralized credit network — see the open items below.
 4. **DDoS — mostly hardened.** Per-IP rate limiting is now backed by a global
    in-flight **concurrency cap** (503 + Retry-After), an 8 MiB **request-body cap**,
    a `ReadHeaderTimeout` slow-loris guard, and an **SSRF allowlist** on the payload
-   fetch URL (blocks loopback + link-local/cloud-metadata). Remaining: a distributed
+   fetch URL (blocks loopback + link-local/cloud-metadata). The guard now stays
+   attached past the front door via `httpmw.SafeFetchClient`: it **re-validates every
+   redirect hop** (so a host can't pass with a public IP then 302 the fetching node
+   to `169.254.169.254` or an internal port) **and validates the actual IP at
+   connect time** through the dialer's `Control` hook (closing the DNS-rebinding gap
+   where a host resolves to a good IP at check time and a blocked one at dial time).
+   Remaining: a distributed
    volumetric flood still needs an **upstream WAF/scrubbing layer** (Cloudflare or
    equivalent), and read endpoints (`/topology`, `/nodes`, `/balance`) — plus the
    newer `POST /v1/reserve-node` — share the project's existing "auth is opt-in via
@@ -645,7 +652,7 @@ Everything above is a working **testbed** — a full multi-region mesh you can r
 | **Input hardening / DoS** (task #53) | ~~Only per-IP rate limiting~~ | **Done** — 8 MiB request-body cap, global in-flight concurrency limit (503 + Retry-After), `ReadHeaderTimeout` slow-loris guard, and an SSRF allowlist on the payload fetch URL (blocks loopback + link-local/cloud-metadata). Remaining: upstream WAF/scrubbing for volumetric floods |
 | **Outbound call resilience** (tasks #22, #24) | ~~A dropped connection silently failed a register/refresh; nothing bounded a node's own outbound call rate~~ | **Done** — `internal/httpx`: exponential backoff + jitter retry for transient node→coordinator failures (permanent 4xx fails fast), plus a client-side token-bucket limiter on outbound calls |
 | **CORS granularity** (task #27) | ~~Origin allowlist only supported exact matches~~ | **Done** — `*.domain.tld` wildcard-subdomain matching, case-insensitive, with an explicit apex/lookalike-suffix test matrix |
-| **Third-party security review** of the crypto + settlement paths | Wallet auth, attestation, and ledger debits are trust-critical | Not started — an internal multi-angle review of this session's diff (crypto/TLS trust boundary, secrets/auth, DoS/resource exhaustion) found the AES-GCM/HKDF/ECDH crypto and the TLS-pinning fail-closed logic sound, and fixed one real gap (identity-file permissions not tightened on rewrite — internal/identity/store.go). Several DoS claims from that pass were checked against the actual code and refuted (reservation creation never touches a node's in-flight counter, so it can't starve routing) rather than taken at face value. This is not a substitute for an outside reviewer, just cheaper due diligence before one |
+| **Third-party security review** of the crypto + settlement paths | Wallet auth, attestation, and ledger debits are trust-critical | Not started — an internal multi-angle review of this session's diff (crypto/TLS trust boundary, secrets/auth, DoS/resource exhaustion) found the AES-GCM/HKDF/ECDH crypto and the TLS-pinning fail-closed logic sound, and fixed one real gap (identity-file permissions not tightened on rewrite — internal/identity/store.go). Several DoS claims from that pass were checked against the actual code and refuted (reservation creation never touches a node's in-flight counter, so it can't starve routing) rather than taken at face value. A later review pass found and fixed two more real issues: the node's payload-fetch SSRF guard only validated the initial URL, so a malicious pointer host could 302-redirect the fetch to the cloud-metadata endpoint or an internal port, or use DNS rebinding to resolve to a good IP at check time and a blocked one at dial time — both are now closed by `httpmw.SafeFetchClient` (per-redirect re-validation + a connect-time IP check in the dialer); and the federation-key bearer check used a non-constant-time `==` (a timing side channel on the secret), now `crypto/subtle.ConstantTimeCompare`. This is not a substitute for an outside reviewer, just cheaper due diligence before one |
 
 ### 🛡️ Safety & correctness — *blocks trusting the numbers*
 
@@ -658,7 +665,7 @@ Everything above is a working **testbed** — a full multi-region mesh you can r
 | **Streaming (`stream: true`)** on `/v1/chat/completions` | Documented but unimplemented; interactive UX depends on it | **Done (fast lane)** — real SSE passthrough end-to-end (Exo → node → coordinator → client), each hop relaying chunks via `http.Flusher` as they arrive rather than buffering. Credit/debit accounting is unchanged — it reads the same observed-token count, now sourced from the trailing SSE usage frame instead of one JSON blob. Background lane intentionally stays buffered/polling (recurring jobs don't need it) |
 | **Structured logging + metrics** (task #20) | ~~No observability~~ | **Done** — `GET /metrics/prometheus` exposes request/dispatch/credit/debit/rejection counters + live gauges (nodes, queue depth, coordination participants); `OIM_LOG_FORMAT=json` emits structured slog with typed money-event fields |
 | **Maintainability & tooling** (tasks #21, #25, #26, #28) | ~~Large handler functions, magic numbers, no lint config, no perf baseline~~ | **Done** — coordination-reward logic extracted into a unit-testable `creditPointerHost()`; slow-loris timeout named; `.golangci.yml` added; allocation-bound perf regression tests on the metrics/pricing hot paths |
-| **Code review of this session's diff** | An 8-angle review (correctness + reuse/simplification/efficiency/altitude/conventions) against v0.10→v0.11 | **Done** — found and fixed 2 real correctness bugs (streaming dispatch silently dropped the encrypted-pointer fields the buffered path forwards; a stream ending with no usage frame billed $0 with no signal), deduplicated the SSE relay loop shared by the node↔Exo and coordinator↔node hops into `internal/sse.Relay`, and untracked two compiled binaries (~19 MB) that had been accidentally committed at the repo root. One design note (TLS endpoint+fingerprint threaded as two loose strings instead of one struct) logged as a follow-up task, not fixed yet — low urgency, no known bug from it |
+| **Code review of this session's diff** | An 8-angle review (correctness + reuse/simplification/efficiency/altitude/conventions) against v0.10→v0.11 | **Done** — found and fixed 2 real correctness bugs (streaming dispatch silently dropped the encrypted-pointer fields the buffered path forwards; a stream ending with no usage frame billed $0 with no signal), deduplicated the SSE relay loop shared by the node↔Exo and coordinator↔node hops into `internal/sse.Relay`, and untracked two compiled binaries (~19 MB) that had been accidentally committed at the repo root. One design note (TLS endpoint+fingerprint threaded as two loose strings instead of one struct) was logged as a follow-up and has since been fixed — dispatch now threads a single `NodeTarget{NodeID, Endpoint, TLSFingerprint}` (task #59) |
 | **Ledger reconciliation & audit trail** | Debits log but there's no periodic balance-integrity check | Not started |
 
 ### 📈 Scalability — *blocks growth past the seed*
@@ -703,12 +710,12 @@ opt-in-via-`--api-key` posture rather than individual gating), a
 multi-angle pass already happened — see the security table above — but that's
 not a substitute for an outside reviewer), a **ledger reconciliation/audit
 trail**, **coordinator HA** and **ledger beyond SQLite** (both needed only
-past a single-coordinator deployment), **release engineering** (signed
-binaries, reproducible images, App Store/TestFlight, runbooks), and one
-logged code-quality follow-up (**#59**, threading the node TLS endpoint +
-fingerprint as a struct instead of two loose strings — a swap-risk cleanup,
-not a known live bug). None of these block running the mesh today under a
-trusted operator — they block a *public, unattended* release.
+past a single-coordinator deployment), and **release engineering** (signed
+binaries, reproducible images, App Store/TestFlight, runbooks). (The
+previously-logged #59 cleanup — threading the node TLS endpoint + fingerprint
+as one `NodeTarget` struct instead of two loose strings — is done.) None of
+these block running the mesh today under a trusted operator — they block a
+*public, unattended* release.
 
 ---
 
@@ -717,28 +724,44 @@ trusted operator — they block a *public, unattended* release.
 ```
 cmd/
   oim/             CLI + node agent entry point
-  coordinator/     Pod coordinator server (M2) — routing, ledger, wallet + coordination endpoints
-  directory/       Global directory server (M4)
-  stub-exo/        Fake Exo for simulation
+  coordinator/     Pod coordinator server (M2) — routing, ledger, wallet, coordination + federation endpoints
+  directory/       Global directory server (M4) — pod registration with TOFU pinning/allowlist
+  stub-exo/        Fake Exo for simulation (incl. SSE streaming)
 internal/
-  protocol/        Wire types, crypto, job specs (+ payload-pointer fields)
-  exoadapter/      Thin HTTP client wrapping Exo
+  protocol/        Wire types, crypto, job specs (+ payload-pointer fields, signed pod digests)
+  exoadapter/      Thin HTTP client wrapping Exo (buffered + streaming)
+  agent/           Node agent HTTP server (job endpoint, /detect, pointer fetch+decrypt)
+  jobrunner/       Executes jobs against the local Exo (buffered + streaming fast lane)
   governor/        Resource caps and foreground check
   capability/      Live manifest assembly
   bench/           Tier benchmarking
-  identity/        Ed25519 keypair persistence
+  attestation/     Secure Enclave attestation verification
+  identity/        Ed25519 (+ ECDH) keypair persistence — nodes and coordinators
   coordinator/     Registry, routers, queue, hint validation, coordination registry (M8)
   wallet/          Portable account identity: address derivation, challenge-response, device linking (M9)
-  directory/       Resolver interface + implementations (M7 stubs)
-  settlement/      Division-order ledger
+  directory/       Resolver interface + implementations (M7 directory stubs) + PinStore pod pinning
+  federation/      Signed cross-pod ledger-event witnessing + audit store (M7 ledger authority)
+  settlement/      Division-order ledger, startup-grant PoW, credit hooks
+  economics/       All pricing: cost/reward matrix, house edge, coordination reward
+  payloadcrypto/   ECDH-P256 → HKDF-SHA256 → AES-256-GCM (byte-compatible with the Swift client)
+  httptls/         TLS serving helpers, fingerprint-pinned clients, cert-expiry warning
+  httpmw/          Shared HTTP middleware (rate limiting, body caps, SSRF guard, security headers)
+  httpx/           Outbound HTTP resilience: retry/backoff + client-side rate limiting
+  sse/             Shared SSE relay used by both streaming hops
+  metrics/         Prometheus-format counters/gauges
+  nodeconfig/      Node YAML config load + validation
 config/
   node.example.yaml
 tools/
   jobgen/          Simulated traffic generator (incl. --pointer-host mode)
   gen-compose/     Generates the multi-region docker-compose sim
   train-router/    Create ML pipeline for the on-device routing classifier
+dashboard/         Web dashboard (React + Vite) — topology map, Node Setup, Try the Mesh
+landing/           mlxmesh.net landing page (static)
+scripts/           Dev CA + server cert generation (gen-dev-certs.sh)
+.github/workflows/ CI: Go build/vet/lint/tests, dashboard build, Xcode builds
 OIMDashboard/      SwiftUI apps — Shared / iOS / tvOS / watchOS (M8/M9 clients)
-tests/             Protocol- and coordination-level tests
+tests/             Protocol-, coordination-, and integration-level tests
 ```
 
 ---

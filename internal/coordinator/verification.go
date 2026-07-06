@@ -22,13 +22,16 @@ var ErrNoMeasurement = errors.New("no submitted benchmark measurement for this n
 // Returns true if outputs are consistent, or if the job was not selected for this check cycle.
 //
 // Sampling is probabilistic — 100% defeats efficiency, 0% defeats verification (proposal §8.2).
+// The verifier is addressed as a full NodeTarget so a TLS-enabled verifier is
+// dialed with its pinned fingerprint like every other dispatch, not an
+// unpinned default client.
 func SpotCheckFastLane(
 	ctx context.Context,
 	jobID string,
 	messages []map[string]any,
 	modelID string,
 	primaryResult map[string]any,
-	verifierEndpoint string,
+	verifier NodeTarget,
 	sampleRate float64,
 ) (bool, error) {
 	if rand.Float64() >= sampleRate {
@@ -45,13 +48,13 @@ func SpotCheckFastLane(
 
 	reqCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, verifierEndpoint+"/v1/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, verifier.Endpoint+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return false, fmt.Errorf("build verifier request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClientForTarget(verifier, 120*time.Second).Do(req)
 	if err != nil {
 		return false, fmt.Errorf("verifier dispatch: %w", err)
 	}

@@ -43,9 +43,9 @@ type MergedResult struct {
 //
 // podNodes is the full list of live nodes in the pod.
 // subTaskResults carries the NodeIDs that already ran sub-tasks.
-// Returns the endpoint plus its TLS pin (task: coordinator->node TLS) — both
-// travel together since the pin only means anything paired with its endpoint.
-func SelectMergeNode(podNodes []protocol.CapabilityManifest, subTaskResults []MergeInput) (endpoint, tlsFingerprint string) {
+// Returns the node's dispatch target — endpoint and TLS pin travel together
+// as one NodeTarget since the pin only means anything paired with its endpoint.
+func SelectMergeNode(podNodes []protocol.CapabilityManifest, subTaskResults []MergeInput) NodeTarget {
 	usedNodeIDs := make(map[string]bool, len(subTaskResults))
 	for _, r := range subTaskResults {
 		if nid, ok := r.Result["_node_id"].(string); ok {
@@ -54,14 +54,14 @@ func SelectMergeNode(podNodes []protocol.CapabilityManifest, subTaskResults []Me
 	}
 	for _, n := range podNodes {
 		if !usedNodeIDs[n.NodeID] {
-			return n.ReachabilityEndpoint, n.TLSCertFingerprint
+			return TargetFromManifest(n)
 		}
 	}
 	// All nodes participated — fall back to first.
 	if len(podNodes) > 0 {
-		return podNodes[0].ReachabilityEndpoint, podNodes[0].TLSCertFingerprint
+		return TargetFromManifest(podNodes[0])
 	}
-	return "", ""
+	return NodeTarget{}
 }
 
 // BuildMergePrompt constructs the system+user prompt for the merge inference call.
@@ -109,11 +109,11 @@ func BuildMergePrompt(subTaskResults []MergeInput, originalJobSpec protocol.JobS
 }
 
 // ExecuteMerge combines subTaskResults into a single MergedResult by running a
-// merge inference call on mergeNodeEndpoint.
+// merge inference call on mergeTarget.
 //
 // Hard failure modes (returns error, never silently degrades):
 //   - Any MergeInput has VerificationPassed=false → job failure
-//   - mergeNodeEndpoint is empty → job failure
+//   - mergeTarget has an empty endpoint → job failure
 //   - The merge inference call itself fails → job failure
 //
 // The caller is responsible for providing a verified set of inputs. Passing an
@@ -123,7 +123,7 @@ func ExecuteMerge(
 	ctx context.Context,
 	mergeInputs []MergeInput,
 	originalJobSpec protocol.JobSpec,
-	mergeNodeEndpoint, tlsFingerprint string,
+	mergeTarget NodeTarget,
 ) (MergedResult, error) {
 	// Gate 1: all inputs must be verified.
 	for _, inp := range mergeInputs {
@@ -137,7 +137,7 @@ func ExecuteMerge(
 	}
 
 	// Gate 2: merge node must be reachable.
-	if mergeNodeEndpoint == "" {
+	if mergeTarget.Endpoint == "" {
 		return MergedResult{}, fmt.Errorf(
 			"merge job %s: no merge node endpoint available", originalJobSpec.JobID,
 		)
@@ -152,19 +152,23 @@ func ExecuteMerge(
 	// In the current architecture PayloadRef is encrypted; the merge prompt itself
 	// carries the sub-task outputs, which is sufficient.
 
-	result, err := dispatchToNode(ctx, originalJobSpec, mergeMessages, mergeNodeEndpoint, tlsFingerprint)
+	result, err := dispatchToNode(ctx, originalJobSpec, mergeMessages, mergeTarget)
 	if err != nil {
 		return MergedResult{}, fmt.Errorf(
 			"merge job %s: merge inference failed: %w", originalJobSpec.JobID, err,
 		)
 	}
 
+	mergeNodeID := mergeTarget.NodeID
+	if mergeNodeID == "" {
+		mergeNodeID = mergeTarget.Endpoint
+	}
 	return MergedResult{
 		OriginalJobID:           originalJobSpec.JobID,
 		MergedOutput:            result,
 		SubTaskCount:            len(mergeInputs),
 		AnyVerificationFailures: false,
-		MergeNodeID:             mergeNodeEndpoint,
+		MergeNodeID:             mergeNodeID,
 	}, nil
 }
 
@@ -178,7 +182,7 @@ func MergeSplitOutputs(
 	leftSplitID, rightSplitID string,
 	strategy SplitStrategy,
 	originalJobSpec protocol.JobSpec,
-	mergeNodeEndpoint, tlsFingerprint string,
+	mergeTarget NodeTarget,
 ) (MergedResult, error) {
 	inputs := []MergeInput{
 		{
@@ -197,5 +201,5 @@ func MergeSplitOutputs(
 		},
 	}
 	_ = strategy // reserved for strategy-specific merge heuristics in a future iteration
-	return ExecuteMerge(ctx, inputs, originalJobSpec, mergeNodeEndpoint, tlsFingerprint)
+	return ExecuteMerge(ctx, inputs, originalJobSpec, mergeTarget)
 }

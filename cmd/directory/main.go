@@ -38,6 +38,11 @@ import (
 	"github.com/open-inference-mesh/oim/internal/protocol"
 )
 
+// directoryMaxConcurrentRequests bounds total in-flight requests across the
+// whole directory server — the DDoS floor a per-IP limiter can't provide
+// against a distributed flood (task #53), mirroring the coordinator.
+const directoryMaxConcurrentRequests = 256
+
 func main() {
 	if err := rootCmd().Execute(); err != nil {
 		os.Exit(1)
@@ -210,8 +215,16 @@ func runDirectory(listenAddr, peerURL string, podTTL time.Duration, corsOrigins 
 		return fmt.Errorf("listen on %s: %w", listenAddr, err)
 	}
 
+	// Same DDoS floor as the coordinator (task #53): the directory is publicly
+	// exposed and decodes JSON bodies on /pods/register and /gossip/digest, so
+	// it needs the request-body cap and a global in-flight concurrency limit,
+	// not just headers/CORS. Without the body cap an oversized POST is read
+	// unbounded into memory here even though the coordinator is protected.
 	srv := &http.Server{
-		Handler:           httpmw.SecurityHeaders(corsMiddleware(corsOrigins, mux)),
+		Handler: httpmw.SecurityHeaders(
+			corsMiddleware(corsOrigins,
+				httpmw.MaxBodyBytes(httpmw.DefaultMaxBodyBytes,
+					httpmw.LimitConcurrency(directoryMaxConcurrentRequests, mux)))),
 		ReadHeaderTimeout: 10 * time.Second, // slow-loris guard, same bound as the coordinator (task #53)
 	}
 	quit := make(chan os.Signal, 1)

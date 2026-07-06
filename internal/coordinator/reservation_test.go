@@ -8,7 +8,7 @@ import (
 func TestReservationStore_CreateAndResolve(t *testing.T) {
 	s := NewReservationStore()
 	now := time.Now()
-	id, err := s.Create("node-1", "http://node-1:8765", now)
+	id, err := s.Create(NodeTarget{NodeID: "node-1", Endpoint: "http://node-1:8765"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -16,7 +16,7 @@ func TestReservationStore_CreateAndResolve(t *testing.T) {
 	if !ok {
 		t.Fatal("expected reservation to resolve")
 	}
-	if res.NodeID != "node-1" || res.NodeEndpoint != "http://node-1:8765" {
+	if res.Target.NodeID != "node-1" || res.Target.Endpoint != "http://node-1:8765" {
 		t.Errorf("unexpected reservation: %+v", res)
 	}
 }
@@ -24,7 +24,7 @@ func TestReservationStore_CreateAndResolve(t *testing.T) {
 func TestReservationStore_SingleUse(t *testing.T) {
 	s := NewReservationStore()
 	now := time.Now()
-	id, _ := s.Create("node-1", "http://node-1:8765", now)
+	id, _ := s.Create(NodeTarget{NodeID: "node-1", Endpoint: "http://node-1:8765"}, now)
 	if _, ok := s.Resolve(id, now); !ok {
 		t.Fatal("first resolve should succeed")
 	}
@@ -36,7 +36,7 @@ func TestReservationStore_SingleUse(t *testing.T) {
 func TestReservationStore_ExpiredRejected(t *testing.T) {
 	s := NewReservationStore()
 	now := time.Now()
-	id, _ := s.Create("node-1", "http://node-1:8765", now)
+	id, _ := s.Create(NodeTarget{NodeID: "node-1", Endpoint: "http://node-1:8765"}, now)
 	if _, ok := s.Resolve(id, now.Add(ReservationTTL+time.Second)); ok {
 		t.Error("expected expired reservation to be rejected")
 	}

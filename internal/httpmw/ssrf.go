@@ -1,10 +1,14 @@
 package httpmw
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // ValidateFetchURL guards the coordinator against SSRF via the client-supplied
@@ -52,6 +56,64 @@ func ValidateFetchURL(raw string) error {
 		}
 	}
 	return nil
+}
+
+// SafeFetchClient returns an HTTP client for fetching a client-supplied payload
+// URL that keeps the SSRF guard attached through two bypass vectors the
+// front-door ValidateFetchURL check can't cover on its own:
+//
+//   - Redirects: CheckRedirect re-validates every hop, so a host that passes
+//     the initial check with a public IP can't 302 the follower to a
+//     loopback/link-local target (cloud metadata, an internal admin port).
+//   - DNS rebinding: the dialer's Control hook validates the ACTUAL IP being
+//     connected to, after resolution, right before connect. ValidateFetchURL
+//     resolves the host once, but the transport re-resolves at dial time — an
+//     attacker controlling DNS could return a public IP for the check and a
+//     blocked IP for the dial. Validating at connect time closes that gap.
+//
+// Redirect count is bounded by net/http's default (10 hops).
+func SafeFetchClient(timeout time.Duration) *http.Client {
+	return safeFetchClient(timeout, checkIP)
+}
+
+// safeFetchClient is SafeFetchClient with an injectable connect-time IP check,
+// so tests can permit loopback httptest servers (which the real checkIP blocks)
+// while still exercising the redirect-revalidation path.
+func safeFetchClient(timeout time.Duration, ipCheck func(net.IP) error) *http.Client {
+	dialer := &net.Dialer{
+		Timeout:   timeout,
+		KeepAlive: 30 * time.Second,
+		Control: func(_, address string, _ syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return fmt.Errorf("dial address parse: %w", err)
+			}
+			ip := net.ParseIP(host)
+			if ip == nil {
+				return fmt.Errorf("dial address %q is not a literal IP", host)
+			}
+			return ipCheck(ip)
+		},
+	}
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return dialer.DialContext(ctx, network, addr)
+			},
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          10,
+			IdleConnTimeout:       30 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: time.Second,
+		},
+		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			if err := ValidateFetchURL(req.URL.String()); err != nil {
+				return fmt.Errorf("redirect blocked: %w", err)
+			}
+			return nil
+		},
+	}
 }
 
 // checkIP rejects loopback, link-local (v4 169.254/16 incl. metadata, v6

@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
@@ -534,7 +535,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 			return
 		}
 		now := time.Now()
-		resID, err := reservations.Create(node.Manifest.NodeID, node.Manifest.ReachabilityEndpoint, now)
+		resID, err := reservations.Create(coordinator.TargetFromManifest(node.Manifest), now)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -738,7 +739,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 				writeErr(w, http.StatusConflict, "reservation_expired_or_unknown: re-reserve and re-encrypt")
 				return
 			}
-			result, err = coordinator.DispatchToResolvedNode(r.Context(), job, req.Messages, registry, res.NodeID, res.NodeEndpoint)
+			result, err = coordinator.DispatchToResolvedNode(r.Context(), job, req.Messages, registry, res.Target)
 		} else {
 			result, err = coordinator.DispatchFastLane(r.Context(), job, req.Messages, registry, maxAttempts)
 		}
@@ -884,7 +885,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 			writeErr(w, http.StatusServiceUnavailable, fmt.Sprintf("resolved node %s is no longer registered", nodeID))
 			return
 		}
-		result, err := coordinator.DispatchToResolvedNode(r.Context(), a.JobSpec, req.Messages, registry, nodeID, manifest.ReachabilityEndpoint)
+		result, err := coordinator.DispatchToResolvedNode(r.Context(), a.JobSpec, req.Messages, registry, coordinator.TargetFromManifest(manifest))
 		if err != nil {
 			writeErr(w, http.StatusServiceUnavailable, err.Error())
 			return
@@ -1604,7 +1605,9 @@ func federationAuthorized(r *http.Request, federationKey string) bool {
 		return false
 	}
 	auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	return auth == federationKey
+	// Constant-time compare: a plain == leaks how many leading bytes matched
+	// via timing, which over many requests can recover a bearer secret.
+	return subtle.ConstantTimeCompare([]byte(auth), []byte(federationKey)) == 1
 }
 
 func reportToDirectory(resolver *directory.CentralizedResolver, registry *coordinator.NodeRegistry, podID, regionHint, publicURL string, coordPriv, coordPub []byte) {

@@ -130,7 +130,7 @@ func DispatchFastLane(
 		attempted++
 		registry.IncrInFlight(node.Manifest.NodeID)
 		dispatchStart := time.Now()
-		result, err := dispatchToNode(ctx, job, messages, node.Manifest.ReachabilityEndpoint, node.Manifest.TLSCertFingerprint)
+		result, err := dispatchToNode(ctx, job, messages, TargetFromManifest(node.Manifest))
 		elapsed := time.Since(dispatchStart)
 		registry.DecrInFlight(node.Manifest.NodeID)
 		if err != nil {
@@ -251,18 +251,15 @@ func (s *AssignmentStore) Get(jobID string) (*BackgroundAssignment, bool) {
 // has already resolved which node should handle this cycle via
 // ResolveForCycle (sticky-session) — this skips candidate scoring entirely and
 // just makes the call, incrementing/decrementing the node's in-flight counter
-// around it like every other dispatch path.
-func DispatchToResolvedNode(ctx context.Context, job protocol.JobSpec, messages []map[string]any, registry *NodeRegistry, nodeID, nodeEndpoint string) (map[string]any, error) {
-	// Manifest() may miss (e.g. a node deregistered between selection and
-	// dispatch) — an empty fingerprint just means httpClientForEndpoint falls
-	// back to a plain client for an http:// endpoint, or fails closed for an
-	// https:// one, same as any other unpinned dispatch.
-	manifest, _ := registry.Manifest(nodeID)
-	registry.IncrInFlight(nodeID)
-	result, err := dispatchToNode(ctx, job, messages, nodeEndpoint, manifest.TLSCertFingerprint)
-	registry.DecrInFlight(nodeID)
+// around it like every other dispatch path. The caller supplies the full
+// NodeTarget (endpoint + TLS pin, from TargetFromManifest or a Reservation) so
+// the pin can never be paired with a different node's endpoint.
+func DispatchToResolvedNode(ctx context.Context, job protocol.JobSpec, messages []map[string]any, registry *NodeRegistry, target NodeTarget) (map[string]any, error) {
+	registry.IncrInFlight(target.NodeID)
+	result, err := dispatchToNode(ctx, job, messages, target)
+	registry.DecrInFlight(target.NodeID)
 	if err != nil {
-		registry.MarkUnreachable(nodeID)
+		registry.MarkUnreachable(target.NodeID)
 		return nil, err
 	}
 	return result, nil
@@ -319,7 +316,7 @@ func DispatchFastLaneStreaming(
 		}
 		attempted++
 		registry.IncrInFlight(node.Manifest.NodeID)
-		started, tok, dispatchErr := dispatchToNodeStreaming(ctx, job, messages, node.Manifest.NodeID, node.Manifest.ReachabilityEndpoint, node.Manifest.TLSCertFingerprint, clientW)
+		started, tok, dispatchErr := dispatchToNodeStreaming(ctx, job, messages, TargetFromManifest(node.Manifest), clientW)
 		registry.DecrInFlight(node.Manifest.NodeID)
 		if dispatchErr != nil {
 			if started {
@@ -343,7 +340,7 @@ func dispatchToNodeStreaming(
 	ctx context.Context,
 	job protocol.JobSpec,
 	messages []map[string]any,
-	nodeID, nodeEndpoint, tlsFingerprint string,
+	target NodeTarget,
 	clientW http.ResponseWriter,
 ) (started bool, tokens int, err error) {
 	payload := map[string]any{
@@ -368,9 +365,9 @@ func dispatchToNodeStreaming(
 
 	// Same 120s ceiling as the buffered path (task #53) — a hung Exo must not
 	// hold a concurrency-limiter slot, or a node's in-flight counter, forever.
-	client := httpClientForEndpoint(nodeEndpoint, tlsFingerprint, 120*time.Second)
+	client := httpClientForTarget(target, 120*time.Second)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		nodeEndpoint+"/v1/chat/completions", bytes.NewReader(b))
+		target.Endpoint+"/v1/chat/completions", bytes.NewReader(b))
 	if err != nil {
 		return false, 0, fmt.Errorf("build request: %w", err)
 	}
@@ -380,12 +377,12 @@ func dispatchToNodeStreaming(
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, 0, fmt.Errorf("dispatch to %s: %w", nodeEndpoint, err)
+		return false, 0, fmt.Errorf("dispatch to %s: %w", target.Endpoint, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
-		return false, 0, fmt.Errorf("node %s returned HTTP %d: %s", nodeEndpoint, resp.StatusCode, body)
+		return false, 0, fmt.Errorf("node %s returned HTTP %d: %s", target.Endpoint, resp.StatusCode, body)
 	}
 
 	// oim_served_by_node_id/oim_lane travel as response headers instead of the
@@ -394,7 +391,7 @@ func dispatchToNodeStreaming(
 	// set. Harmless to set even if clientW turns out not to be an
 	// http.Flusher below — sse.Relay's own check is what actually gates
 	// whether streaming proceeds.
-	clientW.Header().Set("X-OIM-Served-By-Node-Id", nodeID)
+	clientW.Header().Set("X-OIM-Served-By-Node-Id", target.NodeID)
 	clientW.Header().Set("X-OIM-Lane", string(job.Lane))
 	sse.SetHeaders(clientW)
 
@@ -405,15 +402,35 @@ func dispatchToNodeStreaming(
 	return started, tokens, nil
 }
 
-// httpClientForEndpoint returns a plain client for an http:// node, or a
+// NodeTarget is everything dispatch needs to reach one node: its endpoint and
+// the TLS certificate fingerprint pinned at that node's registration. The pin
+// only means anything paired with its endpoint — threading them as one value
+// makes it impossible to dial node A's endpoint with node B's pin.
+type NodeTarget struct {
+	NodeID         string
+	Endpoint       string
+	TLSFingerprint string // hex SHA-256 of the node's leaf cert; empty for plain-HTTP nodes
+}
+
+// TargetFromManifest builds the dispatch target for a node from its signed
+// manifest — the only place an endpoint and its TLS pin should ever be paired.
+func TargetFromManifest(m protocol.CapabilityManifest) NodeTarget {
+	return NodeTarget{
+		NodeID:         m.NodeID,
+		Endpoint:       m.ReachabilityEndpoint,
+		TLSFingerprint: m.TLSCertFingerprint,
+	}
+}
+
+// httpClientForTarget returns a plain client for an http:// node, or a
 // certificate-pinned one (task: coordinator->node TLS) for an https:// node —
 // nodes are independently operated and self-signed, so trust is TOFU
 // fingerprint-pinning against what was recorded at that node's registration,
-// not chain verification against a shared CA. tlsFingerprint empty on an
+// not chain verification against a shared CA. An empty fingerprint on an
 // https:// endpoint always fails closed (see httptls.PinnedClientTLSConfig).
-func httpClientForEndpoint(nodeEndpoint, tlsFingerprint string, timeout time.Duration) *http.Client {
-	if strings.HasPrefix(nodeEndpoint, "https://") {
-		return httptls.PinnedClient(tlsFingerprint, timeout)
+func httpClientForTarget(target NodeTarget, timeout time.Duration) *http.Client {
+	if strings.HasPrefix(target.Endpoint, "https://") {
+		return httptls.PinnedClient(target.TLSFingerprint, timeout)
 	}
 	return &http.Client{Timeout: timeout}
 }
@@ -423,7 +440,7 @@ func dispatchToNode(
 	ctx context.Context,
 	job protocol.JobSpec,
 	messages []map[string]any,
-	nodeEndpoint, tlsFingerprint string,
+	target NodeTarget,
 ) (map[string]any, error) {
 	payload := map[string]any{
 		"model":    job.ModelID,
@@ -444,9 +461,9 @@ func dispatchToNode(
 		return nil, fmt.Errorf("marshal dispatch payload: %w", err)
 	}
 
-	client := httpClientForEndpoint(nodeEndpoint, tlsFingerprint, 120*time.Second)
+	client := httpClientForTarget(target, 120*time.Second)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		nodeEndpoint+"/v1/chat/completions", bytes.NewReader(b))
+		target.Endpoint+"/v1/chat/completions", bytes.NewReader(b))
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
@@ -455,12 +472,12 @@ func dispatchToNode(
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("dispatch to %s: %w", nodeEndpoint, err)
+		return nil, fmt.Errorf("dispatch to %s: %w", target.Endpoint, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("node %s returned HTTP %d: %s", nodeEndpoint, resp.StatusCode, body)
+		return nil, fmt.Errorf("node %s returned HTTP %d: %s", target.Endpoint, resp.StatusCode, body)
 	}
 	var result map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -580,7 +597,7 @@ func RouteWithDecomposition(
 		replicaNode := podNodes[(verifyIdx+1)%len(podNodes)]
 
 		replicaJob, replicaMessages := buildSubTaskJob(analyticalTasks[verifyIdx])
-		replicaResult, err := dispatchToNode(ctx, replicaJob, replicaMessages, replicaNode.ReachabilityEndpoint, replicaNode.TLSCertFingerprint)
+		replicaResult, err := dispatchToNode(ctx, replicaJob, replicaMessages, TargetFromManifest(replicaNode))
 		if err != nil {
 			verificationPassed = false // can't verify — fail closed, don't merge on faith
 		} else {
@@ -610,8 +627,8 @@ func RouteWithDecomposition(
 		}
 	}
 
-	mergeEndpoint, mergeTLSFingerprint := SelectMergeNode(podNodes, mergeInputs)
-	merged, err := ExecuteMerge(ctx, mergeInputs, job, mergeEndpoint, mergeTLSFingerprint)
+	mergeTarget := SelectMergeNode(podNodes, mergeInputs)
+	merged, err := ExecuteMerge(ctx, mergeInputs, job, mergeTarget)
 	if err != nil {
 		return nil, fmt.Errorf("RouteWithDecomposition job %s: merge: %w", job.JobID, err)
 	}
@@ -669,7 +686,7 @@ func DispatchSubTasksInParallel(
 			}
 
 			subJob, subMessages := buildSubTaskJob(w.subTask)
-			result, err := dispatchToNode(ctx, subJob, subMessages, w.node.ReachabilityEndpoint, w.node.TLSCertFingerprint)
+			result, err := dispatchToNode(ctx, subJob, subMessages, TargetFromManifest(w.node))
 			if err != nil {
 				errCh <- fmt.Errorf("sub-task %s: dispatch: %w", w.subTask.SubTaskID, err)
 				return
