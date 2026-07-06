@@ -87,7 +87,8 @@ must interoperate exactly, and any drift is a correctness *and* security bug.
 | Volumetric DoS | Body cap, global concurrency cap, per-IP rate limit, slow-loris timeout | `internal/httpmw` |
 | Credential timing side-channel | Constant-time bearer/admin compare | `cmd/coordinator/main.go` |
 | Ledger corruption / overdraft bug | Periodic reconciliation + `oim_ledger_consistent` gauge | `internal/settlement/reconcile.go` |
-| Man-in-the-middle | TLS 1.2+ everywhere (client-facing + coordinator→node) | `internal/httptls` |
+| Rate-limit evasion via forged `X-Forwarded-For` | XFF honored ONLY when the direct peer is a configured `--trusted-proxy`; otherwise the direct peer IP is used. Misconfiguration risk: a too-broad trusted-proxy range makes XFF forgeable; none behind nginx collapses all clients into the proxy's single bucket | `internal/httpmw/clientip.go` |
+| Man-in-the-middle | TLS 1.2 floor when TLS is enabled. Client-facing TLS terminates at nginx on the seed; coordinator→node TLS is opt-in (`--tls-cert`) and enabled on the live fleet, not structural | `internal/httptls` |
 
 ## Internal review already performed (not a substitute for external)
 

@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Open Inference Mesh — Architecture &amp; Data Reference</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.0/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1216;
+    --panel: #171b21;
+    --border: #2a3038;
+    --text: #dfe4ea;
+    --muted: #9aa4b2;
+    --accent: #5eb1ff;
+    --accent2: #7fd6a0;
+    --code-bg: #11151a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+  }
+  .wrap { display: flex; max-width: 1400px; margin: 0 auto; }
+  nav {
+    position: sticky; top: 0; align-self: flex-start;
+    width: 260px; min-width: 220px; height: 100vh; overflow-y: auto;
+    padding: 28px 18px; border-right: 1px solid var(--border);
+  }
+  nav h3 { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; margin: 0 0 10px; }
+  nav a { display: block; color: var(--text); text-decoration: none; padding: 6px 8px; border-radius: 6px; font-size: 13.5px; }
+  nav a:hover { background: #1e2530; color: var(--accent); }
+  main { flex: 1; padding: 40px 56px 100px; min-width: 0; }
+  h1 { font-size: 28px; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); margin-top: 0; margin-bottom: 36px; font-size: 15px; }
+  h2 { font-size: 21px; margin-top: 56px; padding-top: 8px; border-top: 1px solid var(--border); color: #fff; }
+  h2 .q { color: var(--accent); font-weight: 500; }
+  h3 { font-size: 16px; color: var(--accent2); margin-top: 28px; }
+  p { max-width: 900px; }
+  code, .mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 13px; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; color: #ffd479; }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-size: 12.5px; }
+  .diagram { background: #0b0e12; border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin: 18px 0 28px; overflow-x: auto; }
+  table { border-collapse: collapse; margin: 16px 0; font-size: 13px; max-width: 900px; }
+  th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: #1a2028; color: var(--accent2); }
+  .callout { border-left: 3px solid var(--accent); background: #141a22; padding: 10px 16px; border-radius: 0 8px 8px 0; margin: 16px 0; max-width: 860px; font-size: 14px; }
+  .stale { border-left: 3px solid #e0a13a; background: #221c12; padding: 10px 16px; border-radius: 0 8px 8px 0; margin: 16px 0; max-width: 860px; font-size: 14px; }
+  .tag { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #1c2733; color: var(--accent); margin-left: 8px; vertical-align: middle; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 60px; border-top: 1px solid var(--border); padding-top: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <h3>Open Inference Mesh</h3>
+  <a href="#overview">Overview</a>
+  <a href="#network">1. How the network works</a>
+  <a href="#security">2. How it's secured</a>
+  <a href="#flow">3. Message flow (user → response)</a>
+  <a href="#regions">4. Region scaling &amp; activation</a>
+  <a href="#data">5. Data we capture (ERD)</a>
+  <a href="#ios">6. iOS devices &amp; the mesh</a>
+  <a href="#stale">Appendix: doc drift</a>
+</nav>
+<main>
+  <h1>Open Inference Mesh — Architecture &amp; Data Reference</h1>
+  <p class="subtitle">Generated from a direct code review of <span class="mono">github.com/open-inference-mesh/oim</span> (Go coordinator/directory/node stack + the OIMDashboard iOS/watchOS/tvOS app). Diagrams render with Mermaid — open this file in a browser to view them live.</p>
+
+  <div id="overview" class="callout">
+  Three binaries, one hierarchy: <b>oim-directory</b> (global, discovery-only, never touches a job payload), <b>oim-coordinator</b> (one per region/pod — owns routing, settlement, security), and <b>oim node</b> (wraps a local Exo instance and does the actual inference work). Everything above the node layer is coordination and accounting; Exo is treated as a black box.
+  </div>
+
+  <h2 id="network">1. How does the network work?</h2>
+  <p>The mesh is a strict three-layer hierarchy. The <b>Global Directory</b> (<span class="mono">oim-directory</span>, port 9100) is a pure discovery service — pods register a signed, aggregate-only health digest with it and clients ask it "who serves model X," but it never sits in the inference path and never sees a job payload. <b>Pod Coordinators</b> (<span class="mono">oim-coordinator</span>, one per region) are where the real logic lives: node registry, fast/background-lane routing, settlement, wallet challenges, attestation checks, and federation. <b>Node Agents</b> (<span class="mono">oim node start</span>) each wrap one local Exo instance and do nothing except serve jobs Exo can run.</p>
+
+  <div class="diagram">
+    <pre class="mermaid">
+flowchart TB
+    subgraph DIR["Global Directory layer — discovery only, never in the data path"]
+        D1["oim-directory :9100"]
+        D2["oim-directory peer (HA gossip pair)"]
+        D1 <-->|"one-hop gossip, /gossip/digest"| D2
+    end
+
+    subgraph US["Pod: US region — oim-coordinator :9000"]
+        CUS["Coordinator US"]
+        NUS1["Node agent us-1"]
+        NUS2["Node agent us-2"]
+        NUS3["Node agent us-N"]
+        EUS1["Exo :52415"]
+        EUS2["Exo :52415"]
+        EUS3["Exo :52415"]
+        CUS --> NUS1 --> EUS1
+        CUS --> NUS2 --> EUS2
+        CUS --> NUS3 --> EUS3
+    end
+
+    subgraph EU["Pod: EU region — oim-coordinator :9001"]
+        CEU["Coordinator EU"]
+        NEU1["Node agent eu-1"]
+        EEU1["Exo :52415"]
+        CEU --> NEU1 --> EEU1
+    end
+
+    CUS -->|"signed PodHealthDigest, every 60s"| D1
+    CEU -->|"signed PodHealthDigest, every 60s"| D1
+    CUS <-->|"federation: poll /federation/ledger-events, every 30s"| CEU
+
+    subgraph IOSL["iOS / watchOS / tvOS clients"]
+        IOS1["iOS app — dashboard, wallet, submits real jobs"]
+        IOS2["iOS app — optional coordination participant"]
+        WATCH["watchOS — read-only dashboard"]
+        TV["tvOS — read-only dashboard"]
+    end
+
+    IOS1 -->|"GET /topology"| D1
+    IOS1 -->|"POST /v1/chat/completions, GET /users/id/balance"| CUS
+    IOS2 -->|"POST /coordination/announce — separate registry, not NodeRegistry"| CUS
+    WATCH -->|"GET /topology, /nodes"| D1
+    TV -->|"GET /topology, /nodes"| D1
+    </pre>
+  </div>
+
+  <h3>Node registration</h3>
+  <p>A node boots, loads or creates an Ed25519 identity at <span class="mono">~/.config/oim/node_identity.json</span>, assembles a <span class="mono">CapabilityManifest</span> from live Exo state plus its own resource governor, signs it, and POSTs it to <span class="mono">/nodes/register</span>. The coordinator independently recomputes <span class="mono">node_id = SHA-256(pubkey)[:32]</span> and rejects the registration if it doesn't match what the node claimed — identity can never be operator-chosen or hijacked. Every <span class="mono">RefreshInterval</span> (default 30s) the node re-derives its manifest from live state and re-signs a refresh; capability is never cached across heartbeats.</p>
+
+  <h3>Exo integration</h3>
+  <p><span class="mono">internal/exoadapter</span> is explicitly "a thin HTTP client wrapping a LOCAL Exo instance... no inference logic lives here." It calls Exo's real endpoints (<span class="mono">/state</span>, <span class="mono">/models</span>, <span class="mono">/instance</span>, <span class="mono">/v1/chat/completions</span>) at <span class="mono">http://localhost:52415</span> by default. Multi-device Exo clusters (Thunderbolt-linked Macs) are detected and folded into <b>one</b> mesh node rather than being exposed as separate nodes, with a per-device memory reserve (2 GB or 15%, whichever is larger) that a node keeps back regardless of what the operator configures as its contribution cap.</p>
+
+  <h3>MoE expert-sharding, not dense pipeline-sharding</h3>
+  <p>CLAUDE.md's core constraint — no WAN pipeline-sharding of dense models, because 20–150ms inter-hop latency kills sequential token passing — is enforced in code, not just documented. <span class="mono">internal/coordinator/moe_planner.go</span> assigns Mixture-of-Experts shards to nodes proportional to memory capacity (largest-remainder method, so counts always sum exactly) and can route a token to whichever node holds the activated expert. Notably, none of this MoE machinery is invoked anywhere in the live fast-lane chat path today — it's wired for the background/decomposition lane only, architecturally separate from a single chat request.</p>
+
+  <h3>Federation — more built than the milestone label suggests</h3>
+  <p>CLAUDE.md lists "M7 stub — federated directory," which undersells what's there. <span class="mono">internal/federation</span> is a complete, tested, cryptographically-verified system where pod coordinators witness each other's signed credit-issuance history: every credit event is Ed25519-signed and sequence-numbered per pod, peers poll each other's new events every 30 seconds, and a coordinator that later reports a balance contradicting its own signed history gets caught (fork/impersonation detection, TOFU key pinning). What's genuinely still a stub is federated <i>discovery</i> — a second directory implementation that would let multiple librarians share the pod registry — which is a different package (<span class="mono">internal/directory</span>'s <span class="mono">FederatedResolver</span>) that happens to share the "M7" label.</p>
+
+  <h2 id="security">2. How is it secured?</h2>
+  <p>Security is layered rather than a single mechanism: identity, transport, request signing, payload confidentiality, an attestation gate for sensitive jobs, anti-abuse at the HTTP perimeter, and proof-of-work against economic Sybil attacks.</p>
+
+  <table>
+    <tr><th>Layer</th><th>Mechanism</th></tr>
+    <tr><td>Node identity</td><td>Ed25519 keypair, <span class="mono">node_id = SHA-256(pubkey)[:32]</span> hex, recomputed and checked by the coordinator on every registration — never trusts an operator-supplied ID.</td></tr>
+    <tr><td>Transport</td><td>TLS 1.2+ where certs are configured; for independently-operated, self-signed nodes, TOFU certificate-fingerprint pinning substitutes for CA trust, captured once at registration.</td></tr>
+    <tr><td>Request signing</td><td>Every state-mutating node→coordinator call (refresh, benchmark submission, job outcome, enclave attestation) is Ed25519-signed and timestamp-bounded — rejected if older than 5 minutes or more than 30 seconds in the future. Verification always uses the public key captured at registration, never one supplied in the request.</td></tr>
+    <tr><td>Payload confidentiality</td><td>ECDH(P-256) → HKDF-SHA256 → AES-256-GCM, implemented byte-identically in Go (<span class="mono">internal/payloadcrypto</span>) and Swift (<span class="mono">PayloadEncryption.swift</span>). The coordinator only ever routes an encrypted pointer (content hash + fetch URL + ephemeral public key) — it never sees a raw prompt. Only the node holding the matching ECDH private key can decrypt.</td></tr>
+    <tr><td>Sensitivity tiers</td><td><span class="mono">low</span> / <span class="mono">moderate</span> / <span class="mono">high_requires_attestation</span>. The high tier requires a coordinator-verified Apple Secure Enclave challenge — a dual signature (fresh ephemeral P-256 key from the enclave + the node's already-registered Ed25519 key) proves both "this hardware has an enclave" and "the node claiming it owns the registered identity." A client-side sensitivity hint can only escalate a job's tier, never de-escalate or bypass the gate.</td></tr>
+    <tr><td>Perimeter hardening</td><td>Token-bucket rate limiting (by IP or user), 8&nbsp;MiB request body cap, concurrency semaphore with immediate 503 rather than unbounded queueing, SSRF-hardened URL fetch (blocks loopback/link-local/cloud-metadata addresses but allows private LAN ranges since legitimate iOS pointer hosts live there), redirect and dial-time IP re-validation to close DNS-rebinding gaps, and standard security response headers.</td></tr>
+    <tr><td>Anti-Sybil economics</td><td>Startup-grant claims require proof-of-work (18 leading zero bits on <span class="mono">SHA-256(userID‖nonce)</span>, roughly a quarter-million hashes — sub-second on real hardware but expensive to farm at scale), plus a per-IP hourly rate limit and a one-time-claim guarantee in the ledger.</td></tr>
+  </table>
+
+  <div class="stale">
+  <b>Gap worth knowing about:</b> the coordinator's probabilistic spot-check re-dispatch and 3σ statistical baseline drift detection exist as tested functions but are not currently called anywhere in the live <span class="mono">/v1/chat/completions</span> handler — fast-lane responses aren't spot-checked or baseline-checked today, despite CLAUDE.md describing that verification layer as part of the live milestone. The only verification actually exercised per-node is the separate, node-initiated tier-claim check.
+  </div>
+
+  <h2 id="flow">3. How does a message flow through the mesh, from a user and back?</h2>
+  <p>Tracing a single fast-lane chat completion end to end (the interactive path — a background/batch job instead goes through a scheduler-routed, sticky-session path with mandatory recurrence, which is architecturally separate and never shares fast-lane code):</p>
+
+  <div class="diagram">
+    <pre class="mermaid">
+flowchart TD
+    A["Client (iOS app or any OpenAI-compatible caller)"] -->|"POST /v1/chat/completions"| B["Pod Coordinator"]
+    B --> C{"X-OIM-User-ID present?"}
+    C -->|"yes"| D["Check ledger balance against estimated cost"]
+    D -->|"insufficient"| E["402 Payment Required — stop"]
+    D -->|"sufficient"| F["Resolve sensitivity tier — hint can only escalate"]
+    C -->|"no"| F
+    F --> G["Build JobSpec, Lane = Fast"]
+    G --> H{"Encrypted payload fetch URL present?"}
+    H -->|"yes"| I["SSRF-validate URL before dispatch"]
+    H -->|"no"| J["DispatchFastLane: rank live candidate nodes"]
+    I --> J
+    J --> K["Score by measured tok/s, in-flight load, price cap, enclave gate"]
+    K --> L["Try top-ranked node"]
+    L -->|"unreachable"| M["Mark node unreachable, try next candidate"]
+    M --> L
+    L -->|"reached"| N["Node agent: POST /v1/chat/completions"]
+    N --> O["jobrunner: governor foreground + contribution-cap check"]
+    O --> P["exoadapter → local Exo :52415"]
+    P --> O
+    O --> N
+    N --> Q["Result flows back to coordinator"]
+    L -->|"attempts exhausted"| R{"X-OIM-Queue: true?"}
+    R -->|"yes"| S["Bounded queue — retry every 400ms, 30s deadline"]
+    S --> J
+    R -->|"no"| T["503 Service Unavailable"]
+    Q --> U["Coordinator counts tokens actually delivered — never trusts node self-report"]
+    U --> V["Credit serving node/user earned balance"]
+    U --> W["Debit consumer balance — grant credits spent before earned"]
+    V --> X["200 OK — OpenAI-shaped JSON, tagged with serving node, latency, tok/s"]
+    W --> X
+    </pre>
+  </div>
+
+  <p>A few details that matter: routing never trusts a node's self-declared specs — it scores candidates using the last <i>measured</i> benchmark signature, penalized by current in-flight load. Failover marks a failed node unreachable and tries the next-ranked candidate (up to a configurable attempt cap) rather than retrying the same node. If every attempt fails and the client opted in via a header, the job falls into a short-lived bounded queue instead of failing outright. Streaming works identically through the routing/scoring stage, but relays Server-Sent Events end to end through the same relay helper at all three hops (Exo → node → coordinator → client); a stream that dies mid-flight can't be failed over — the client already has partial output — so it's logged rather than retried. Billing and node payout are always based on tokens the coordinator itself observed in the response, never a number the node reports about itself.</p>
+
+  <h2 id="regions">4. How do regions scale and activate?</h2>
+  <p>A new region comes online by starting an <span class="mono">oim-coordinator</span> pointed at the global directory with a pod ID and region hint. From that moment it immediately, and then on a fixed interval (60s by default, 15s in the Docker simulation), builds a signed <b>aggregate-only</b> health digest from its live node registry — model list, node count, and summed measured throughput, never any per-node detail — and pushes it to every configured directory endpoint.</p>
+  <p>The directory verifies the digest's signature against a pinned public key (trust-on-first-use by default, or a strict pre-authorized allowlist), stores it in a 120-second TTL cache, and forwards it one hop to a single paired peer directory for bootstrap redundancy — deliberately not full multi-hop gossip, to avoid loop amplification. Clients and dashboards discover pods by querying the directory (<span class="mono">GET /pods</span>, <span class="mono">GET /topology</span>) and then talk to the resolved pod's coordinator directly for everything else; the directory is never back in the loop for an actual job.</p>
+  <p>New users joining a pod get a startup grant, but the grant amount is a discrete step function of that pod's <i>verified</i> capacity — throughput from nodes whose self-submitted benchmark actually passed comparison against their claimed signature, not raw registered numbers. Below a verified-capacity threshold a pod grants the full base amount; past a middle threshold it halves; past a high threshold it grants nothing — directly implementing "bootstrap grants decay as earned capacity grows" without letting someone spin up fake unverified nodes to keep grants flowing. Grant issuance is itself gated by proof-of-work and a per-IP hourly cap to prevent farming.</p>
+  <p>Cross-region settlement integrity rides on the federation layer described above: coordinators poll each other's signed ledger-event history and flag any pod whose reported balance contradicts what it previously signed, so a compromised or forked coordinator's claims are independently checkable by every peer that's witnessed its history.</p>
+
+  <h2 id="data">5. What data do we capture?</h2>
+  <p>The entities below are drawn directly from the protocol and settlement structs; the coordinator's own per-node detail (device topology, exact chip variants, hostnames) is deliberately never sent upstream to the directory — only pod-level aggregates ever leave the region.</p>
+
+  <div class="diagram">
+    <pre class="mermaid">
+erDiagram
+    USER {
+        string user_id PK
+        string wallet_address
+    }
+    NODE {
+        string node_id PK
+        float declared_memory_gb
+        float declared_cap_pct
+        bool has_secure_enclave
+        bool enclave_attested
+    }
+    JOB {
+        string job_id PK
+        string requester_id FK
+        string lane
+        string sensitivity
+    }
+    POD {
+        string pod_id PK
+        string region_hint
+        float aggregate_tps
+    }
+    MEASURED_SIGNATURE {
+        float tokens_per_sec_decode
+        float tokens_per_sec_prefill
+        string benchmark_prompt_id
+    }
+    DIVISION_ORDER {
+        string job_id FK
+        string node_id FK
+        float total_measured
+        float total_delivered
+        float total_value
+    }
+    RESOURCE_LINE {
+        string resource_type
+        float measured_amount
+        float delivered_amount
+        float unit_price
+    }
+    SETTLEMENT_RECORD {
+        string record_id PK
+        bool verification_result
+        string signed_at
+    }
+    CREDIT_ENTRY {
+        string user_id FK
+        string origin
+        float amount
+        string source_reference
+    }
+    LEDGER_DEBIT {
+        string user_id FK
+        string job_id FK
+        float amount
+    }
+
+    USER ||--o{ JOB : requests
+    USER ||--o{ CREDIT_ENTRY : "is granted or earns"
+    USER ||--o{ LEDGER_DEBIT : pays
+    NODE ||--o{ DIVISION_ORDER : fulfills
+    NODE ||--o| MEASURED_SIGNATURE : claims
+    JOB ||--|| DIVISION_ORDER : generates
+    DIVISION_ORDER ||--o{ RESOURCE_LINE : itemizes
+    DIVISION_ORDER ||--|| SETTLEMENT_RECORD : "embedded in"
+    SETTLEMENT_RECORD ||--o{ CREDIT_ENTRY : authorizes
+    POD ||--o{ NODE : "aggregates, health-digest only"
+    </pre>
+  </div>
+
+  <p>Concretely: a node's <span class="mono">CapabilityManifest</span> captures declared memory and contribution cap, model list and quantizations, geographic hint (coarse lat/lng), a reachability endpoint, price per unit, whether it self-declares a Secure Enclave, and its last measured benchmark signature. A job (<span class="mono">JobSpec</span>) captures who requested it, which lane and sensitivity tier it ran under, and its price ceiling. Every unit of work actually delivered is itemized into resource lines (memory-hours, compute cycles, bandwidth relayed) with both the measured and delivered amounts recorded — the difference is tracked explicitly as shrinkage, not silently dropped. Those lines roll up into a division order per job/node pair, which gets embedded in an Ed25519-signed settlement record.</p>
+  <p>The credit ledger is the one place CLAUDE.md's "division-order accounting, never one collapsed number" constraint is most visible in code: a user's balance is always two independently-summed numbers — grant credits and earned credits — combined into a total only for display, and debits are applied grant-first. A self-audit function independently re-derives that same split and flags any account where debits exceed credits. Job outcomes, benchmark results, and enclave attestations are all signed submissions tied back to a node ID, and a separate measurement store tracks a node's most recently <i>measured</i> signature apart from what it originally claimed at registration — the gap between the two is what tier-verification checks.</p>
+
+  <h2 id="ios">6. How do iOS devices add to the network?</h2>
+  <p>Short answer: iOS devices never run inference and never register in the node registry — that's true by explicit design in both the Swift and Go code, not an oversight. Exo, the mesh's inference backend, is a macOS/Linux-only MLX daemon; there is no CoreML-as-inference-server path, no MLX/llama.cpp binding, and no HTTP server on the iOS side that executes a model.</p>
+  <p>What the iOS app (OIMDashboard, with iPadOS/visionOS support) actually does is threefold:</p>
+  <table>
+    <tr><th>Role</th><th>What it does</th></tr>
+    <tr><td>Dashboard</td><td>Reads live mesh state — topology, node list, region/pod summaries, global map — the same read-only surface watchOS and tvOS expose exclusively.</td></tr>
+    <tr><td>Client</td><td>Submits real, metered <span class="mono">POST /v1/chat/completions</span> calls against the mesh ("Try the mesh"), backed by a portable wallet: an Ed25519 account keypair held in iCloud Keychain, whose address (<span class="mono">"oim" + hex(SHA-256(pubkey))</span>) is the same key the coordinator's ledger balances are stored under — recoverable by re-importing the key, with no server-side reset since the coordinator never holds it.</td></tr>
+    <tr><td>Optional coordination participant</td><td>A device can opt in to a lightweight "Contribute" session that runs a small on-device intent classifier (CPU/Neural Engine only, never GPU) to hint a job's routing/sensitivity, and can host an encrypted payload pointer — using the byte-identical ECDH/HKDF/AES-GCM scheme as the Go side — so a real compute node can fetch and decrypt a prompt without the coordinator ever seeing plaintext. This is tracked in a separate <span class="mono">CoordinationRegistry</span> with its own TTL, explicitly walled off so it can never be selected by the inference routers, and gated by live thermal and memory-pressure checks so it never competes with the phone's foreground use.</td></tr>
+  </table>
+  <p>watchOS and tvOS are strictly passive — polling the directory's topology/node endpoints with no wallet, no crypto, and no coordination code present in those targets at all.</p>
+
+  <h2 id="stale">Appendix: where this report corrects CLAUDE.md</h2>
+  <p>Three places where the project's own CLAUDE.md undersells or mislabels what's actually in the code, found while researching this document:</p>
+  <div class="stale">
+  <b>"M7 stub — federated directory"</b> is misleading. Cross-pod signed ledger-event witnessing and fork/impersonation detection (<span class="mono">internal/federation</span>) is complete, tested (8 passing tests), and wired live into credit issuance with three working HTTP endpoints and a background poller. What's genuinely still unbuilt is a second, federated <i>discovery</i> layer (multiple directory "librarians" sharing a pod registry) — a different package that happens to share the M7 label.
+  </div>
+  <div class="stale">
+  <b>M3's fast-lane verification</b> (probabilistic spot-check re-dispatch, 3σ statistical baseline drift) is listed as live coordinator functionality but isn't called anywhere in the current <span class="mono">/v1/chat/completions</span> handler. It exists as tested code, just not wired into the request path yet.
+  </div>
+  <div class="stale">
+  The milestone table doesn't mention several substantial packages that exist and work — wallet identity, payload encryption, Secure Enclave attestation, HTTP-perimeter hardening (rate limiting, SSRF protection), and the iOS app's full crypto/wallet/coordination stack — which makes the written milestone list read as less complete than the codebase actually is.
+  </div>
+
+  <footer>Compiled from a direct source review of the open-inference-mesh repository. Diagrams are Mermaid — reopen this file in any browser to re-render them.</footer>
+</main>
+</div>
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: "dark", securityLevel: "loose" });
+</script>
+</body>
+</html>
