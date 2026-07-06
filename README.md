@@ -602,9 +602,12 @@ decentralized credit network — see the open items below.
    security review of the reservation endpoint specifically confirmed reservation
    churn has **no side effect on real dispatch** (it never touches a node's
    in-flight counter or routing score — verified against the code, not assumed),
-   so spamming it can't starve a node the way a first pass at the review suggested;
-   it inherits the same tracked, not-yet-built read-endpoint-auth gap as everything
-   else here, not a new one.
+   so spamming it can't starve a node the way a first pass at the review suggested.
+   Read-endpoint auth is now available (opt-in): `--protect-user-reads` gates the
+   per-user endpoints and `--user-quota-per-hour` caps per-account request volume;
+   the directory gained per-IP rate limiting and both servers a `--trusted-proxy`
+   option so those limits are effective behind a fronting reverse proxy (see the
+   [release path](#path-to-release-safe-secure-scalable) security table).
 5. ✅ **RESOLVED — Streaming billing edge case.** A streaming job whose node
    response ends with no (or a malformed) trailing SSE usage frame used to silently
    debit the consumer $0 and credit the node nothing, with no signal that anything
@@ -648,7 +651,7 @@ Everything above is a working **testbed** — a full multi-region mesh you can r
 | **TLS everywhere** (coordinator, directory, node reachability) | API keys and job payloads must not travel in plaintext | **Done** — coordinator + directory serve HTTPS via `--tls-cert`/`--tls-key` (TLS 1.2 floor); Go nodes trust it via `--tls-ca` (or `--tls-skip-verify` for dev); Apple clients use https + a local-networking-only ATS policy. **Coordinator→node dispatch is now TLS too**: a node opts in with its own `--tls-cert`/`--tls-key`, and the coordinator pins the exact certificate fingerprint recorded at that node's (Ed25519-signed) registration — TOFU pinning, not chain verification, since independently-operated nodes have no shared CA. Cert management is still manual (no ACME/auto-renew) |
 | **Node-side pointer consumption** | The encrypted-pointer path was only half-built: the coordinator threaded the pointer but no node fetched/decrypted ciphertext | **Done** — `internal/payloadcrypto` (Go-native ECDH-P256 → HKDF-SHA256 → AES-256-GCM, byte-compatible with the Swift client) lets the assigned node decrypt the payload itself. A new `POST /v1/reserve-node` resolves the recipient node *before* encryption so privacy-mode jobs keep the coordinator's TPS-aware routing |
 | **Secrets management** | API keys were stored and compared **in plaintext** in SQLite — a real, fixable vulnerability | **Done** — keys are now SHA-256-hashed at rest (only the hash is ever written or compared; the raw key exists only in the one-time `generate()` return value). TLS certs get a startup expiry warning (`WarnIfExpiringSoon`, 30-day window) across coordinator/directory/node. **Remaining:** node Ed25519 identity has no rotation by design (it's the node's permanent earnings anchor — rotating it would sever the trust chain, not improve it) |
-| **Auth on read endpoints + abuse limits** | `/topology`, `/nodes`, `/balance` are unauthenticated; needs per-account quotas and read-endpoint auth | Not started |
+| **Auth on read endpoints + abuse limits** | `/topology`, `/nodes`, `/balance` are unauthenticated; needs per-account quotas and read-endpoint auth | **Done (opt-in)** — `--protect-user-reads` gates the per-user endpoints (`GET /users/{id}/balance`, `GET /users/{id}/api-key`) so a caller needs the admin key or that user's own `oim_` key, closing balance-enumeration-by-user_id (aggregate reads `/topology`/`/nodes`/`/metrics` stay open by design for the public dashboard). `--user-quota-per-hour` adds a per-account request cap keyed on the *verified* user_id (not the spoofable `X-OIM-User-ID` header), so one account can't abuse the API from many IPs. The directory now has the coordinator's per-IP rate limiting too (previously it had none), and both servers gained `--trusted-proxy` so per-IP limits actually work behind the fronting nginx instead of collapsing every client into the proxy's single bucket. All opt-in like the rest of the hardening — a public deployment turns them on |
 | **Input hardening / DoS** (task #53) | ~~Only per-IP rate limiting~~ | **Done** — 8 MiB request-body cap, global in-flight concurrency limit (503 + Retry-After), `ReadHeaderTimeout` slow-loris guard, and an SSRF allowlist on the payload fetch URL (blocks loopback + link-local/cloud-metadata). Remaining: upstream WAF/scrubbing for volumetric floods |
 | **Outbound call resilience** (tasks #22, #24) | ~~A dropped connection silently failed a register/refresh; nothing bounded a node's own outbound call rate~~ | **Done** — `internal/httpx`: exponential backoff + jitter retry for transient node→coordinator failures (permanent 4xx fails fast), plus a client-side token-bucket limiter on outbound calls |
 | **CORS granularity** (task #27) | ~~Origin allowlist only supported exact matches~~ | **Done** — `*.domain.tld` wildcard-subdomain matching, case-insensitive, with an explicit apex/lookalike-suffix test matrix |
@@ -703,9 +706,7 @@ short tail of smaller polish:
 | #49 | **Progressive decentralization** | Partially done (multi-endpoint directory fallback across all clients, a real parity metric — see the Scalability table above). What's left needs an actual ops decision (deploy a second directory instance) plus a defined parity threshold and handoff automation — not just more code |
 | #52 | **Federated ledger authority (M7)** | Partially done: coordinator identity, TOFU-pinned/allowlisted pod registration, and cross-pod signed-ledger-event witnessing + audit now exist (`internal/federation`, `internal/directory.PinStore`). What's still open is the genuinely hard research problem — Byzantine-fault-tolerant consensus or staking/slashing so a pod that's compromised (not just impersonating another) can be automatically caught and quarantined, without inventing a stakeable token the project has deliberately avoided. This is what actually blocks fully open, trustless decentralization |
 
-The remaining smaller polish: **auth on read endpoints** (`/topology`,
-`/nodes`, `/balance`, and `/v1/reserve-node` all share the project's
-opt-in-via-`--api-key` posture rather than individual gating), a
+The remaining smaller polish: a
 **third-party security review** of the crypto/settlement paths (an internal
 multi-angle pass already happened — see the security table above — but that's
 not a substitute for an outside reviewer), a **ledger reconciliation/audit

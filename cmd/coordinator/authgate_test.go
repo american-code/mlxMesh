@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/open-inference-mesh/oim/internal/httpmw"
 )
 
 // isSelfAuthenticatingWrite gates whether the outer admin Bearer-token check
@@ -67,7 +69,7 @@ func TestAuthMiddleware_NodeRegistrationNotLockedOut(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := authMiddleware("admin-secret", newAPIKeyStore(), next)
+	handler := authMiddleware("admin-secret", newAPIKeyStore(), nil, next)
 
 	req := httptest.NewRequest(http.MethodPost, "/nodes/register", nil)
 	rec := httptest.NewRecorder()
@@ -89,5 +91,86 @@ func TestAuthMiddleware_NodeRegistrationNotLockedOut(t *testing.T) {
 	handler.ServeHTTP(rec3, req3)
 	if rec3.Code != http.StatusOK {
 		t.Errorf("POST /v1/chat/completions with valid admin key = %d, want %d", rec3.Code, http.StatusOK)
+	}
+}
+
+// authorizeUserRead is the gate for per-user reads under --protect-user-reads.
+func TestAuthorizeUserRead(t *testing.T) {
+	keys := newAPIKeyStore()
+	aliceKey, err := keys.generate("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bobKey, err := keys.generate("bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reqWith := func(token string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/users/alice/balance", nil)
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		return r
+	}
+
+	// Protection OFF: everything allowed (backward-compatible open reads).
+	if !authorizeUserRead(reqWith(""), "alice", false, "admin-secret", keys) {
+		t.Error("protection off: unauthenticated read should be allowed")
+	}
+
+	// Protection ON.
+	if authorizeUserRead(reqWith(""), "alice", true, "admin-secret", keys) {
+		t.Error("protection on: no token must be rejected")
+	}
+	if !authorizeUserRead(reqWith("admin-secret"), "alice", true, "admin-secret", keys) {
+		t.Error("protection on: admin key must be allowed")
+	}
+	if !authorizeUserRead(reqWith(aliceKey), "alice", true, "admin-secret", keys) {
+		t.Error("protection on: alice's own key reading alice's balance must be allowed")
+	}
+	if authorizeUserRead(reqWith(bobKey), "alice", true, "admin-secret", keys) {
+		t.Error("protection on: bob's key reading alice's balance must be rejected (no cross-account reads)")
+	}
+	if authorizeUserRead(reqWith("oim_totally_made_up"), "alice", true, "admin-secret", keys) {
+		t.Error("protection on: a forged oim_ token must be rejected")
+	}
+}
+
+// The per-account quota inside authMiddleware must throttle a single
+// authenticated user_id independent of source IP, and must not throttle the
+// admin key.
+func TestAuthMiddleware_PerAccountQuota(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	keys := newAPIKeyStore()
+	userKey, err := keys.generate("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Rate 0/sec sustained with burst 2 → third authenticated call is throttled.
+	limiter := httpmw.NewRateLimiter(0.0001, 2)
+	defer limiter.Stop()
+	handler := authMiddleware("admin-secret", keys, limiter, next)
+
+	call := func(token string) int {
+		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, r)
+		return rec.Code
+	}
+
+	if code := call(userKey); code != http.StatusOK {
+		t.Fatalf("first authenticated call = %d, want 200 (within burst)", code)
+	}
+	if code := call(userKey); code != http.StatusOK {
+		t.Fatalf("second authenticated call = %d, want 200 (within burst)", code)
+	}
+	if code := call(userKey); code != http.StatusTooManyRequests {
+		t.Errorf("third call for the same account = %d, want %d (quota exhausted)", code, http.StatusTooManyRequests)
+	}
+	// Admin key is exempt from the per-account quota.
+	if code := call("admin-secret"); code != http.StatusOK {
+		t.Errorf("admin key call = %d, want %d (admin exempt from per-account quota)", code, http.StatusOK)
 	}
 }

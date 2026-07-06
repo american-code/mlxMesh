@@ -1,16 +1,15 @@
-package coordinator
+package httpmw
 
 import (
 	"sync"
 	"time"
 )
 
-// IPRateLimiter enforces a per-client-IP token-bucket rate limit. One bucket
-// per IP, refilled continuously at ratePerSec and capped at burst. No
-// endpoint on this coordinator had any rate limiting before this — a single
-// client could hammer /v1/chat/completions, /users/{id}/startup-grant, or any
-// other endpoint as fast as the network allowed.
-type IPRateLimiter struct {
+// RateLimiter enforces a token-bucket rate limit keyed on an arbitrary string
+// (a client IP for per-IP limiting, or a user_id for per-account quotas). One
+// bucket per key, refilled continuously at ratePerSec and capped at burst.
+// Shared by the coordinator (per-IP + per-user) and the directory (per-IP).
+type RateLimiter struct {
 	mu         sync.Mutex
 	buckets    map[string]*bucket
 	ratePerSec float64
@@ -23,13 +22,13 @@ type bucket struct {
 	lastSeen time.Time
 }
 
-// NewIPRateLimiter starts a limiter allowing ratePerSec sustained requests per
-// IP with bursts up to burst. ratePerSec <= 0 disables limiting entirely —
+// NewRateLimiter starts a limiter allowing ratePerSec sustained requests per
+// key with bursts up to burst. ratePerSec <= 0 disables limiting entirely —
 // Allow always returns true (used for tests and explicit --rate-limit-rps=0).
 // A background goroutine evicts buckets idle for more than 10 minutes so
 // memory doesn't grow unbounded under a distributed/spoofed-source flood.
-func NewIPRateLimiter(ratePerSec, burst float64) *IPRateLimiter {
-	l := &IPRateLimiter{
+func NewRateLimiter(ratePerSec, burst float64) *RateLimiter {
+	l := &RateLimiter{
 		buckets:    make(map[string]*bucket),
 		ratePerSec: ratePerSec,
 		burst:      burst,
@@ -42,7 +41,7 @@ func NewIPRateLimiter(ratePerSec, burst float64) *IPRateLimiter {
 }
 
 // Stop halts the background eviction goroutine. Safe to call multiple times.
-func (l *IPRateLimiter) Stop() {
+func (l *RateLimiter) Stop() {
 	select {
 	case <-l.stop:
 	default:
@@ -50,7 +49,7 @@ func (l *IPRateLimiter) Stop() {
 	}
 }
 
-func (l *IPRateLimiter) runEviction() {
+func (l *RateLimiter) runEviction() {
 	t := time.NewTicker(2 * time.Minute)
 	defer t.Stop()
 	for {
@@ -59,9 +58,9 @@ func (l *IPRateLimiter) runEviction() {
 			return
 		case <-t.C:
 			l.mu.Lock()
-			for ip, b := range l.buckets {
+			for key, b := range l.buckets {
 				if time.Since(b.lastSeen) > 10*time.Minute {
-					delete(l.buckets, ip)
+					delete(l.buckets, key)
 				}
 			}
 			l.mu.Unlock()
@@ -69,19 +68,19 @@ func (l *IPRateLimiter) runEviction() {
 	}
 }
 
-// Allow reports whether a request from ip should proceed, consuming one token
+// Allow reports whether a request under key should proceed, consuming one token
 // if so. Always true when the limiter was constructed with ratePerSec <= 0.
-func (l *IPRateLimiter) Allow(ip string) bool {
+func (l *RateLimiter) Allow(key string) bool {
 	if l.ratePerSec <= 0 {
 		return true
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
-	b, ok := l.buckets[ip]
+	b, ok := l.buckets[key]
 	if !ok {
 		b = &bucket{tokens: l.burst, lastSeen: now}
-		l.buckets[ip] = b
+		l.buckets[key] = b
 	}
 	elapsed := now.Sub(b.lastSeen).Seconds()
 	b.tokens = min(l.burst, b.tokens+elapsed*l.ratePerSec)

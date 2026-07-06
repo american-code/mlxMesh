@@ -55,6 +55,8 @@ func rootCmd() *cobra.Command {
 	var corsOrigins []string
 	var tlsCert, tlsKey string
 	var podPinsPath, authorizedPodsPath string
+	var rateLimitRPS, rateLimitBurst float64
+	var trustedProxies []string
 
 	cmd := &cobra.Command{
 		Use:   "oim-directory",
@@ -67,7 +69,7 @@ individual node data, job payloads, or settlement data (proposal §7.1).
 Bootstrap-stage HA: run two instances with --peer pointing at each other.
 Each instance forwards received digests to its peer — one-hop only, no loops.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDirectory(listenAddr, peerURL, time.Duration(podTTLSec)*time.Second, corsOrigins, tlsCert, tlsKey, podPinsPath, authorizedPodsPath)
+			return runDirectory(listenAddr, peerURL, time.Duration(podTTLSec)*time.Second, corsOrigins, tlsCert, tlsKey, podPinsPath, authorizedPodsPath, rateLimitRPS, rateLimitBurst, trustedProxies)
 		},
 	}
 	cmd.Flags().StringVar(&listenAddr, "listen", ":9100", "Address to listen on")
@@ -78,10 +80,13 @@ Each instance forwards received digests to its peer — one-hop only, no loops.`
 	cmd.Flags().StringVar(&tlsKey, "tls-key", "", "Path to the TLS private key (PEM). Required together with --tls-cert")
 	cmd.Flags().StringVar(&podPinsPath, "pod-pins-path", "directory_pod_pins.json", "Where to persist trust-on-first-use pod_id->pubkey pins (task #52, M7) so a restart doesn't reset trust and let an impersonator claim an existing pod_id")
 	cmd.Flags().StringVar(&authorizedPodsPath, "authorized-pods", "", "Path to a JSON {pod_id: hex_pubkey} allowlist. When set, ONLY listed pod_ids are accepted (no trust-on-first-use auto-learning) — for deployments that want to enumerate federation membership explicitly")
+	cmd.Flags().Float64Var(&rateLimitRPS, "rate-limit-rps", 20.0, "Sustained requests per second allowed per client IP (0 disables). The directory is publicly exposed and decodes JSON POST bodies, so it needs the same per-IP floor as the coordinator")
+	cmd.Flags().Float64Var(&rateLimitBurst, "rate-limit-burst", 40.0, "Burst capacity per client IP on top of the sustained rate")
+	cmd.Flags().StringSliceVar(&trustedProxies, "trusted-proxy", nil, "IP or CIDR of reverse proxies (e.g. a fronting nginx) whose X-Forwarded-For may be trusted to identify the real client for rate limiting. Without this, requests behind a proxy all share one bucket (the proxy's IP). Ignored for any peer not in this list, since XFF is otherwise spoofable")
 	return cmd
 }
 
-func runDirectory(listenAddr, peerURL string, podTTL time.Duration, corsOrigins []string, tlsCert, tlsKey, podPinsPath, authorizedPodsPath string) error {
+func runDirectory(listenAddr, peerURL string, podTTL time.Duration, corsOrigins []string, tlsCert, tlsKey, podPinsPath, authorizedPodsPath string, rateLimitRPS, rateLimitBurst float64, trustedProxies []string) error {
 	store := directory.NewPodStore(podTTL)
 	gossip := directory.NewGossip(store, peerURL)
 
@@ -215,16 +220,28 @@ func runDirectory(listenAddr, peerURL string, podTTL time.Duration, corsOrigins 
 		return fmt.Errorf("listen on %s: %w", listenAddr, err)
 	}
 
+	proxyNets, err := httpmw.ParseTrustedProxies(trustedProxies)
+	if err != nil {
+		return err
+	}
+	limiter := httpmw.NewRateLimiter(rateLimitRPS, rateLimitBurst)
+	defer limiter.Stop()
+	if rateLimitRPS > 0 {
+		log.Printf("[directory] rate limiting enabled: %.1f req/s per IP, burst %.0f", rateLimitRPS, rateLimitBurst)
+	}
+
 	// Same DDoS floor as the coordinator (task #53): the directory is publicly
 	// exposed and decodes JSON bodies on /pods/register and /gossip/digest, so
-	// it needs the request-body cap and a global in-flight concurrency limit,
-	// not just headers/CORS. Without the body cap an oversized POST is read
-	// unbounded into memory here even though the coordinator is protected.
+	// it needs the per-IP rate limit, request-body cap, and a global in-flight
+	// concurrency limit, not just headers/CORS. Without the body cap an
+	// oversized POST is read unbounded into memory even though the coordinator
+	// is protected.
 	srv := &http.Server{
 		Handler: httpmw.SecurityHeaders(
 			corsMiddleware(corsOrigins,
 				httpmw.MaxBodyBytes(httpmw.DefaultMaxBodyBytes,
-					httpmw.LimitConcurrency(directoryMaxConcurrentRequests, mux)))),
+					httpmw.LimitConcurrency(directoryMaxConcurrentRequests,
+						httpmw.RateLimitByIP(limiter, proxyNets, mux))))),
 		ReadHeaderTimeout: 10 * time.Second, // slow-loris guard, same bound as the coordinator (task #53)
 	}
 	quit := make(chan os.Signal, 1)

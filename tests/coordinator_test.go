@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/open-inference-mesh/oim/internal/coordinator"
+	"github.com/open-inference-mesh/oim/internal/httpmw"
 	"github.com/open-inference-mesh/oim/internal/protocol"
 )
 
@@ -342,8 +343,8 @@ var _ = context.Background
 
 // --- Rate limiter tests ---
 
-func TestIPRateLimiterAllowsBurstThenBlocks(t *testing.T) {
-	l := coordinator.NewIPRateLimiter(1.0, 3.0) // 1 req/s sustained, burst of 3
+func TestRateLimiterAllowsBurstThenBlocks(t *testing.T) {
+	l := httpmw.NewRateLimiter(1.0, 3.0) // 1 req/s sustained, burst of 3
 	defer l.Stop()
 
 	ip := "203.0.113.1"
@@ -357,8 +358,8 @@ func TestIPRateLimiterAllowsBurstThenBlocks(t *testing.T) {
 	}
 }
 
-func TestIPRateLimiterIsolatesByIP(t *testing.T) {
-	l := coordinator.NewIPRateLimiter(1.0, 1.0)
+func TestRateLimiterIsolatesByIP(t *testing.T) {
+	l := httpmw.NewRateLimiter(1.0, 1.0)
 	defer l.Stop()
 
 	if !l.Allow("203.0.113.1") {
@@ -372,8 +373,8 @@ func TestIPRateLimiterIsolatesByIP(t *testing.T) {
 	}
 }
 
-func TestIPRateLimiterDisabledWhenRateIsZero(t *testing.T) {
-	l := coordinator.NewIPRateLimiter(0, 0)
+func TestRateLimiterDisabledWhenRateIsZero(t *testing.T) {
+	l := httpmw.NewRateLimiter(0, 0)
 	defer l.Stop()
 	for i := 0; i < 100; i++ {
 		if !l.Allow("203.0.113.1") {
@@ -382,8 +383,8 @@ func TestIPRateLimiterDisabledWhenRateIsZero(t *testing.T) {
 	}
 }
 
-func TestIPRateLimiterRefillsOverTime(t *testing.T) {
-	l := coordinator.NewIPRateLimiter(1000.0, 1.0) // fast refill so the test doesn't need a long sleep
+func TestRateLimiterRefillsOverTime(t *testing.T) {
+	l := httpmw.NewRateLimiter(1000.0, 1.0) // fast refill so the test doesn't need a long sleep
 	defer l.Stop()
 	ip := "203.0.113.1"
 	if !l.Allow(ip) {

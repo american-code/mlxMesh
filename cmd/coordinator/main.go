@@ -201,8 +201,9 @@ func rootCmd() *cobra.Command {
 	var listenAddr, podID, regionHint, publicURL, apiKey, dbPath string
 	var directoryURLs []string
 	var maxDispatchAttempts, directoryIntervalSec, grantPoWBits int
-	var rateLimitRPS, rateLimitBurst, grantRateLimitPerHour float64
-	var corsOrigins []string
+	var rateLimitRPS, rateLimitBurst, grantRateLimitPerHour, userQuotaPerHour float64
+	var protectUserReads bool
+	var corsOrigins, trustedProxies []string
 	var tlsCert, tlsKey string
 	var identityPath, federationKey, federationDBPath string
 	var federationPollIntervalSec int
@@ -220,7 +221,8 @@ Optionally report aggregate health to a directory with --directory.`,
 			return runCoordinator(listenAddr, podID, regionHint, directoryURLs, publicURL, apiKey, dbPath,
 				maxDispatchAttempts, time.Duration(directoryIntervalSec)*time.Second, rateLimitRPS, rateLimitBurst,
 				corsOrigins, grantPoWBits, grantRateLimitPerHour, tlsCert, tlsKey,
-				identityPath, federationKey, federationDBPath, time.Duration(federationPollIntervalSec)*time.Second)
+				identityPath, federationKey, federationDBPath, time.Duration(federationPollIntervalSec)*time.Second,
+				protectUserReads, userQuotaPerHour, trustedProxies)
 		},
 	}
 	cmd.Flags().StringVar(&listenAddr, "listen", ":9000", "Address to listen on")
@@ -243,6 +245,9 @@ Optionally report aggregate health to a directory with --directory.`,
 	cmd.Flags().StringVar(&federationKey, "federation-key", "", "Bearer credential peer coordinators use to pull this pod's signed ledger-event history (GET /federation/ledger-events, /federation/audit/*) and this pod uses to pull theirs. Empty = federation witnessing disabled (task #52, M7 is opt-in like the other hardening features)")
 	cmd.Flags().StringVar(&federationDBPath, "federation-db-path", "", "SQLite file for this pod's own signed ledger-event history and witnessed peer history (empty = in-memory only, resets on restart). Deliberately a SEPARATE flag from --db-path: coordinators sharing one --db-path/volume for ledger merging must NOT also share a federation store, or their self-event sequence numbers collide")
 	cmd.Flags().IntVar(&federationPollIntervalSec, "federation-poll-interval", 30, "Seconds between polling peer pods (discovered via --directory) for new signed ledger events")
+	cmd.Flags().BoolVar(&protectUserReads, "protect-user-reads", false, "Require auth on per-user read endpoints (GET /users/{id}/balance, GET /users/{id}/api-key): the caller must present the admin --api-key or that user's own oim_ key. Off by default so the public dashboard can read aggregate topology; turn ON for a public deployment so balances aren't enumerable by user_id. Aggregate reads (/topology, /nodes, /metrics) stay open")
+	cmd.Flags().Float64Var(&userQuotaPerHour, "user-quota-per-hour", 0, "Per-account request quota: max requests per hour for a single authenticated user_id, layered on top of the per-IP --rate-limit-rps so one account can't abuse the API from many IPs (0 disables). Only applies to requests that resolve to a user via Bearer auth")
+	cmd.Flags().StringSliceVar(&trustedProxies, "trusted-proxy", nil, "IP or CIDR of reverse proxies (e.g. a fronting nginx) whose X-Forwarded-For may be trusted to identify the real client for per-IP rate limiting. Without this, requests behind a proxy all share one bucket (the proxy's IP), making per-IP limits ineffective. Ignored for any peer not in this list, since XFF is otherwise spoofable")
 	return cmd
 }
 
@@ -269,7 +274,11 @@ func (s *settlementRecordStore) store(r map[string]any) {
 	s.records = append(s.records, r)
 }
 
-func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string, publicURL, apiKey, dbPath string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64, tlsCert, tlsKey, identityPath, federationKey, federationDBPath string, federationPollInterval time.Duration) error {
+func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string, publicURL, apiKey, dbPath string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64, tlsCert, tlsKey, identityPath, federationKey, federationDBPath string, federationPollInterval time.Duration, protectUserReads bool, userQuotaPerHour float64, trustedProxies []string) error {
+	proxyNets, err := httpmw.ParseTrustedProxies(trustedProxies)
+	if err != nil {
+		return err
+	}
 	registry := coordinator.NewNodeRegistry()
 	// Structured logging (task #20): OIM_LOG_FORMAT=json emits machine-parseable
 	// JSON logs for aggregation; the default stays human-readable text. Key money
@@ -400,7 +409,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 	// write-path limiter (constructed below, applied to the whole mux) is tuned
 	// for legitimate high-frequency node refreshes, not for "how many free
 	// credit grants can one IP mint per hour."
-	grantLimiter := coordinator.NewIPRateLimiter(grantRateLimitPerHour/3600.0, 2)
+	grantLimiter := httpmw.NewRateLimiter(grantRateLimitPerHour/3600.0, 2)
 	defer grantLimiter.Stop()
 
 	mux := http.NewServeMux()
@@ -1062,7 +1071,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 	// write-path limiter, and a proof-of-work challenge that makes minting each
 	// claimable identity cost real wall-clock CPU time instead of being free.
 	mux.HandleFunc("POST /users/{id}/startup-grant", func(w http.ResponseWriter, r *http.Request) {
-		if !grantLimiter.Allow(clientIP(r)) {
+		if !grantLimiter.Allow(httpmw.ClientIP(r, proxyNets)) {
 			writeErr(w, http.StatusTooManyRequests, "too many startup-grant claims from this address; try again later")
 			return
 		}
@@ -1100,6 +1109,10 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 	// The split must never be collapsed to one number — dashboard shows both separately (proposal §5a).
 	mux.HandleFunc("GET /users/{id}/balance", func(w http.ResponseWriter, r *http.Request) {
 		userID := r.PathValue("id")
+		if !authorizeUserRead(r, userID, protectUserReads, apiKey, apiKeys) {
+			writeErr(w, http.StatusForbidden, "forbidden: reading this balance requires the account's own API key or the admin key")
+			return
+		}
 		writeJSON(w, http.StatusOK, ledger.GetBalance(userID))
 	})
 
@@ -1124,6 +1137,10 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 	// GET /users/{id}/api-key — check whether a key exists (does NOT return the key value).
 	mux.HandleFunc("GET /users/{id}/api-key", func(w http.ResponseWriter, r *http.Request) {
 		userID := r.PathValue("id")
+		if !authorizeUserRead(r, userID, protectUserReads, apiKey, apiKeys) {
+			writeErr(w, http.StatusForbidden, "forbidden: checking this key requires the account's own API key or the admin key")
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"user_id": userID,
 			"exists":  apiKeys.exists(userID),
@@ -1493,12 +1510,33 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		return fmt.Errorf("listen on %s: %w", listenAddr, err)
 	}
 
+	// Per-account quota (task: read-endpoint auth + abuse limits): a token
+	// bucket keyed on the AUTHENTICATED user_id, enforced inside authMiddleware
+	// where the key→user mapping is verified — not on the client-supplied
+	// X-OIM-User-ID header, which a caller could spoof to evade the cap or
+	// grief another account. Burst = ~1 minute of the hourly budget (floor 5)
+	// so normal interactive use isn't throttled while sustained abuse is.
+	userBurst := userQuotaPerHour / 60.0
+	if userBurst < 5 {
+		userBurst = 5
+	}
+	userLimiter := httpmw.NewRateLimiter(userQuotaPerHour/3600.0, userBurst)
+	defer userLimiter.Stop()
+
 	var handler http.Handler = mux
 	if apiKey != "" {
-		handler = authMiddleware(apiKey, apiKeys, mux)
+		handler = authMiddleware(apiKey, apiKeys, userLimiter, mux)
 		log.Printf("[coordinator] API key auth enabled for write operations")
+		if userQuotaPerHour > 0 {
+			log.Printf("[coordinator] per-account quota enabled: %.0f req/hour per user", userQuotaPerHour)
+		}
+	} else if userQuotaPerHour > 0 {
+		log.Printf("[coordinator] WARNING: --user-quota-per-hour set but --api-key is not; per-account quota only applies to authenticated (oim_ key) requests, so it will not engage without auth")
 	}
-	limiter := coordinator.NewIPRateLimiter(rateLimitRPS, rateLimitBurst)
+	if protectUserReads {
+		log.Printf("[coordinator] per-user read protection enabled: GET /users/{id}/balance and /api-key require the account's own key or the admin key")
+	}
+	limiter := httpmw.NewRateLimiter(rateLimitRPS, rateLimitBurst)
 	defer limiter.Stop()
 	if rateLimitRPS > 0 {
 		log.Printf("[coordinator] rate limiting enabled: %.1f req/s per IP, burst %.0f", rateLimitRPS, rateLimitBurst)
@@ -1524,7 +1562,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 			metricsMiddleware(
 				httpmw.MaxBodyBytes(httpmw.DefaultMaxBodyBytes,
 					httpmw.LimitConcurrency(maxConcurrentRequests,
-						rateLimitMiddleware(limiter, handler))))))
+						rateLimitMiddleware(limiter, proxyNets, handler))))))
 	srv := &http.Server{
 		Handler:           chain,
 		ReadHeaderTimeout: readHeaderTimeout, // slow-loris guard (task #53)
@@ -1600,6 +1638,31 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 // An empty federationKey always denies — federation witnessing is opt-in
 // (see --federation-key), and these two handlers are only reached with a
 // zero-value key when an operator wired federation up incompletely.
+// authorizeUserRead gates the per-user read endpoints when --protect-user-reads
+// is on. Allowed callers: the static admin key, or the user's own oim_ key
+// (whose stored user_id matches the requested id). When protection is off it
+// always allows — preserving the open-reads default the sim and the public
+// dashboard rely on. Aggregate reads (/topology, /nodes, /metrics) are never
+// gated here; only per-user data (balance, key existence) is.
+func authorizeUserRead(r *http.Request, id string, protect bool, adminKey string, keys *apiKeyStore) bool {
+	if !protect {
+		return true
+	}
+	auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if auth == "" {
+		return false
+	}
+	if adminKey != "" && subtle.ConstantTimeCompare([]byte(auth), []byte(adminKey)) == 1 {
+		return true
+	}
+	if strings.HasPrefix(auth, "oim_") {
+		if uid, ok := keys.lookup(auth); ok && uid == id {
+			return true
+		}
+	}
+	return false
+}
+
 func federationAuthorized(r *http.Request, federationKey string) bool {
 	if federationKey == "" {
 		return false
@@ -1749,7 +1812,7 @@ func isSelfAuthenticatingWrite(method, path string) bool {
 //   - The static admin key (--api-key flag) — grants full access, no user attribution
 //   - A per-user oim_* key (generated via POST /users/{id}/api-key) — the user ID is
 //     injected as X-OIM-User-ID so the credit gate can debit the right account
-func authMiddleware(adminKey string, keys *apiKeyStore, next http.Handler) http.Handler {
+func authMiddleware(adminKey string, keys *apiKeyStore, userLimiter *httpmw.RateLimiter, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Reads, preflight, and self-authenticating/bootstrap writes are open
 		if r.Method == http.MethodGet || r.Method == http.MethodOptions || isSelfAuthenticatingWrite(r.Method, r.URL.Path) {
@@ -1763,14 +1826,26 @@ func authMiddleware(adminKey string, keys *apiKeyStore, next http.Handler) http.
 			json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized: Bearer token required"})
 			return
 		}
-		// Static admin key — accepted as-is.
-		if auth == adminKey {
+		// Static admin key — accepted as-is (constant-time to avoid leaking it
+		// byte-by-byte via comparison timing). Exempt from the per-account quota:
+		// it's the operator, not a metered user account.
+		if adminKey != "" && subtle.ConstantTimeCompare([]byte(auth), []byte(adminKey)) == 1 {
 			next.ServeHTTP(w, r)
 			return
 		}
 		// Per-user oim_* key — inject the user ID and allow.
 		if strings.HasPrefix(auth, "oim_") {
 			if uid, ok := keys.lookup(auth); ok {
+				// Per-account quota, keyed on the VERIFIED user_id (not the
+				// spoofable X-OIM-User-ID header), so one account can't exceed
+				// its hourly budget across many IPs.
+				if userLimiter != nil && !userLimiter.Allow("user:"+uid) {
+					w.Header().Set("Retry-After", "60")
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusTooManyRequests)
+					json.NewEncoder(w).Encode(map[string]string{"error": "per-account quota exceeded, retry shortly"})
+					return
+				}
 				// Synthetic header so the credit gate picks up the caller's identity
 				// without requiring the client to send X-OIM-User-ID separately.
 				if r.Header.Get("X-OIM-User-ID") == "" {
@@ -1791,13 +1866,13 @@ func authMiddleware(adminKey string, keys *apiKeyStore, next http.Handler) http.
 // endpoint except the SSE stream (a single long-lived connection, not a series
 // of discrete requests — counting it against the limiter would make it trip
 // immediately) and CORS preflight. Returns 429 with Retry-After when exceeded.
-func rateLimitMiddleware(limiter *coordinator.IPRateLimiter, next http.Handler) http.Handler {
+func rateLimitMiddleware(limiter *httpmw.RateLimiter, trustedProxies []*net.IPNet, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions || r.URL.Path == "/nodes/stream" {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if !limiter.Allow(clientIP(r)) {
+		if !limiter.Allow(httpmw.ClientIP(r, trustedProxies)) {
 			w.Header().Set("Retry-After", "1")
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)
@@ -1806,20 +1881,6 @@ func rateLimitMiddleware(limiter *coordinator.IPRateLimiter, next http.Handler) 
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-// clientIP extracts the connecting peer's address, stripping the port.
-// Deliberately does NOT trust X-Forwarded-For — that header is
-// client-controlled and trusting it blindly would let anyone bypass the
-// limiter by sending a fresh fake IP on every request. Operators running
-// behind a real reverse proxy should terminate rate limiting there instead,
-// or extend this once a trusted-proxy allowlist is configured.
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }
 
 // corsMiddleware allows browser requests from allowedOrigins. An empty
