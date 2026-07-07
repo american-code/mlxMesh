@@ -47,6 +47,20 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true   # allow plain http to local Docker cluster
+    # entitlements.properties is authoritative — XcodeGen fully regenerates
+    # the .entitlements file at `path` from this block on every `generate`;
+    # a hand-edited key not mirrored here gets silently wiped. Don't
+    # hand-edit iOS/OIMDashboard.entitlements directly.
+    #
+    # keychain-access-groups: MUST match OIMMenuBar/project.yml's own
+    # entitlements.properties AND WalletStore.swift's keychainAccessGroup
+    # constant exactly — see OIMMenuBar/project.yml's matching comment for
+    # why this is required for real cross-app (Mac + iPad) wallet sync.
+    entitlements:
+      path: iOS/OIMDashboard.entitlements
+      properties:
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.openinferencemesh.shared-wallet
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.openinferencemesh.app

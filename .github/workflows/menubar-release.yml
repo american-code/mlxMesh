@@ -1,0 +1,143 @@
+# Developer ID + notarization distribution for the mlxMesh menu-bar node app
+# (OIMMenuBar). Independent of testflight.yml/fastlane/Appfile — those are
+# wired for Apple Distribution / App Store Connect signing, which is the
+# WRONG signing model for a utility distributed outside the App Store. See
+# MENUBAR_RELEASING.md for why these are two separate concerns and must not
+# be merged.
+#
+# Manual-dispatch only, same reasoning as testflight.yml: a signed/notarized
+# release is a deliberate action, not something every push should trigger.
+# This workflow is a SCAFFOLD: `preflight` (build-only, no signing, always
+# safe to run) works today; `release` (the real sign+notarize+package path)
+# is gated on secrets that do not exist yet — see the list below.
+#
+# Secrets the operator must add to the repo (Settings -> Secrets -> Actions)
+# before `release` can work:
+#   OIM_DEVELOPER_ID_CERT           base64 of the exported Developer ID Application .p12
+#   OIM_DEVELOPER_ID_CERT_PASSWORD  the .p12's export password
+#   OIM_DEVELOPER_ID_TEAM_ID        likely WXDFFW3882 (same paid Apple Developer
+#                                   Program membership already implied by the
+#                                   TestFlight scaffold) — confirm, don't assume
+#   OIM_NOTARY_API_KEY_ID           App Store Connect API key scoped for notarization
+#   OIM_NOTARY_API_ISSUER_ID        -- NOTE: this is a DIFFERENT concern from the
+#   OIM_NOTARY_API_KEY_CONTENT      TestFlight ASC secrets above; don't assume
+#                                   they're reusable as-is (different scope/key)
+
+name: menubar-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: "release lane to run"
+        type: choice
+        default: preflight
+        options: [preflight, release]
+
+jobs:
+  menubar:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app || true
+
+      - name: Install tooling
+        run: brew install xcodegen
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Order matters: embed-oim.sh must run before `xcodegen generate` — see
+      # both files' own comments for why (xcodegen discovers bundle resources
+      # by scanning the filesystem at generation time).
+      - name: Embed oim binary
+        run: OIMMenuBar/scripts/embed-oim.sh
+
+      - name: Generate Xcode project
+        run: cd OIMMenuBar && xcodegen generate
+
+      - name: Preflight build (no signing)
+        run: |
+          xcodebuild build \
+            -project OIMMenuBar/OIMMenuBar.xcodeproj \
+            -scheme OIMMenuBar \
+            -destination 'generic/platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Guard — release requires Developer ID + notary credentials
+        if: ${{ inputs.lane == 'release' }}
+        env:
+          OIM_DEVELOPER_ID_CERT: ${{ secrets.OIM_DEVELOPER_ID_CERT }}
+          OIM_NOTARY_API_KEY_ID: ${{ secrets.OIM_NOTARY_API_KEY_ID }}
+        run: |
+          if [ -z "$OIM_DEVELOPER_ID_CERT" ] || [ -z "$OIM_NOTARY_API_KEY_ID" ]; then
+            echo "::error::release lane requires Developer ID + notary secrets (OIM_DEVELOPER_ID_*, OIM_NOTARY_API_*). Configure them first; see MENUBAR_RELEASING.md." && exit 1
+          fi
+
+      - name: Import Developer ID signing identity
+        if: ${{ inputs.lane == 'release' }}
+        env:
+          OIM_DEVELOPER_ID_CERT: ${{ secrets.OIM_DEVELOPER_ID_CERT }}
+          OIM_DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.OIM_DEVELOPER_ID_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN=build.keychain
+          security create-keychain -p actions "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p actions "$KEYCHAIN"
+          echo "$OIM_DEVELOPER_ID_CERT" | base64 --decode > cert.p12
+          security import cert.p12 -k "$KEYCHAIN" -P "$OIM_DEVELOPER_ID_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k actions "$KEYCHAIN"
+          rm -f cert.p12
+
+      - name: Archive, sign, notarize, staple, package
+        if: ${{ inputs.lane == 'release' }}
+        env:
+          OIM_DEVELOPER_ID_TEAM_ID: ${{ secrets.OIM_DEVELOPER_ID_TEAM_ID }}
+          OIM_NOTARY_API_KEY_ID: ${{ secrets.OIM_NOTARY_API_KEY_ID }}
+          OIM_NOTARY_API_ISSUER_ID: ${{ secrets.OIM_NOTARY_API_ISSUER_ID }}
+          OIM_NOTARY_API_KEY_CONTENT: ${{ secrets.OIM_NOTARY_API_KEY_CONTENT }}
+        run: |
+          ARCHIVE=build/OIMMenuBar.xcarchive
+          APP=build/OIMMenuBar.app
+          DMG=build/mlxMesh.dmg
+
+          xcodebuild archive \
+            -project OIMMenuBar/OIMMenuBar.xcodeproj \
+            -scheme OIMMenuBar \
+            -archivePath "$ARCHIVE" \
+            CODE_SIGN_IDENTITY="Developer ID Application" \
+            DEVELOPMENT_TEAM="$OIM_DEVELOPER_ID_TEAM_ID"
+
+          cp -R "$ARCHIVE/Products/Applications/OIMMenuBar.app" "$APP"
+
+          # The embedded `oim` binary must ALSO be signed for notarization —
+          # every executable in the bundle needs a valid signature, not just
+          # the app wrapper. See MENUBAR_RELEASING.md.
+          codesign --force --options runtime --sign "Developer ID Application" "$APP/Contents/Resources/oim"
+          codesign --force --deep --options runtime --sign "Developer ID Application" "$APP"
+
+          echo "$OIM_NOTARY_API_KEY_CONTENT" | base64 --decode > notary_key.p8
+          xcrun notarytool submit "$APP" \
+            --key notary_key.p8 \
+            --key-id "$OIM_NOTARY_API_KEY_ID" \
+            --issuer "$OIM_NOTARY_API_ISSUER_ID" \
+            --wait
+          rm -f notary_key.p8
+
+          xcrun stapler staple "$APP"
+
+          mkdir -p build/dmg-root
+          cp -R "$APP" build/dmg-root/
+          ln -s /Applications build/dmg-root/Applications
+          hdiutil create -volname "mlxMesh" -srcfolder build/dmg-root -ov -format UDZO "$DMG"
+
+      - name: Upload artifact
+        if: ${{ inputs.lane == 'release' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlxmesh-dmg
+          path: build/mlxMesh.dmg

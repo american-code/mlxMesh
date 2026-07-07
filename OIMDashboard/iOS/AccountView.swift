@@ -63,9 +63,18 @@ struct CreditGauge: View {
         .frame(width: 220, height: 140)
         .overlay(alignment: .center) {
             VStack(spacing: 2) {
-                Text(total, format: .number.precision(.fractionLength(1)))
-                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                // 8 decimal places, bitcoin-satoshi style — the availability-reward
+                // probe (see README's "Verified availability reward") credits
+                // fractions of a cent at a time, and 1-2 decimals rounds that
+                // straight to an invisible "0.00" even as the balance genuinely
+                // grows. minimumScaleFactor keeps a 3+-digit whole-number balance
+                // from overflowing this small a circle.
+                Text(total, format: .number.precision(.fractionLength(8)))
+                    .font(.system(size: 17, weight: .bold, design: .rounded))
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                    .padding(.horizontal, 6)
                 Text("CREDITS")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.secondary)
@@ -229,10 +238,13 @@ struct CreditRow: View {
                 Text(label)
                     .font(bold ? .subheadline.bold() : .subheadline)
                 Spacer()
-                Text(value, format: .number.precision(.fractionLength(2)))
-                    .font(.system(size: bold ? 17 : 15, weight: .bold, design: .rounded))
+                // 8 decimals (matches CreditGauge) — see its comment for why.
+                Text(value, format: .number.precision(.fractionLength(8)))
+                    .font(.system(size: bold ? 15 : 13, weight: .bold, design: .rounded))
                     .foregroundStyle(color)
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
             Text(subtitle)
                 .font(.caption2)
@@ -258,6 +270,8 @@ struct WalletSection: View {
     @State private var linkNodeID = ""
     @State private var linkMsg: String?
     @State private var busy = false
+    @State private var removingDevice: String?
+    @State private var removeMsg: String?
 
     private var resolvedURL: String? { coordinatorURL.map { NetworkClient.resolvedCoordinator($0) } }
 
@@ -393,12 +407,49 @@ struct WalletSection: View {
                 if let msg = linkMsg {
                     Text(msg).font(.caption).foregroundStyle(.secondary)
                 }
+                if let msg = removeMsg {
+                    Text(msg).font(.caption).foregroundStyle(.secondary)
+                }
+                // Explicit trailing button (not just swipe-to-delete) — a
+                // stale/test device from a rebuild is otherwise stuck here
+                // forever with no discoverable way to clear it.
                 ForEach(wallet.linkedDevices, id: \.self) { dev in
-                    Label(dev, systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(NodeStatus.live.color)
+                    HStack {
+                        Label(dev, systemImage: "checkmark.circle.fill")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(NodeStatus.live.color)
+                        Spacer()
+                        if removingDevice == dev {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button {
+                                removeDevice(dev)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            removeDevice(dev)
+                        } label: {
+                            Label("Remove", systemImage: "trash")
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    private func removeDevice(_ dev: String) {
+        guard let url = resolvedURL, removingDevice == nil else { return }
+        removingDevice = dev
+        Task {
+            removeMsg = await wallet.unlinkDevice(dev, coordinatorURL: url)
+                ?? "Removed — \(dev.prefix(12))… no longer earns into this account."
+            removingDevice = nil
         }
     }
 }

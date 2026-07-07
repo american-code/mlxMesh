@@ -1,0 +1,134 @@
+# XcodeGen project definition for the mlxMesh menu-bar node app.
+# Generate with: brew install xcodegen && xcodegen generate
+#
+# Deliberately a SEPARATE project from ../OIMDashboard, not an added target
+# there — this app is distributed outside the App Store (Developer ID +
+# notarization), needs LSUIElement (no Dock icon), and has a background-
+# persistent lifecycle none of the iOS/watchOS/tvOS targets share. See
+# MENUBAR_RELEASING.md for the distribution/signing story.
+#
+# Three files are reused from OIMDashboard BY REFERENCE (not copied) so there
+# is exactly one copy of the wallet/crypto/network logic and zero drift risk
+# between this app and the iOS app: NetworkClient.swift, Ed25519.swift,
+# WalletStore.swift. None of them are iOS-specific despite two living under
+# an iOS/ directory by historical convention — see each file's own doc
+# comment.
+
+name: OIMMenuBar
+options:
+  bundleIdPrefix: com.openinferencemesh
+  minimumXcodeGenVersion: "2.40"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    # Same team as OIMDashboard for now. Distribution signing (Developer ID
+    # Application, not Apple Distribution) is configured separately at
+    # release time — see MENUBAR_RELEASING.md. Change this to your own team
+    # ID if you fork/build under a different account.
+    DEVELOPMENT_TEAM: "WXDFFW3882"
+    CODE_SIGN_STYLE: Automatic
+    DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+
+targets:
+  OIMMenuBar:
+    type: application
+    platform: macOS
+    deploymentTarget: "26.0" # matches the deployment floor OIMDashboard's other targets use
+    # Bare paths only — no explicit `group:` keys. OIMDashboard/project.yml
+    # documents that group: + createIntermediateGroups sends XcodeGen 2.45.x
+    # into a pathological, non-terminating code path. Keep this inline form.
+    sources:
+      - App
+      - Sources
+      # Explicit Copy Files phase, NOT a generic `sources:` folder reference —
+      # xcodegen's automatic source-folder scanning classifies files by
+      # extension (source vs. resource vs. ignore), and a bare extensionless
+      # binary like `oim` was being silently skipped by that heuristic (only
+      # the Assets.xcassets made it into the built bundle, since asset
+      # catalogs get special-cased handling by Xcode's own asset compiler
+      # regardless of how they're referenced — confirmed by inspecting the
+      # actual built .app's Contents/Resources). An explicit copyFiles phase
+      # with a known destination sidesteps that heuristic entirely.
+      #
+      # Still must exist on disk BEFORE `xcodegen generate` runs (this entry
+      # references a specific file path, and xcodegen needs it present to add
+      # the reference). Build order is always:
+      #   scripts/embed-oim.sh  →  xcodegen generate  →  xcodebuild
+      # (enforced in CI and in local dev docs — see MENUBAR_RELEASING.md).
+      - path: Resources/oim
+        buildPhase:
+          copyFiles:
+            destination: resources
+      - ../OIMDashboard/Shared/NetworkClient.swift
+      - ../OIMDashboard/Shared/Models.swift # NetworkClient.swift decodes TopologyResponse (and other wire types) defined here
+      - ../OIMDashboard/Shared/ProofOfWork.swift # NetworkClient.claimStartupGrant calls ProofOfWork.mineStartupGrant
+      - ../OIMDashboard/iOS/Crypto/Ed25519.swift
+      - ../OIMDashboard/iOS/Wallet/WalletStore.swift
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: mlxMesh
+        CFBundleShortVersionString: "0.1.0" # bumped by scripts/build-release.sh at release time to match the embedded oim binary's version
+        CFBundleVersion: "1"
+        LSUIElement: true # menu-bar agent: no Dock icon, no Cmd-Tab entry
+        LSMinimumSystemVersion: "13.0" # MenuBarExtra's actual floor; deploymentTarget above is this project's own convention, not a MenuBarExtra requirement
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true # mesh coordinators may be plain-HTTP in local/dev setups
+    # entitlements.properties is authoritative — XcodeGen fully regenerates
+    # the .entitlements file at `path` from this block on every `generate`
+    # (confirmed: a hand-edited key not mirrored here gets silently wiped to
+    # an empty <dict/>, comments included). Don't hand-edit
+    # App/OIMMenuBar.entitlements directly; it won't survive.
+    #
+    # App Sandbox is intentionally left unset (its absence means "not
+    # sandboxed," the default for a plain macOS app) — a sandboxed process
+    # could not launch Exo.app, spawn the embedded `oim` child process
+    # reliably, shell out to `brew`, or read ~/.config/oim/node_identity.json.
+    # See MENUBAR_RELEASING.md for why Mac App Store distribution is a
+    # non-goal for v1 as a result.
+    #
+    # keychain-access-groups: MUST match OIMDashboard/project.yml's own
+    # entitlements.properties AND WalletStore.swift's keychainAccessGroup
+    # constant exactly. Without this, this app's account-seed Keychain item
+    # lives in a group implicitly derived from ITS OWN bundle ID
+    # (com.openinferencemesh.app.menubar), separate from OIMDashboard's
+    # (com.openinferencemesh.app) even under the same iCloud account and
+    # kSecAttrSynchronizable — cross-app Keychain Sharing has always
+    # required this explicit entitlement. Traced to two real bugs: the Mac
+    # app appearing to "reset" its wallet on some Xcode rebuilds (an
+    # implicit group is tied more loosely to the exact signing identity,
+    # which ad-hoc/dev signing can shift under during active development),
+    # and the wallet never actually syncing to the iPad app at all despite
+    # both apps being signed into the same iCloud account.
+    entitlements:
+      path: App/OIMMenuBar.entitlements
+      properties:
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.openinferencemesh.shared-wallet
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.openinferencemesh.app.menubar
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_HARDENED_RUNTIME: true # required for notarization; see MENUBAR_RELEASING.md for the embedded-binary signing implication
+
+  OIMMenuBarTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources: [Tests/OIMMenuBarTests]
+    dependencies:
+      - target: OIMMenuBar
+
+schemes:
+  OIMMenuBar:
+    build:
+      targets:
+        OIMMenuBar: all
+        OIMMenuBarTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets: [OIMMenuBarTests]
