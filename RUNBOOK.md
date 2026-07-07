@@ -176,6 +176,25 @@ nginx-proxied traffic into one bucket (nginx's IP) at the default 20 rps.
 coordinators) so the limiter keys on the real client via X-Forwarded-For, and
 ensure nginx sets that header. As a stopgap, raise `--rate-limit-rps`.
 
+### `--availability-reward` (verified availability bootstrap incentive)
+Opt-in, off by default (see README's "Verified availability reward" section
+for the full rationale — throttled by queue backpressure, not a treasury
+cap, since credits have no external monetary value in this system). When
+enabled, watch for:
+- `oim_availability_probes_total` / `oim_availability_rewards_total`
+  (Prometheus, `/metrics/prometheus`) — probes attempted vs. actually
+  credited. A large gap between the two means probed nodes are failing
+  dispatch (dead/misconfigured Exo, model not actually downloaded) more
+  often than they're succeeding — check node logs, not the coordinator.
+- Log lines `[coordinator] availability-reward: skipping round — backpressure
+  X% > 40% ceiling` are expected and healthy during real traffic spikes —
+  the feature is deliberately standing down, not broken.
+- If `oim_availability_rewards_total` never increments at all with the flag
+  on: confirm at least one registered node is genuinely non-simulated
+  (`OIM_SIMULATED_NODE` unset) and idle for the full threshold (30 min
+  default) — a seed-only deployment or one under constant real traffic will
+  correctly never see a probe.
+
 ## On-call
 
 - **Primary contact:** the operator (single-maintainer project today).

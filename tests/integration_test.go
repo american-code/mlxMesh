@@ -608,3 +608,69 @@ func TestIntegrationNodeTLSPinning(t *testing.T) {
 		t.Error("expected oim_served_by_node_id on a successful TLS dispatch")
 	}
 }
+
+// TestIntegrationAvailabilityReward is the real end-to-end proof for the
+// opt-in --availability-reward feature: a real coordinator + real oim node +
+// stub-exo, with the node registered and idle, and NO consumer traffic EVER
+// submitted by this test. If earned_balance increases anyway, it can only be
+// the coordinator's own periodic probe crediting it — exactly the guarantee
+// this feature exists to provide (a node earns something for genuinely being
+// available, without anyone gaming it via a fake heartbeat, since the probe
+// dispatches a real job through the same path real consumer traffic uses).
+//
+// OIM_AVAILABILITY_PROBE_INTERVAL / OIM_AVAILABILITY_IDLE_THRESHOLD are
+// internal test-only env-var overrides (see durationFromEnv in
+// cmd/coordinator/main.go) — production defaults are 10 minutes / 30 minutes,
+// far too slow for a test to wait on.
+func TestIntegrationAvailabilityReward(t *testing.T) {
+	exoPort, coordPort, nodePort := freePort(t), freePort(t), freePort(t)
+	exoURL := fmt.Sprintf("http://127.0.0.1:%d", exoPort)
+	coordURL := fmt.Sprintf("http://127.0.0.1:%d", coordPort)
+
+	startProc(t, []string{fmt.Sprintf("STUB_LISTEN=:%d", exoPort)}, bin.stubExo)
+	waitHealthy(t, exoURL+"/state")
+
+	startProc(t, []string{
+		"OIM_AVAILABILITY_PROBE_INTERVAL=500ms",
+		"OIM_AVAILABILITY_IDLE_THRESHOLD=1ms",
+	}, bin.coordinator,
+		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0",
+		"--availability-reward")
+	waitHealthy(t, coordURL+"/health")
+
+	startProc(t, nil, bin.node, "node", "start",
+		fmt.Sprintf("--coordinator=%s", coordURL),
+		fmt.Sprintf("--listen=:%d", nodePort),
+		fmt.Sprintf("--exo-url=%s", exoURL),
+		fmt.Sprintf("--reachability-endpoint=http://127.0.0.1:%d", nodePort),
+		"--region=us", "--user-id=idle-miner")
+
+	deadline := time.Now().Add(15 * time.Second)
+	registered := false
+	for time.Now().Before(deadline) {
+		nodes := getJSON(t, coordURL+"/nodes")
+		if arr, ok := nodes["nodes"].([]any); ok && len(arr) >= 1 {
+			registered = true
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !registered {
+		t.Fatal("node never registered with coordinator")
+	}
+
+	deadline = time.Now().Add(20 * time.Second)
+	var earned float64
+	for time.Now().Before(deadline) {
+		earned = balance(t, coordURL, "idle-miner")
+		if earned > 0 {
+			break
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	if earned <= 0 {
+		t.Fatal("expected balance > 0 from the availability-reward probe alone — no consumer traffic was ever submitted in this test")
+	}
+	t.Logf("availability-reward credited %.6f with zero consumer traffic", earned)
+}

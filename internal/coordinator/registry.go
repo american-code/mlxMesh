@@ -28,6 +28,20 @@ type nodeEntry struct {
 	unreachable bool
 	inFlight    int32 // atomic — jobs currently dispatched to this node
 
+	// lastJobServedAt is the last time this node actually COMPLETED a real,
+	// credited job — distinct from lastSeen, which only reflects a heartbeat/
+	// refresh and says nothing about whether the node has ever served real
+	// traffic. Zero value means "never served a job this registration."
+	lastJobServedAt time.Time
+
+	// registeredAt is set ONCE at first Register() and never touched by
+	// Refresh() (unlike lastSeen, which resets on every heartbeat and is
+	// therefore always fresh for any live node — using it as an idle
+	// fallback would make a node that has never served anything look
+	// perpetually "just active"). This is the correct fallback for
+	// "idle since" when a node has never served a job at all.
+	registeredAt time.Time
+
 	// enclaveAttested/enclavePublicKey are set ONLY by MarkEnclaveAttested,
 	// after the coordinator itself verifies a Secure Enclave proof — never
 	// from the client-submitted manifest, which is exactly what
@@ -85,10 +99,11 @@ func (r *NodeRegistry) Register(reg protocol.NodeRegistration) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.entries[reg.Manifest.NodeID] = &nodeEntry{
-		manifest:    reg.Manifest,
-		publicKey:   reg.PublicKey,
-		lastSeen:    time.Now(),
-		unreachable: false,
+		manifest:     reg.Manifest,
+		publicKey:    reg.PublicKey,
+		lastSeen:     time.Now(),
+		registeredAt: time.Now(),
+		unreachable:  false,
 	}
 	return true, nil
 }
@@ -130,6 +145,20 @@ func (r *NodeRegistry) MarkUnreachable(nodeID string) {
 	defer r.mu.Unlock()
 	if e, ok := r.entries[nodeID]; ok {
 		e.unreachable = true
+	}
+}
+
+// MarkJobServed records that nodeID just completed a real, credited job —
+// called from every real-traffic credit site (creditNodeEarning) AND from
+// the availability-reward prober's own successful credit, so a probed node
+// isn't immediately re-selected ahead of nodes that have gone longer without
+// any credited activity. A no-op if the node isn't currently registered
+// (e.g. it deregistered between dispatch and credit).
+func (r *NodeRegistry) MarkJobServed(nodeID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.entries[nodeID]; ok {
+		e.lastJobServedAt = time.Now()
 	}
 }
 
@@ -190,6 +219,57 @@ func (r *NodeRegistry) CandidatesWithLoad(modelID, quantization string) ([]NodeW
 		})
 	}
 	return out, nil
+}
+
+// IdleCandidates returns live, non-simulated, model-capable nodes that
+// haven't completed a real job in at least idleSince — the availability-
+// reward prober's candidate pool. Simulated/seed nodes (OIM_SIMULATED_NODE)
+// are always excluded: they're demo capacity, not real operator hardware,
+// and subsidizing them would just mint credits into nothing. A node with no
+// advertised models is excluded too — the same requirement real traffic
+// already has (nothing to actually dispatch). Sorted oldest-idle-first so
+// the longest-neglected real capacity is probed before nodes that are merely
+// between real dispatches — a bootstrap nudge, not a top-up for nodes
+// already earning.
+//
+// "Idle since" falls back to registeredAt (set once at first Register(), NEVER
+// refreshed by heartbeats) for a node that has never served a job at all —
+// deliberately NOT lastSeen, which resets on every heartbeat/refresh and is
+// therefore always fresh for any live node (isLive() itself requires it to be
+// within livenessTTL). Falling back to lastSeen would make a never-served
+// node's "idle since" perpetually look like "just now," so it would never
+// clear the idleSince cutoff no matter how long it had actually been sitting
+// idle — the opposite of what this method needs to detect.
+func (r *NodeRegistry) IdleCandidates(idleSince time.Duration) []protocol.CapabilityManifest {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	type candidate struct {
+		manifest protocol.CapabilityManifest
+		idleFrom time.Time
+	}
+	cutoff := time.Now().Add(-idleSince)
+	var candidates []candidate
+	for _, e := range r.entries {
+		if !e.isLive() || e.manifest.Simulated || len(e.manifest.Models) == 0 {
+			continue
+		}
+		idleFrom := e.lastJobServedAt
+		if idleFrom.IsZero() {
+			idleFrom = e.registeredAt
+		}
+		if idleFrom.After(cutoff) {
+			continue // active recently enough — not idle
+		}
+		candidates = append(candidates, candidate{manifest: e.manifest, idleFrom: idleFrom})
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].idleFrom.Before(candidates[j].idleFrom) })
+
+	out := make([]protocol.CapabilityManifest, len(candidates))
+	for i, c := range candidates {
+		out[i] = c.manifest
+	}
+	return out
 }
 
 // IncrInFlight atomically increments the in-flight job counter for a node.

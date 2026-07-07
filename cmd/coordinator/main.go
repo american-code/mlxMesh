@@ -31,6 +31,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	mathrand "math/rand/v2"
 	"net"
 	"net/http"
 	"os"
@@ -203,7 +204,7 @@ func rootCmd() *cobra.Command {
 	var directoryURLs []string
 	var maxDispatchAttempts, directoryIntervalSec, grantPoWBits int
 	var rateLimitRPS, rateLimitBurst, grantRateLimitPerHour, userQuotaPerHour float64
-	var protectUserReads bool
+	var protectUserReads, availabilityRewardEnabled bool
 	var corsOrigins, trustedProxies []string
 	var tlsCert, tlsKey string
 	var identityPath, federationKey, federationDBPath string
@@ -223,7 +224,7 @@ Optionally report aggregate health to a directory with --directory.`,
 				maxDispatchAttempts, time.Duration(directoryIntervalSec)*time.Second, rateLimitRPS, rateLimitBurst,
 				corsOrigins, grantPoWBits, grantRateLimitPerHour, tlsCert, tlsKey,
 				identityPath, federationKey, federationDBPath, time.Duration(federationPollIntervalSec)*time.Second,
-				protectUserReads, userQuotaPerHour, trustedProxies)
+				protectUserReads, userQuotaPerHour, trustedProxies, availabilityRewardEnabled)
 		},
 	}
 	cmd.Flags().StringVar(&listenAddr, "listen", ":9000", "Address to listen on")
@@ -249,6 +250,7 @@ Optionally report aggregate health to a directory with --directory.`,
 	cmd.Flags().BoolVar(&protectUserReads, "protect-user-reads", false, "Require auth on per-user read endpoints (GET /users/{id}/balance, GET /users/{id}/api-key): the caller must present the admin --api-key or that user's own oim_ key. Off by default so the public dashboard can read aggregate topology; turn ON for a public deployment so balances aren't enumerable by user_id. Aggregate reads (/topology, /nodes, /metrics) stay open")
 	cmd.Flags().Float64Var(&userQuotaPerHour, "user-quota-per-hour", 0, "Per-account request quota: max requests per hour for a single authenticated user_id, layered on top of the per-IP --rate-limit-rps so one account can't abuse the API from many IPs (0 disables). Only applies to requests that resolve to a user via Bearer auth")
 	cmd.Flags().StringSliceVar(&trustedProxies, "trusted-proxy", nil, "IP or CIDR of reverse proxies (e.g. a fronting nginx) whose X-Forwarded-For may be trusted to identify the real client for per-IP rate limiting. Without this, requests behind a proxy all share one bucket (the proxy's IP), making per-IP limits ineffective. Ignored for any peer not in this list, since XFF is otherwise spoofable")
+	cmd.Flags().BoolVar(&availabilityRewardEnabled, "availability-reward", false, "Enable periodic verified-availability probes: the coordinator occasionally dispatches one small real inference request to an idle, non-simulated node and pays a tiny reward through the same measured-throughput pricing path as real traffic (never a flat/heartbeat-based reward). Throttled by queue backpressure, not a treasury cap — credits have no external monetary value in this system, so minting a small bootstrap incentive isn't deflationary the way it would be for a real currency. Off by default")
 	return cmd
 }
 
@@ -275,7 +277,7 @@ func (s *settlementRecordStore) store(r map[string]any) {
 	s.records = append(s.records, r)
 }
 
-func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string, publicURL, apiKey, dbPath string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64, tlsCert, tlsKey, identityPath, federationKey, federationDBPath string, federationPollInterval time.Duration, protectUserReads bool, userQuotaPerHour float64, trustedProxies []string) error {
+func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string, publicURL, apiKey, dbPath string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64, tlsCert, tlsKey, identityPath, federationKey, federationDBPath string, federationPollInterval time.Duration, protectUserReads bool, userQuotaPerHour float64, trustedProxies []string, availabilityRewardEnabled bool) error {
 	log.Printf("[coordinator] oim-coordinator %s", version.String())
 	proxyNets, err := httpmw.ParseTrustedProxies(trustedProxies)
 	if err != nil {
@@ -716,6 +718,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 			if servedBy != "" && tokens > 0 {
 				if _, dup := creditedJobs.LoadOrStore(jobID, struct{}{}); !dup {
 					creditNodeEarning(ledger, &nodeUsers, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, tokens)
+					registry.MarkJobServed(servedBy)
 					mx.Counter("oim_credits_total").Inc()
 					mx.AddCounter("oim_tokens_served_total", int64(tokens))
 				}
@@ -778,6 +781,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		if servedBy, _ := result["oim_served_by_node_id"].(string); servedBy != "" && observedTok > 0 {
 			if _, dup := creditedJobs.LoadOrStore(jobID, struct{}{}); !dup {
 				creditNodeEarning(ledger, &nodeUsers, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, observedTok)
+				registry.MarkJobServed(servedBy)
 				mx.Counter("oim_credits_total").Inc()
 				mx.AddCounter("oim_tokens_served_total", int64(observedTok))
 			}
@@ -909,6 +913,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		// deduped by job_id (job-outcome no longer credits, so there's no double).
 		if observedTok := extractCompletionTokens(result, 2048); observedTok > 0 {
 			creditNodeEarning(ledger, &nodeUsers, nodeID, req.JobID, economics.LaneBackground, string(a.JobSpec.Sensitivity), observedTok)
+			registry.MarkJobServed(nodeID)
 		}
 		log.Printf("[coordinator] background/execute job=%s node=%s continuation=%v", req.JobID, nodeID, isCont)
 		writeJSON(w, http.StatusOK, result)
@@ -1635,6 +1640,24 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 	// on; cheap and unconditional so the books are provably consistent at all times.
 	go runLedgerReconciliation(done, ledger, mx, reconcileInterval)
 
+	// Verified-availability reward (opt-in, --availability-reward): a periodic,
+	// randomly-timed synthetic probe that pays idle real nodes a tiny bootstrap
+	// reward through the exact same measured-throughput pricing path as real
+	// traffic. Off by default — see the flag's help text for the full rationale.
+	if availabilityRewardEnabled {
+		// Interval/idle-threshold are internal constants by design (see their
+		// doc comments) — NOT a public CLI flag surface. The env-var overrides
+		// exist solely so integration tests can exercise this on a real clock
+		// without waiting 10+ minutes; same pattern as OIM_SIMULATED_NODE
+		// (internal/capability/manifest.go) — an internal signal, not a
+		// documented user-facing knob.
+		interval := durationFromEnv("OIM_AVAILABILITY_PROBE_INTERVAL", availabilityProbeInterval)
+		idleThreshold := durationFromEnv("OIM_AVAILABILITY_IDLE_THRESHOLD", availabilityIdleThreshold)
+		go runAvailabilityProbe(done, registry, jobQueue, &nodeUsers, ledger, mx, interval, idleThreshold)
+		log.Printf("[coordinator] availability-reward probing enabled: every ~%s (jittered), idle threshold %s, skipped above %.0f%% backpressure",
+			interval, idleThreshold, availabilityProbeBackpressureCeiling)
+	}
+
 	go func() {
 		<-quit
 		cancelCtx() // stop job queue workers
@@ -1744,6 +1767,125 @@ func runLedgerReconciliation(done <-chan struct{}, ledger *settlement.Ledger, mx
 			check()
 		}
 	}
+}
+
+// runAvailabilityProbe is the top-level ticker for the opt-in
+// --availability-reward feature. Each wait is interval + up to half of
+// interval again in jitter, so an operator can't predict exactly when a
+// probe will land and pre-stage a response — the whole point is verifying
+// REAL, spontaneous availability, not a scheduled heartbeat. Jitter scales
+// with interval (rather than a separate fixed constant) so the two internal
+// test-only env-var overrides (see durationFromEnv) stay proportional
+// automatically instead of needing a matching second override.
+func runAvailabilityProbe(done <-chan struct{}, registry *coordinator.NodeRegistry, jobQueue *coordinator.JobQueue, nodeUsers *sync.Map, ledger *settlement.Ledger, mx *metrics.Registry, interval, idleThreshold time.Duration) {
+	for {
+		wait := interval + mathrand.N(interval/2+1)
+		select {
+		case <-done:
+			return
+		case <-time.After(wait):
+		}
+		probeIdleNodes(registry, jobQueue, nodeUsers, ledger, mx, idleThreshold)
+	}
+}
+
+// probeIdleNodes runs one round: skip entirely if the network is already
+// under real load (backpressure means real traffic is the priority, not
+// subsidizing standby capacity), otherwise probe up to
+// availabilityProbeMaxPerRound of the longest-idle real nodes.
+func probeIdleNodes(registry *coordinator.NodeRegistry, jobQueue *coordinator.JobQueue, nodeUsers *sync.Map, ledger *settlement.Ledger, mx *metrics.Registry, idleThreshold time.Duration) {
+	if bp := jobQueue.BackpressurePct(); bp > availabilityProbeBackpressureCeiling {
+		log.Printf("[coordinator] availability-reward: skipping round — backpressure %.1f%% > %.0f%% ceiling", bp, availabilityProbeBackpressureCeiling)
+		return
+	}
+	candidates := registry.IdleCandidates(idleThreshold)
+	if len(candidates) > availabilityProbeMaxPerRound {
+		candidates = candidates[:availabilityProbeMaxPerRound]
+	}
+	for len(candidates) > 0 {
+		manifest, model, ok := coordinator.SelectProbeTarget(candidates)
+		candidates = candidates[1:]
+		if !ok {
+			continue
+		}
+		probeOneNode(registry, nodeUsers, ledger, mx, manifest, model)
+	}
+}
+
+// probeOneNode dispatches one real, tiny inference request to manifest (the
+// exact same dispatch path real consumer traffic uses — DispatchToResolvedNode),
+// and, only on a genuine successful completion with observed output tokens,
+// mints a small reward via the same pricing function real earnings use
+// (economics.ProviderReward). No debit and no treasury margin: nobody is
+// being charged for this — it's a self-funded subsidy exactly like the
+// startup grant, minted from nothing. Safe by construction: a node can't
+// fake this by merely being registered, since it has to actually return a
+// real completion for a model it genuinely advertised.
+func probeOneNode(registry *coordinator.NodeRegistry, nodeUsers *sync.Map, ledger *settlement.Ledger, mx *metrics.Registry, manifest protocol.CapabilityManifest, model protocol.ModelCapability) {
+	jobID := fmt.Sprintf("availability-probe-%s-%d", manifest.NodeID, time.Now().UnixNano())
+	job, messages := coordinator.BuildProbeJob(jobID, model.ModelID, model.Quantization)
+	mx.Counter("oim_availability_probes_total").Inc()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := coordinator.DispatchToResolvedNode(ctx, job, messages, registry, coordinator.TargetFromManifest(manifest))
+	if err != nil {
+		log.Printf("[coordinator] availability-reward: probe to node=%s failed: %v", manifest.NodeID, err)
+		return
+	}
+	tokens := extractCompletionTokens(result, availabilityProbeFallbackTokens)
+	if tokens <= 0 {
+		return
+	}
+	if !creditAvailabilityReward(ledger, nodeUsers, manifest.NodeID, jobID, tokens) {
+		return
+	}
+	registry.MarkJobServed(manifest.NodeID)
+	mx.Counter("oim_availability_rewards_total").Inc()
+	log.Printf("[coordinator] availability-reward: credited node=%s tokens=%d job=%s", manifest.NodeID, tokens, jobID)
+}
+
+// creditAvailabilityReward mints a background-lane-priced reward for tokenCount
+// observed output tokens directly into the node's linked account (or the raw
+// node_id if unlinked, same fallback creditNodeEarning uses) — reusing the
+// EXISTING CreditOriginEarnedContrib origin rather than a new ledger category,
+// since this is qualitatively real earned income: a real job was dispatched
+// and a real completion was measured, just subsidized by the network instead
+// of a paying consumer. Returns false if the computed reward is zero/negative
+// (nothing to credit).
+func creditAvailabilityReward(ledger *settlement.Ledger, nodeUsers *sync.Map, nodeID, jobID string, tokenCount int) bool {
+	accountKey, _ := nodeUsers.Load(nodeID)
+	if accountKey == nil {
+		accountKey = nodeID
+	}
+	reward := economics.ProviderReward(economics.LaneBackground, string(protocol.SensitivityLow), tokenCount)
+	if reward <= 0 {
+		return false
+	}
+	_ = ledger.CreditAccount(settlement.CreditEntry{
+		UserID:            accountKey.(string),
+		Origin:            settlement.CreditOriginEarnedContrib,
+		Amount:            reward,
+		GrantedOrEarnedAt: time.Now(),
+		SourceReference:   jobID,
+	})
+	return true
+}
+
+// durationFromEnv reads an internal (non-flag, non-help-text) override for a
+// normally-constant duration — used only so integration tests can exercise
+// the availability-reward feature on a real clock without waiting the full
+// production interval/idle-threshold. Same "internal signal, not a
+// documented user-facing knob" pattern as OIM_SIMULATED_NODE
+// (internal/capability/manifest.go). Falls back to def on anything not a
+// valid positive duration.
+func durationFromEnv(name string, def time.Duration) time.Duration {
+	if raw := os.Getenv(name); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			return d
+		}
+	}
+	return def
 }
 
 func federationAuthorized(r *http.Request, federationKey string) bool {
@@ -2036,6 +2178,40 @@ func originAllowed(origin string, allowlist []string) bool {
 // so a tight-ish cadence is fine; the point is to surface a corruption/bug fast
 // via logs + the oim_ledger_consistent gauge rather than discover it later.
 const reconcileInterval = 5 * time.Minute
+
+// Verified-availability reward tuning (--availability-reward, opt-in). Kept as
+// constants, not flags — this is deliberately a small, non-configurable
+// bootstrap incentive, not a policy surface for operators to tune per-deployment.
+const (
+	// availabilityProbeInterval is the base cadence between probe rounds.
+	// runAvailabilityProbe adds up to half of it again as jitter on EVERY
+	// round (never subtracted) so the actual gap is always >= this and
+	// unpredictable — no fixed period an operator could pre-stage a response
+	// for. Overridable via OIM_AVAILABILITY_PROBE_INTERVAL for integration
+	// tests — see durationFromEnv.
+	availabilityProbeInterval = 10 * time.Minute
+
+	// availabilityProbeBackpressureCeiling: skip the whole round above this
+	// queue saturation percent — real consumer demand is already using the
+	// network, so there's no bootstrap gap left to subsidize right now.
+	availabilityProbeBackpressureCeiling = 40.0
+
+	// availabilityIdleThreshold: a node must have gone at least this long
+	// without completing ANY real, credited job (probe or consumer) to be
+	// probe-eligible — this is what "idle" means for this feature.
+	// Overridable via OIM_AVAILABILITY_IDLE_THRESHOLD — see durationFromEnv.
+	availabilityIdleThreshold = 30 * time.Minute
+
+	// availabilityProbeMaxPerRound bounds how many nodes get probed per tick —
+	// this is a small bootstrap nudge, not a bulk job-generation mechanism.
+	availabilityProbeMaxPerRound = 3
+
+	// availabilityProbeFallbackTokens is the token count assumed when a
+	// probe's response omits usage entirely (mirrors extractCompletionTokens'
+	// existing fallback pattern for real traffic) — kept small and fixed so a
+	// non-compliant node can't inflate its own reward by omitting usage.
+	availabilityProbeFallbackTokens = 32
+)
 
 // maxConcurrentRequests bounds total in-flight requests across the whole server
 // (task #53). A distributed flood defeats per-IP limiting, so this caps aggregate

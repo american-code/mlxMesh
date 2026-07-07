@@ -184,6 +184,44 @@ so a node can't inflate what it earns.
 *These multipliers/edge are tunable constants in `internal/economics`; future
 work can layer reputation multipliers or streak bonuses on top of this base.*
 
+### Verified availability reward (bootstrap incentive, opt-in)
+
+A linked, running node earns nothing between real dispatched jobs — for a
+brand-new deployment with little consumer traffic yet, that's a real
+cold-start problem: nobody wants to leave a Mac on and registered if there's
+no reason to believe it'll ever get paid.
+
+`--availability-reward` (off by default) has the coordinator itself act as a
+tiny, randomly-timed test consumer: every ~10 minutes (jittered so the timing
+can't be predicted/gamed), it dispatches one small real inference request —
+through the *exact same* dispatch path (`DispatchToResolvedNode`) and pricing
+function (`economics.ProviderReward`, at the cheapest background/low tier)
+real consumer traffic uses — to one of the longest-idle real (non-simulated)
+nodes. A node can't fake this by merely staying registered: it has to
+genuinely have a downloaded model and return a real completion. Rewards are
+naturally tiny (fractions of a credit) since they scale with the small
+number of tokens a short probe prompt produces.
+
+No debit, no treasury margin — nobody is being charged for this. It's a
+self-funded subsidy minted directly into the node's account, the same way
+the startup grant is minted from nothing. That's deliberate: **credits in
+this system have no external monetary value** — it's a closed barter
+network, not a currency, so minting a small bootstrap incentive isn't
+deflationary the way it would be for a real currency. The actual constraint
+at scale is compute capacity vs. demand, not credit supply — so instead of a
+treasury-balance cap, the probe throttles against **queue backpressure**
+(`JobQueue.BackpressurePct()`): above 40% saturation, a round is skipped
+entirely, since real consumer traffic is already using the network and
+doesn't need subsidized competition for the same idle capacity.
+
+```
+oim-coordinator --availability-reward ...
+```
+
+See `runAvailabilityProbe`/`probeIdleNodes` in `cmd/coordinator/main.go` and
+`internal/coordinator/availability.go` for the implementation, and
+`RUNBOOK.md` for the operational metrics this flag exposes.
+
 To check balance programmatically before submitting:
 
 ```bash
