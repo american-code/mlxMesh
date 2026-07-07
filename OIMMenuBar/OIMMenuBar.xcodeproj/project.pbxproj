@@ -1,0 +1,652 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		018C41AEA0B3957BBFB8AB6E /* LocalDetectMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEB66FECD0D528484A5D58B3 /* LocalDetectMonitor.swift */; };
+		0274D7680F438358543E114B /* NetworkClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E790C4DB7E86F9FD86427689 /* NetworkClient.swift */; };
+		10BFAD00FD8FD4F83F1AB852 /* Ed25519.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C22FF96780326E06FFFB921 /* Ed25519.swift */; };
+		1261D58F6317B23BFD8928E0 /* NodePodMetricsMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C618DDC67A07B388FA1222AA /* NodePodMetricsMonitor.swift */; };
+		1A86E300CE592A2BF3290B7F /* oim in CopyFiles */ = {isa = PBXBuildFile; fileRef = 8AF96A5F63AB2EC0F54201C7 /* oim */; };
+		1B7F19B9228673BD46CA4CC9 /* LaunchAtLoginController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A09DA94DCF6025342179ACD7 /* LaunchAtLoginController.swift */; };
+		1EE231F052E8346A17CCD217 /* ExoDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 026142DD8FDA55BBED3994DF /* ExoDetector.swift */; };
+		1F1FACCF0EF98D43C1EFC3AA /* NodeProcessController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C43E88676B8D581B035CEE62 /* NodeProcessController.swift */; };
+		1FFE003C00ECE22FE9571141 /* LogViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 150FA626BCAA8880BEEB4E7A /* LogViewerView.swift */; };
+		22FFDA6CBD78110F775E2A46 /* SettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77791345773053F3C1234DBB /* SettingsSection.swift */; };
+		365DF4E4B4ADA3D544A86ABF /* NodeLogParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46284E41C2E26EA647EE5B3B /* NodeLogParserTests.swift */; };
+		659EDCA54DA6B6FDE8F0335B /* ExoHealthMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AC2FD7956A24C3D7B8590C7 /* ExoHealthMonitor.swift */; };
+		6E6CC69F485F259588F3B2DD /* WalletStatusRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB0B1644EE0E9EFB9AA50E70 /* WalletStatusRow.swift */; };
+		6E7A5E27E3705EFB7E300118 /* NodeConfigBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B36EA6075D2982A304A2B21 /* NodeConfigBridge.swift */; };
+		71BF0A41EEB31776D99416BB /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6EF6045D1F1ED54CF297B5B /* Models.swift */; };
+		7B97D5F5DCAF6B27C47DA289 /* WalletStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D0C3485079ECD0ACE2D17AC /* WalletStore.swift */; };
+		8DFDFB0D0C7A71F8A8469E60 /* NodeConfigBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D51CEFAA3FA317F7530E6F0 /* NodeConfigBridgeTests.swift */; };
+		9093C788B9A477F87D9DFDC7 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 091386FF2FCC7C5FCD3AC12C /* MenuBarView.swift */; };
+		AB8808A1172B658628BF3CA6 /* ExoLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 192F6AC3BAD0C6A0C27DF91F /* ExoLauncher.swift */; };
+		B47341DF590A746C4921EA54 /* NodeIdentityReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 369E9208D355437D46995FA2 /* NodeIdentityReader.swift */; };
+		CAFE9027BA6FBA6843B66DCD /* WalletLinkCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5D65AF34008F3CAF052F387 /* WalletLinkCoordinator.swift */; };
+		D65CAE0A2A222616B785C5A4 /* NodeStatusRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA1AB3069FFAF2970BE88D07 /* NodeStatusRow.swift */; };
+		D6D7E79C27C910DF0CEE159C /* OIMMenuBarApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBC0737A540B51715384B3AA /* OIMMenuBarApp.swift */; };
+		DB0CF7A6C397C0F9B8367656 /* ExoStatusRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05CFD17200CBF157CA5FAD84 /* ExoStatusRow.swift */; };
+		E85042C8611017EFB98989CA /* EmbeddedBinaryLocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F05004C8B5BE70F37BA9ADA3 /* EmbeddedBinaryLocator.swift */; };
+		E9AFD07EC61B3255CF566562 /* ProofOfWork.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9095CCFAF9AC6DA01081A84E /* ProofOfWork.swift */; };
+		F2D00F9ACE2161EE5B0EBA86 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DCF6ADDB2C7859A11733945 /* AppState.swift */; };
+		F2D298107605828D450B6F50 /* NodeLogParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44854C55351492CA7DBAED9C /* NodeLogParser.swift */; };
+		F4D82E8BB5AF99A70BA6F79B /* ExoHealthMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A072F8D6842EDA8A3953576D /* ExoHealthMonitorTests.swift */; };
+		FE9B91F4BC3216F5E9E2189F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7431DD98E6248E7DFB7A91FA /* Assets.xcassets */; };
+		FFF91049D63A487A390CB638 /* MenuBarIconState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CB5AAA958C191274C5A59A9 /* MenuBarIconState.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		8485959F00A0D88A33735A0A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7A647624EC4032D438EE9A1E /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 246A8D3DAE5153F88388DAD2;
+			remoteInfo = OIMMenuBar;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		016A96D4FED6E859479C1F48 /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 7;
+			files = (
+				1A86E300CE592A2BF3290B7F /* oim in CopyFiles */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		026142DD8FDA55BBED3994DF /* ExoDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExoDetector.swift; sourceTree = "<group>"; };
+		05CFD17200CBF157CA5FAD84 /* ExoStatusRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExoStatusRow.swift; sourceTree = "<group>"; };
+		091386FF2FCC7C5FCD3AC12C /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
+		150FA626BCAA8880BEEB4E7A /* LogViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogViewerView.swift; sourceTree = "<group>"; };
+		192F6AC3BAD0C6A0C27DF91F /* ExoLauncher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExoLauncher.swift; sourceTree = "<group>"; };
+		1D0C3485079ECD0ACE2D17AC /* WalletStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletStore.swift; sourceTree = "<group>"; };
+		1DCF6ADDB2C7859A11733945 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		1E8F00C6CE16A44BC6555158 /* OIMMenuBarTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OIMMenuBarTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		369E9208D355437D46995FA2 /* NodeIdentityReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeIdentityReader.swift; sourceTree = "<group>"; };
+		44854C55351492CA7DBAED9C /* NodeLogParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeLogParser.swift; sourceTree = "<group>"; };
+		46284E41C2E26EA647EE5B3B /* NodeLogParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeLogParserTests.swift; sourceTree = "<group>"; };
+		7431DD98E6248E7DFB7A91FA /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		77791345773053F3C1234DBB /* SettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSection.swift; sourceTree = "<group>"; };
+		7AC2FD7956A24C3D7B8590C7 /* ExoHealthMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExoHealthMonitor.swift; sourceTree = "<group>"; };
+		7CB5AAA958C191274C5A59A9 /* MenuBarIconState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarIconState.swift; sourceTree = "<group>"; };
+		7D51CEFAA3FA317F7530E6F0 /* NodeConfigBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeConfigBridgeTests.swift; sourceTree = "<group>"; };
+		8851D79E74230FD25D31B2D5 /* OIMMenuBar.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OIMMenuBar.entitlements; sourceTree = "<group>"; };
+		8AF96A5F63AB2EC0F54201C7 /* oim */ = {isa = PBXFileReference; path = oim; sourceTree = "<group>"; };
+		8C22FF96780326E06FFFB921 /* Ed25519.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Ed25519.swift; sourceTree = "<group>"; };
+		8F189852DF3B5B1120FE663E /* OIMMenuBar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OIMMenuBar.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9095CCFAF9AC6DA01081A84E /* ProofOfWork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProofOfWork.swift; sourceTree = "<group>"; };
+		9B36EA6075D2982A304A2B21 /* NodeConfigBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeConfigBridge.swift; sourceTree = "<group>"; };
+		A072F8D6842EDA8A3953576D /* ExoHealthMonitorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExoHealthMonitorTests.swift; sourceTree = "<group>"; };
+		A09DA94DCF6025342179ACD7 /* LaunchAtLoginController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLoginController.swift; sourceTree = "<group>"; };
+		BA1AB3069FFAF2970BE88D07 /* NodeStatusRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeStatusRow.swift; sourceTree = "<group>"; };
+		BBC0737A540B51715384B3AA /* OIMMenuBarApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OIMMenuBarApp.swift; sourceTree = "<group>"; };
+		C43E88676B8D581B035CEE62 /* NodeProcessController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeProcessController.swift; sourceTree = "<group>"; };
+		C5D65AF34008F3CAF052F387 /* WalletLinkCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletLinkCoordinator.swift; sourceTree = "<group>"; };
+		C618DDC67A07B388FA1222AA /* NodePodMetricsMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodePodMetricsMonitor.swift; sourceTree = "<group>"; };
+		CB0B1644EE0E9EFB9AA50E70 /* WalletStatusRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletStatusRow.swift; sourceTree = "<group>"; };
+		CDDCE39AD28BE90913B3098F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		D6EF6045D1F1ED54CF297B5B /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		E790C4DB7E86F9FD86427689 /* NetworkClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkClient.swift; sourceTree = "<group>"; };
+		F05004C8B5BE70F37BA9ADA3 /* EmbeddedBinaryLocator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbeddedBinaryLocator.swift; sourceTree = "<group>"; };
+		FEB66FECD0D528484A5D58B3 /* LocalDetectMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDetectMonitor.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		1605EEC7CB1BC860E9C2F875 /* NodeSupervisor */ = {
+			isa = PBXGroup;
+			children = (
+				F05004C8B5BE70F37BA9ADA3 /* EmbeddedBinaryLocator.swift */,
+				FEB66FECD0D528484A5D58B3 /* LocalDetectMonitor.swift */,
+				9B36EA6075D2982A304A2B21 /* NodeConfigBridge.swift */,
+				369E9208D355437D46995FA2 /* NodeIdentityReader.swift */,
+				44854C55351492CA7DBAED9C /* NodeLogParser.swift */,
+				C618DDC67A07B388FA1222AA /* NodePodMetricsMonitor.swift */,
+				C43E88676B8D581B035CEE62 /* NodeProcessController.swift */,
+			);
+			path = NodeSupervisor;
+			sourceTree = "<group>";
+		};
+		1BFFBC739CA7AA0E2D52F330 /* Wallet */ = {
+			isa = PBXGroup;
+			children = (
+				1D0C3485079ECD0ACE2D17AC /* WalletStore.swift */,
+			);
+			path = Wallet;
+			sourceTree = "<group>";
+		};
+		1DE01BB353B7F866B4470921 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				D6EF6045D1F1ED54CF297B5B /* Models.swift */,
+				E790C4DB7E86F9FD86427689 /* NetworkClient.swift */,
+				9095CCFAF9AC6DA01081A84E /* ProofOfWork.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		438935E6A84EBEA25404E070 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				8AF96A5F63AB2EC0F54201C7 /* oim */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		4FF403650734579FE999458C /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				8F189852DF3B5B1120FE663E /* OIMMenuBar.app */,
+				1E8F00C6CE16A44BC6555158 /* OIMMenuBarTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		65C92DE0B4F0771BC2590CAF /* Menu */ = {
+			isa = PBXGroup;
+			children = (
+				05CFD17200CBF157CA5FAD84 /* ExoStatusRow.swift */,
+				150FA626BCAA8880BEEB4E7A /* LogViewerView.swift */,
+				7CB5AAA958C191274C5A59A9 /* MenuBarIconState.swift */,
+				091386FF2FCC7C5FCD3AC12C /* MenuBarView.swift */,
+				BA1AB3069FFAF2970BE88D07 /* NodeStatusRow.swift */,
+				77791345773053F3C1234DBB /* SettingsSection.swift */,
+				CB0B1644EE0E9EFB9AA50E70 /* WalletStatusRow.swift */,
+			);
+			path = Menu;
+			sourceTree = "<group>";
+		};
+		700C86DC78DB51588A453834 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				DA53DD360DD968722EFED7D6 /* App */,
+				93F2BE3DEE61E374A1E98C41 /* ExoSupervisor */,
+				65C92DE0B4F0771BC2590CAF /* Menu */,
+				1605EEC7CB1BC860E9C2F875 /* NodeSupervisor */,
+				78B3B7005EB4557D470EEC16 /* Wallet */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		78B3B7005EB4557D470EEC16 /* Wallet */ = {
+			isa = PBXGroup;
+			children = (
+				C5D65AF34008F3CAF052F387 /* WalletLinkCoordinator.swift */,
+			);
+			path = Wallet;
+			sourceTree = "<group>";
+		};
+		88E4256297755FEF36F99030 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				B5A25CD09E3252DAC24A4B78 /* OIMMenuBarTests */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		93F2BE3DEE61E374A1E98C41 /* ExoSupervisor */ = {
+			isa = PBXGroup;
+			children = (
+				026142DD8FDA55BBED3994DF /* ExoDetector.swift */,
+				7AC2FD7956A24C3D7B8590C7 /* ExoHealthMonitor.swift */,
+				192F6AC3BAD0C6A0C27DF91F /* ExoLauncher.swift */,
+			);
+			path = ExoSupervisor;
+			sourceTree = "<group>";
+		};
+		A6197D99064E41F88F642743 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				7431DD98E6248E7DFB7A91FA /* Assets.xcassets */,
+				CDDCE39AD28BE90913B3098F /* Info.plist */,
+				8851D79E74230FD25D31B2D5 /* OIMMenuBar.entitlements */,
+				BBC0737A540B51715384B3AA /* OIMMenuBarApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		B5A25CD09E3252DAC24A4B78 /* OIMMenuBarTests */ = {
+			isa = PBXGroup;
+			children = (
+				A072F8D6842EDA8A3953576D /* ExoHealthMonitorTests.swift */,
+				7D51CEFAA3FA317F7530E6F0 /* NodeConfigBridgeTests.swift */,
+				46284E41C2E26EA647EE5B3B /* NodeLogParserTests.swift */,
+			);
+			path = OIMMenuBarTests;
+			sourceTree = "<group>";
+		};
+		BDBED94C091B6FEF1A8243AD /* Crypto */ = {
+			isa = PBXGroup;
+			children = (
+				8C22FF96780326E06FFFB921 /* Ed25519.swift */,
+			);
+			path = Crypto;
+			sourceTree = "<group>";
+		};
+		BFB35077AA7A98F653F0208F /* OIMDashboard */ = {
+			isa = PBXGroup;
+			children = (
+				F027AB8F2A7A72C8A2EF66A1 /* iOS */,
+				1DE01BB353B7F866B4470921 /* Shared */,
+			);
+			path = OIMDashboard;
+			sourceTree = "<group>";
+		};
+		D07466918AC99BADF3D5CB82 /* open-inference-mesh */ = {
+			isa = PBXGroup;
+			children = (
+				BFB35077AA7A98F653F0208F /* OIMDashboard */,
+			);
+			name = "open-inference-mesh";
+			path = ..;
+			sourceTree = "<group>";
+		};
+		DA53DD360DD968722EFED7D6 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				1DCF6ADDB2C7859A11733945 /* AppState.swift */,
+				A09DA94DCF6025342179ACD7 /* LaunchAtLoginController.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		E2ED996AC5A6F03DEB922F6A = {
+			isa = PBXGroup;
+			children = (
+				A6197D99064E41F88F642743 /* App */,
+				D07466918AC99BADF3D5CB82 /* open-inference-mesh */,
+				438935E6A84EBEA25404E070 /* Resources */,
+				700C86DC78DB51588A453834 /* Sources */,
+				88E4256297755FEF36F99030 /* Tests */,
+				4FF403650734579FE999458C /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		F027AB8F2A7A72C8A2EF66A1 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				BDBED94C091B6FEF1A8243AD /* Crypto */,
+				1BFFBC739CA7AA0E2D52F330 /* Wallet */,
+			);
+			path = iOS;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		246A8D3DAE5153F88388DAD2 /* OIMMenuBar */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 352E663A63F4F772585F1CAA /* Build configuration list for PBXNativeTarget "OIMMenuBar" */;
+			buildPhases = (
+				4246938DFE693950137C926D /* Sources */,
+				5845CC22F37EA410CE4DE413 /* Resources */,
+				016A96D4FED6E859479C1F48 /* CopyFiles */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OIMMenuBar;
+			packageProductDependencies = (
+			);
+			productName = OIMMenuBar;
+			productReference = 8F189852DF3B5B1120FE663E /* OIMMenuBar.app */;
+			productType = "com.apple.product-type.application";
+		};
+		70503C817915B30A001BF508 /* OIMMenuBarTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DFDC929398C87B9A2F046B02 /* Build configuration list for PBXNativeTarget "OIMMenuBarTests" */;
+			buildPhases = (
+				38EAD5F1583209726F0D001D /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				39AD429063980355E5077FC9 /* PBXTargetDependency */,
+			);
+			name = OIMMenuBarTests;
+			packageProductDependencies = (
+			);
+			productName = OIMMenuBarTests;
+			productReference = 1E8F00C6CE16A44BC6555158 /* OIMMenuBarTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		7A647624EC4032D438EE9A1E /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					246A8D3DAE5153F88388DAD2 = {
+						DevelopmentTeam = WXDFFW3882;
+						ProvisioningStyle = Automatic;
+					};
+					70503C817915B30A001BF508 = {
+						DevelopmentTeam = WXDFFW3882;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = C4FF2D6A2A9C1D168C0983A3 /* Build configuration list for PBXProject "OIMMenuBar" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = E2ED996AC5A6F03DEB922F6A;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 4FF403650734579FE999458C /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				246A8D3DAE5153F88388DAD2 /* OIMMenuBar */,
+				70503C817915B30A001BF508 /* OIMMenuBarTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		5845CC22F37EA410CE4DE413 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FE9B91F4BC3216F5E9E2189F /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		38EAD5F1583209726F0D001D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F4D82E8BB5AF99A70BA6F79B /* ExoHealthMonitorTests.swift in Sources */,
+				8DFDFB0D0C7A71F8A8469E60 /* NodeConfigBridgeTests.swift in Sources */,
+				365DF4E4B4ADA3D544A86ABF /* NodeLogParserTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4246938DFE693950137C926D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F2D00F9ACE2161EE5B0EBA86 /* AppState.swift in Sources */,
+				10BFAD00FD8FD4F83F1AB852 /* Ed25519.swift in Sources */,
+				E85042C8611017EFB98989CA /* EmbeddedBinaryLocator.swift in Sources */,
+				1EE231F052E8346A17CCD217 /* ExoDetector.swift in Sources */,
+				659EDCA54DA6B6FDE8F0335B /* ExoHealthMonitor.swift in Sources */,
+				AB8808A1172B658628BF3CA6 /* ExoLauncher.swift in Sources */,
+				DB0CF7A6C397C0F9B8367656 /* ExoStatusRow.swift in Sources */,
+				1B7F19B9228673BD46CA4CC9 /* LaunchAtLoginController.swift in Sources */,
+				018C41AEA0B3957BBFB8AB6E /* LocalDetectMonitor.swift in Sources */,
+				1FFE003C00ECE22FE9571141 /* LogViewerView.swift in Sources */,
+				FFF91049D63A487A390CB638 /* MenuBarIconState.swift in Sources */,
+				9093C788B9A477F87D9DFDC7 /* MenuBarView.swift in Sources */,
+				71BF0A41EEB31776D99416BB /* Models.swift in Sources */,
+				0274D7680F438358543E114B /* NetworkClient.swift in Sources */,
+				6E7A5E27E3705EFB7E300118 /* NodeConfigBridge.swift in Sources */,
+				B47341DF590A746C4921EA54 /* NodeIdentityReader.swift in Sources */,
+				F2D298107605828D450B6F50 /* NodeLogParser.swift in Sources */,
+				1261D58F6317B23BFD8928E0 /* NodePodMetricsMonitor.swift in Sources */,
+				1F1FACCF0EF98D43C1EFC3AA /* NodeProcessController.swift in Sources */,
+				D65CAE0A2A222616B785C5A4 /* NodeStatusRow.swift in Sources */,
+				D6D7E79C27C910DF0CEE159C /* OIMMenuBarApp.swift in Sources */,
+				E9AFD07EC61B3255CF566562 /* ProofOfWork.swift in Sources */,
+				22FFDA6CBD78110F775E2A46 /* SettingsSection.swift in Sources */,
+				CAFE9027BA6FBA6843B66DCD /* WalletLinkCoordinator.swift in Sources */,
+				6E6CC69F485F259588F3B2DD /* WalletStatusRow.swift in Sources */,
+				7B97D5F5DCAF6B27C47DA289 /* WalletStore.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		39AD429063980355E5077FC9 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 246A8D3DAE5153F88388DAD2 /* OIMMenuBar */;
+			targetProxy = 8485959F00A0D88A33735A0A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		11B2F336C3DBF68168E880E1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = WXDFFW3882;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+		34E85748DF72912589D5730B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/OIMMenuBar.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.openinferencemesh.app.menubar;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		73E2FA055F7E5C14A73A9B1E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.openinferencemesh.OIMMenuBarTests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OIMMenuBar.app/Contents/MacOS/OIMMenuBar";
+			};
+			name = Debug;
+		};
+		90E9CDBE30A08E9FE87674DB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = WXDFFW3882;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		D466237C013E80D5410CEFCC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.openinferencemesh.OIMMenuBarTests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OIMMenuBar.app/Contents/MacOS/OIMMenuBar";
+			};
+			name = Release;
+		};
+		D6FEA00D44961F819E811362 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/OIMMenuBar.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.openinferencemesh.app.menubar;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		352E663A63F4F772585F1CAA /* Build configuration list for PBXNativeTarget "OIMMenuBar" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D6FEA00D44961F819E811362 /* Debug */,
+				34E85748DF72912589D5730B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C4FF2D6A2A9C1D168C0983A3 /* Build configuration list for PBXProject "OIMMenuBar" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				11B2F336C3DBF68168E880E1 /* Debug */,
+				90E9CDBE30A08E9FE87674DB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		DFDC929398C87B9A2F046B02 /* Build configuration list for PBXNativeTarget "OIMMenuBarTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				73E2FA055F7E5C14A73A9B1E /* Debug */,
+				D466237C013E80D5410CEFCC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 7A647624EC4032D438EE9A1E /* Project object */;
+}

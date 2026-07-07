@@ -156,6 +156,30 @@ final class WalletStore {
         }
     }
 
+    /// Revokes `deviceNodeID`'s earnings binding — the same account-signed
+    /// message linkDevice uses (the coordinator's wallet.Manager treats
+    /// link/unlink as the identical signature check), so it needs no new
+    /// server trust surface. Removes the entry from the local advisory
+    /// `linkedDevices` list on success; the coordinator is the source of
+    /// truth either way. Returns nil on success, or an error message.
+    func unlinkDevice(_ deviceNodeID: String, coordinatorURL: String) async -> String? {
+        let trimmed = deviceNodeID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "Enter a device / node ID" }
+        guard let address, let seed, let publicKey else { return "No wallet on this device" }
+        do {
+            let msg = Data("oim-account-link:\(address):\(trimmed)".utf8)
+            let sig = try Ed25519.sign(msg, privateKey: seed)
+            try await NetworkClient.unlinkDevice(
+                coordinatorURL: coordinatorURL, address: address,
+                deviceNodeID: trimmed, accountPublicKey: publicKey, signature: sig)
+            linkedDevices.removeAll { $0 == trimmed }
+            UserDefaults.standard.set(linkedDevices, forKey: linkedDefaultsKey)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     // MARK: - Address derivation (matches internal/wallet.AddressFromPubKey)
 
     private static func deriveAddress(fromSeed seed: Data) -> String? {
@@ -166,11 +190,34 @@ final class WalletStore {
 
     // MARK: - Keychain (iCloud-synchronized)
 
+    // Explicit, shared Keychain Access Group — MUST match the
+    // `keychain-access-groups` entitlement in every target's .entitlements
+    // file (OIMDashboard's iOS/watch/tv targets AND OIMMenuBar), and the
+    // literal team ID here must match DEVELOPMENT_TEAM in both project.yml
+    // files (currently "WXDFFW3882" for both).
+    //
+    // Without an explicit access group, SecItemAdd/SecItemCopyMatching fall
+    // back to a group implicitly derived from EACH APP'S OWN bundle
+    // identifier — meaning OIMDashboard (iOS) and OIMMenuBar (macOS), being
+    // different bundle IDs, would each get a DIFFERENT default group even
+    // though both are signed by the same team. Two real bugs traced to this:
+    // (1) the Mac app appearing to "reset" its wallet on some rebuilds —
+    // Xcode's ad-hoc/dev signing during active development can shift enough
+    // for the OS to no longer recognize the previous build as the same
+    // keychain-ACL holder for an *implicit* group, whereas an explicit,
+    // named group is stable across that; (2) the wallet was never actually
+    // syncing between the Mac and iPad apps via iCloud Keychain at all —
+    // each had always been reading/writing its own isolated implicit group,
+    // so "sign into the same iCloud account and it just appears" (this
+    // project's stated design) was not actually true until this was added.
+    private let keychainAccessGroup = "WXDFFW3882.com.openinferencemesh.shared-wallet"
+
     private func baseQuery() -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
+            kSecAttrAccessGroup as String: keychainAccessGroup,
             // Synchronizable → the seed rides iCloud Keychain to the user's other
             // Apple devices, giving automatic cross-device consolidation.
             kSecAttrSynchronizable as String: kCFBooleanTrue!,

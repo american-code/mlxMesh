@@ -73,6 +73,7 @@
 		10C3DFA53386C093446D3211 /* OIMDashboardApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OIMDashboardApp.swift; sourceTree = "<group>"; };
 		1B267465346DFBF132E90219 /* HintPacket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HintPacket.swift; sourceTree = "<group>"; };
 		2B632D992AE2016624F5130F /* TVContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVContentView.swift; sourceTree = "<group>"; };
+		2CEED43DD0F9BF48A7CC70E0 /* OIMDashboard.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OIMDashboard.entitlements; sourceTree = "<group>"; };
 		37C3523F06E8F6568EDC6B41 /* ProofOfWork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProofOfWork.swift; sourceTree = "<group>"; };
 		3C898CBECE1458272C65BBD4 /* MemoryPressureMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryPressureMonitor.swift; sourceTree = "<group>"; };
 		462427F1716B3FB5AC128E4F /* ModelSignatureVerifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSignatureVerifier.swift; sourceTree = "<group>"; };
@@ -208,6 +209,7 @@
 				08F8B2ED44ABE851C2FF4D57 /* Info.plist */,
 				BA6A50343A5863880D34B35E /* NetworkLoadView.swift */,
 				8F693B9AB5F6EA3B48ED5ACD /* NodeDetailView.swift */,
+				2CEED43DD0F9BF48A7CC70E0 /* OIMDashboard.entitlements */,
 				10C3DFA53386C093446D3211 /* OIMDashboardApp.swift */,
 				BE6D8C75CFE1FFF59DB5A516 /* OverviewView.swift */,
 				C01DF4999D87E576A76F5B57 /* PodSummaryView.swift */,
@@ -627,6 +629,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = iOS/OIMDashboard.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				INFOPLIST_FILE = iOS/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
@@ -644,6 +647,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = iOS/OIMDashboard.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				INFOPLIST_FILE = iOS/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;

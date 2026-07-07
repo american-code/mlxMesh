@@ -14,3 +14,11 @@ certs/
 /oim-coordinator
 /oim-directory
 *.bck.yml
+
+# OIMMenuBar: the embedded oim binary is built fresh by scripts/embed-oim.sh
+# before every `xcodegen generate` (see that script + project.yml) — never
+# intended to be committed. The generated .xcodeproj IS committed (matching
+# OIMDashboard's convention), just not this binary or Xcode's user-state cruft.
+OIMMenuBar/Resources/oim
+OIMMenuBar/**/xcuserdata/
+OIMMenuBar/**/*.xcuserstate

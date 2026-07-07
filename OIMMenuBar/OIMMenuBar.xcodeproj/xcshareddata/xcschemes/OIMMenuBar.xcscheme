@@ -15,10 +15,24 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "0C9D8FF5AC8EF15DEC1A9320"
-               BuildableName = "OIMDashboardWatch.app"
-               BlueprintName = "OIMDashboardWatch"
-               ReferencedContainer = "container:OIMDashboard.xcodeproj">
+               BlueprintIdentifier = "246A8D3DAE5153F88388DAD2"
+               BuildableName = "OIMMenuBar.app"
+               BlueprintName = "OIMMenuBar"
+               ReferencedContainer = "container:OIMMenuBar.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "70503C817915B30A001BF508"
+               BuildableName = "OIMMenuBarTests.xctest"
+               BlueprintName = "OIMMenuBarTests"
+               ReferencedContainer = "container:OIMMenuBar.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -32,14 +46,27 @@
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "0C9D8FF5AC8EF15DEC1A9320"
-            BuildableName = "OIMDashboardWatch.app"
-            BlueprintName = "OIMDashboardWatch"
-            ReferencedContainer = "container:OIMDashboard.xcodeproj">
+            BlueprintIdentifier = "246A8D3DAE5153F88388DAD2"
+            BuildableName = "OIMMenuBar.app"
+            BlueprintName = "OIMMenuBar"
+            ReferencedContainer = "container:OIMMenuBar.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "70503C817915B30A001BF508"
+               BuildableName = "OIMMenuBarTests.xctest"
+               BlueprintName = "OIMMenuBarTests"
+               ReferencedContainer = "container:OIMMenuBar.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
+      <CommandLineArguments>
+      </CommandLineArguments>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
@@ -55,10 +82,10 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "0C9D8FF5AC8EF15DEC1A9320"
-            BuildableName = "OIMDashboardWatch.app"
-            BlueprintName = "OIMDashboardWatch"
-            ReferencedContainer = "container:OIMDashboard.xcodeproj">
+            BlueprintIdentifier = "246A8D3DAE5153F88388DAD2"
+            BuildableName = "OIMMenuBar.app"
+            BlueprintName = "OIMMenuBar"
+            ReferencedContainer = "container:OIMMenuBar.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
       <CommandLineArguments>
@@ -74,10 +101,10 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "0C9D8FF5AC8EF15DEC1A9320"
-            BuildableName = "OIMDashboardWatch.app"
-            BlueprintName = "OIMDashboardWatch"
-            ReferencedContainer = "container:OIMDashboard.xcodeproj">
+            BlueprintIdentifier = "246A8D3DAE5153F88388DAD2"
+            BuildableName = "OIMMenuBar.app"
+            BlueprintName = "OIMMenuBar"
+            ReferencedContainer = "container:OIMMenuBar.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

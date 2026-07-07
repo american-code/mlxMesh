@@ -188,6 +188,24 @@ enum NetworkClient {
         try Self.ensureOK(resp, data)
     }
 
+    // unlinkDevice revokes a device's earnings binding — same account-signed
+    // message/signature as linkDevice (POST /account/{address}/unlink-device),
+    // since the coordinator's wallet.Manager treats link/unlink identically:
+    // whoever can sign for the account can add or remove any device.
+    static func unlinkDevice(coordinatorURL: String, address: String, deviceNodeID: String,
+                             accountPublicKey: Data, signature: Data) async throws {
+        var req = URLRequest(url: URL(string: "\(resolvedCoordinator(coordinatorURL))/account/\(address)/unlink-device")!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: [
+            "device_node_id": deviceNodeID,
+            "account_public_key": accountPublicKey.base64EncodedString(),
+            "signature": signature.base64EncodedString(),
+        ])
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try Self.ensureOK(resp, data)
+    }
+
     // ensureOK surfaces the coordinator's JSON {"error": "..."} body on non-2xx
     // (challenge/auth/link all return 400/401 with a reason), instead of the
     // opaque success URLSession gives for any HTTP status.
