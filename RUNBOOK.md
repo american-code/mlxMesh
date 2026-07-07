@@ -195,6 +195,21 @@ enabled, watch for:
   default) — a seed-only deployment or one under constant real traffic will
   correctly never see a probe.
 
+### A registered node never earns anything (real traffic AND availability-reward both silent)
+**Cause:** almost always reachability, not credit routing — a node can
+register and heartbeat fine while every real job dispatch to it fails
+silently, because the coordinator simply can't reach it (see README's
+"Reachability: automatic port mapping" section). **Action:** `curl
+<node's own address>:8765/detect` (or ask the operator to) and check
+`port_mapping`: `"unavailable"` means neither automatic UPnP/NAT-PMP mapping
+nor a manual `--reachability-endpoint` worked, and the node is very likely
+dark to the coordinator. Confirm by checking this coordinator's own logs for
+`dial tcp ... connect: connection refused` against that node's advertised
+`reachability_endpoint` — that error is definitive proof, not a guess. This
+is NOT the same bug as "linked but earnings land on the wrong account" — the
+device must actually be reachable AND correctly linked; check both
+independently, don't assume fixing one fixes the other.
+
 ## On-call
 
 - **Primary contact:** the operator (single-maintainer project today).

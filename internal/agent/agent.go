@@ -34,6 +34,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -47,6 +48,7 @@ import (
 	"github.com/open-inference-mesh/oim/internal/httpx"
 	"github.com/open-inference-mesh/oim/internal/identity"
 	"github.com/open-inference-mesh/oim/internal/jobrunner"
+	"github.com/open-inference-mesh/oim/internal/natmap"
 	"github.com/open-inference-mesh/oim/internal/nodeconfig"
 	"github.com/open-inference-mesh/oim/internal/payloadcrypto"
 	"github.com/open-inference-mesh/oim/internal/protocol"
@@ -98,6 +100,18 @@ type Config struct {
 	// unchanged.
 	TLSCert string
 	TLSKey  string
+
+	// DisableAutoPortMap opts OUT of the default automatic UPnP/NAT-PMP port
+	// mapping attempt (see internal/natmap) that runs whenever
+	// ReachabilityEndpoint is empty. Default false — the attempt is ON by
+	// default because most real contributors are behind a home router's
+	// NAT, and manually port-forwarding + finding your own public IP is not
+	// something an average user should have to do. Has no effect at all
+	// when ReachabilityEndpoint is explicitly set (an explicit override
+	// always wins and skips the attempt entirely) — this is what already
+	// happens for every simulated Docker node and every integration test
+	// today, unchanged.
+	DisableAutoPortMap bool
 }
 
 func DefaultConfig() Config {
@@ -128,15 +142,46 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	// coordinator pins the fingerprint below rather than chain-verifying.
 	nodeTLSEnabled := httptls.Enabled(cfg.TLSCert, cfg.TLSKey)
 
+	// Parsed once and reused for both the initial port-mapping attempt below
+	// and its periodic renewal later — portErr == nil is also this function's
+	// signal that automatic port mapping is even worth attempting at all
+	// (a non-numeric/empty listen port can't be mapped).
+	internalPort, portErr := reachabilityPort(listenAddr)
+
 	// Derive the reachability endpoint from the listen address so the coordinator
-	// knows how to reach back to this node. An explicit override takes precedence
-	// (needed behind NAT and in Docker containers).
+	// knows how to reach back to this node. An explicit override ALWAYS takes
+	// precedence (needed behind NAT and in Docker containers) and skips the
+	// automatic port-mapping attempt below entirely — this is already exactly
+	// what every simulated Docker node and every integration test does today
+	// (tools/gen-compose and tests/integration_test.go both pass an explicit
+	// --reachability-endpoint), so this change is a no-op for them.
+	//
+	// portMappingStatus mirrors the outcome to GET /detect (see buildJobServer)
+	// so OIMMenuBar/the dashboard can tell a user WHY their node either is or
+	// isn't reachable, instead of a silent failure that looks identical to a
+	// working setup until real traffic quietly never arrives.
 	reachabilityEndpoint := cfg.ReachabilityEndpoint
+	portMappingStatus := "manual"
+	var portMapClose func()
 	if reachabilityEndpoint == "" {
-		var epErr error
-		reachabilityEndpoint, epErr = resolveReachabilityEndpoint(listenAddr, nodeTLSEnabled)
-		if epErr != nil {
-			return fmt.Errorf("resolve reachability endpoint: %w", epErr)
+		portMappingStatus = "unavailable"
+		if !cfg.DisableAutoPortMap && portErr == nil {
+			if result, ok := natmap.TryMap(ctx, internalPort, nodeTLSEnabled); ok {
+				reachabilityEndpoint = result.Endpoint
+				portMapClose = result.Close
+				portMappingStatus = "auto"
+				log.Printf("[agent] reachable automatically at %s (UPnP/NAT-PMP port mapping)", reachabilityEndpoint)
+			}
+		}
+		if reachabilityEndpoint == "" {
+			var epErr error
+			reachabilityEndpoint, epErr = resolveReachabilityEndpoint(listenAddr, nodeTLSEnabled)
+			if epErr != nil {
+				return fmt.Errorf("resolve reachability endpoint: %w", epErr)
+			}
+			log.Printf("[agent] automatic port mapping unavailable — reachability endpoint auto-derived as %s "+
+				"(only correct if the coordinator can already reach this address on this network; "+
+				"set --reachability-endpoint to override)", reachabilityEndpoint)
 		}
 	}
 
@@ -216,7 +261,7 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 
 	// Start HTTP server for job reception (non-blocking).
 	nodeID := manifest.NodeID
-	srv := buildJobServer(runner, exo, cfg.CapacityPct, nodeID, cfg.CoordinatorURL, cfg.ExoURL, priv, ecdhPriv, &chaosActive, &scheduleActive)
+	srv := buildJobServer(runner, exo, cfg.CapacityPct, nodeID, cfg.CoordinatorURL, cfg.ExoURL, priv, ecdhPriv, &chaosActive, &scheduleActive, reachabilityEndpoint, portMappingStatus)
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", listenAddr, err)
@@ -242,13 +287,33 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 		benchC = bt.C
 	}
 
+	// Renew the automatic port mapping well before its lease expires — only
+	// running at all when TryMap actually succeeded above (portMapClose is
+	// non-nil). A failed renewal is logged, not fatal: the node keeps
+	// running, it may just become unreachable again until a later renewal
+	// succeeds, same as it would without automatic mapping at all.
+	var portMapRenewC <-chan time.Time
+	if portMapClose != nil {
+		rt := time.NewTicker(natmap.RenewInterval)
+		defer rt.Stop()
+		portMapRenewC = rt.C
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			log.Printf("[agent] shutting down")
+			if portMapClose != nil {
+				portMapClose()
+			}
 			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			return srv.Shutdown(shutCtx)
+
+		case <-portMapRenewC:
+			if !natmap.Renew(internalPort) {
+				log.Printf("[agent] port mapping renewal failed — this node may become unreachable again until a later renewal succeeds")
+			}
 
 		case <-ticker.C:
 			// Re-read the contribution schedule live from disk every tick —
@@ -333,7 +398,7 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 // scheduleActive is the operator-controlled counterpart: false outside the
 // contributor's configured sharing window (nodeconfig.Schedule) — same
 // refuse-jobs effect as chaos, but deliberate rather than simulated.
-func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct float64, nodeID, coordinatorURL, exoURL string, priv []byte, ecdhPriv *ecdh.PrivateKey, chaosActive, scheduleActive *atomic.Bool) *http.Server {
+func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct float64, nodeID, coordinatorURL, exoURL string, priv []byte, ecdhPriv *ecdh.PrivateKey, chaosActive, scheduleActive *atomic.Bool, reachabilityEndpoint, portMappingStatus string) *http.Server {
 	mux := http.NewServeMux()
 
 	// Health endpoint for coordinator liveness checks.
@@ -397,6 +462,18 @@ func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct flo
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"node_id":               nodeID,
+			// reachability_endpoint/port_mapping: what the dashboard/OIMMenuBar
+			// need to tell a user WHETHER their node is actually reachable by
+			// the coordinator, not just registered — a node can register and
+			// look "Running" while every real job dispatch to it silently
+			// fails, which is exactly the bug this pair of fields exists to
+			// make visible instead of silent. port_mapping is one of
+			// "auto" (UPnP/NAT-PMP succeeded), "manual" (an explicit
+			// --reachability-endpoint was configured), or "unavailable"
+			// (neither worked — this node likely isn't reachable from outside
+			// its own network).
+			"reachability_endpoint": reachabilityEndpoint,
+			"port_mapping":          portMappingStatus,
 			"platform":              sysInfo["platform"],
 			"is_apple_silicon":      sysInfo["is_apple_silicon"],
 			"total_ram_gb":          totalRAMGB,
@@ -757,6 +834,16 @@ func extractTokenCount(result map[string]any) int {
 		return int(n)
 	}
 	return 0
+}
+
+// reachabilityPort extracts the numeric port from a listen address like
+// ":8765" — natmap.TryMap needs the internal port as an int, not a string.
+func reachabilityPort(listenAddr string) (int, error) {
+	_, port, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return 0, fmt.Errorf("parse listen address %q: %w", listenAddr, err)
+	}
+	return strconv.Atoi(port)
 }
 
 // resolveReachabilityEndpoint converts a listen address like ":8765" to a full URL

@@ -717,7 +717,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 			// applies identically either way).
 			if servedBy != "" && tokens > 0 {
 				if _, dup := creditedJobs.LoadOrStore(jobID, struct{}{}); !dup {
-					creditNodeEarning(ledger, &nodeUsers, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, tokens)
+					creditNodeEarning(ledger, walletMgr, &nodeUsers, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, tokens)
 					registry.MarkJobServed(servedBy)
 					mx.Counter("oim_credits_total").Inc()
 					mx.AddCounter("oim_tokens_served_total", int64(tokens))
@@ -780,7 +780,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		observedTok := extractCompletionTokens(result, maxTok)
 		if servedBy, _ := result["oim_served_by_node_id"].(string); servedBy != "" && observedTok > 0 {
 			if _, dup := creditedJobs.LoadOrStore(jobID, struct{}{}); !dup {
-				creditNodeEarning(ledger, &nodeUsers, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, observedTok)
+				creditNodeEarning(ledger, walletMgr, &nodeUsers, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, observedTok)
 				registry.MarkJobServed(servedBy)
 				mx.Counter("oim_credits_total").Inc()
 				mx.AddCounter("oim_tokens_served_total", int64(observedTok))
@@ -912,7 +912,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		// cycles, and each executed cycle is a distinct earning, so this is NOT
 		// deduped by job_id (job-outcome no longer credits, so there's no double).
 		if observedTok := extractCompletionTokens(result, 2048); observedTok > 0 {
-			creditNodeEarning(ledger, &nodeUsers, nodeID, req.JobID, economics.LaneBackground, string(a.JobSpec.Sensitivity), observedTok)
+			creditNodeEarning(ledger, walletMgr, &nodeUsers, nodeID, req.JobID, economics.LaneBackground, string(a.JobSpec.Sensitivity), observedTok)
 			registry.MarkJobServed(nodeID)
 		}
 		log.Printf("[coordinator] background/execute job=%s node=%s continuation=%v", req.JobID, nodeID, isCont)
@@ -1321,6 +1321,35 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		writeJSON(w, http.StatusOK, map[string]any{"status": "linked", "device_node_id": body.DeviceNodeID, "account": address})
 	})
 
+	// POST /account/{address}/unlink-device {device_node_id, account_public_key,
+	// signature} — revokes a device's earnings binding (account-signed, same
+	// message/signature scheme as link-device — see wallet.Manager.UnlinkDevice).
+	// Lets an operator remove a stale/lost device without any server-side
+	// notion of "who's allowed to edit this list" beyond the account key itself.
+	mux.HandleFunc("POST /account/{address}/unlink-device", func(w http.ResponseWriter, r *http.Request) {
+		address := r.PathValue("address")
+		var body struct {
+			DeviceNodeID     string `json:"device_node_id"`
+			AccountPublicKey string `json:"account_public_key"`
+			Signature        string `json:"signature"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse unlink: "+err.Error())
+			return
+		}
+		pub, err1 := base64.StdEncoding.DecodeString(body.AccountPublicKey)
+		sig, err2 := base64.StdEncoding.DecodeString(body.Signature)
+		if err1 != nil || err2 != nil {
+			writeErr(w, http.StatusBadRequest, "account_public_key and signature must be base64")
+			return
+		}
+		if err := walletMgr.UnlinkDevice(address, body.DeviceNodeID, pub, sig); err != nil {
+			writeErr(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "unlinked", "device_node_id": body.DeviceNodeID, "account": address})
+	})
+
 	// GET /nodes/stream — SSE push of node snapshots every 2 s.
 	// Clients connect once; the server pushes updates without polling overhead.
 	// EventSource cannot send custom headers, so this endpoint is always unauthenticated.
@@ -1653,7 +1682,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		// documented user-facing knob.
 		interval := durationFromEnv("OIM_AVAILABILITY_PROBE_INTERVAL", availabilityProbeInterval)
 		idleThreshold := durationFromEnv("OIM_AVAILABILITY_IDLE_THRESHOLD", availabilityIdleThreshold)
-		go runAvailabilityProbe(done, registry, jobQueue, &nodeUsers, ledger, mx, interval, idleThreshold)
+		go runAvailabilityProbe(done, registry, jobQueue, walletMgr, &nodeUsers, ledger, mx, interval, idleThreshold)
 		log.Printf("[coordinator] availability-reward probing enabled: every ~%s (jittered), idle threshold %s, skipped above %.0f%% backpressure",
 			interval, idleThreshold, availabilityProbeBackpressureCeiling)
 	}
@@ -1777,7 +1806,7 @@ func runLedgerReconciliation(done <-chan struct{}, ledger *settlement.Ledger, mx
 // with interval (rather than a separate fixed constant) so the two internal
 // test-only env-var overrides (see durationFromEnv) stay proportional
 // automatically instead of needing a matching second override.
-func runAvailabilityProbe(done <-chan struct{}, registry *coordinator.NodeRegistry, jobQueue *coordinator.JobQueue, nodeUsers *sync.Map, ledger *settlement.Ledger, mx *metrics.Registry, interval, idleThreshold time.Duration) {
+func runAvailabilityProbe(done <-chan struct{}, registry *coordinator.NodeRegistry, jobQueue *coordinator.JobQueue, walletMgr *wallet.Manager, nodeUsers *sync.Map, ledger *settlement.Ledger, mx *metrics.Registry, interval, idleThreshold time.Duration) {
 	for {
 		wait := interval + mathrand.N(interval/2+1)
 		select {
@@ -1785,7 +1814,7 @@ func runAvailabilityProbe(done <-chan struct{}, registry *coordinator.NodeRegist
 			return
 		case <-time.After(wait):
 		}
-		probeIdleNodes(registry, jobQueue, nodeUsers, ledger, mx, idleThreshold)
+		probeIdleNodes(registry, jobQueue, walletMgr, nodeUsers, ledger, mx, idleThreshold)
 	}
 }
 
@@ -1793,7 +1822,7 @@ func runAvailabilityProbe(done <-chan struct{}, registry *coordinator.NodeRegist
 // under real load (backpressure means real traffic is the priority, not
 // subsidizing standby capacity), otherwise probe up to
 // availabilityProbeMaxPerRound of the longest-idle real nodes.
-func probeIdleNodes(registry *coordinator.NodeRegistry, jobQueue *coordinator.JobQueue, nodeUsers *sync.Map, ledger *settlement.Ledger, mx *metrics.Registry, idleThreshold time.Duration) {
+func probeIdleNodes(registry *coordinator.NodeRegistry, jobQueue *coordinator.JobQueue, walletMgr *wallet.Manager, nodeUsers *sync.Map, ledger *settlement.Ledger, mx *metrics.Registry, idleThreshold time.Duration) {
 	if bp := jobQueue.BackpressurePct(); bp > availabilityProbeBackpressureCeiling {
 		log.Printf("[coordinator] availability-reward: skipping round — backpressure %.1f%% > %.0f%% ceiling", bp, availabilityProbeBackpressureCeiling)
 		return
@@ -1808,7 +1837,7 @@ func probeIdleNodes(registry *coordinator.NodeRegistry, jobQueue *coordinator.Jo
 		if !ok {
 			continue
 		}
-		probeOneNode(registry, nodeUsers, ledger, mx, manifest, model)
+		probeOneNode(registry, walletMgr, nodeUsers, ledger, mx, manifest, model)
 	}
 }
 
@@ -1821,7 +1850,7 @@ func probeIdleNodes(registry *coordinator.NodeRegistry, jobQueue *coordinator.Jo
 // startup grant, minted from nothing. Safe by construction: a node can't
 // fake this by merely being registered, since it has to actually return a
 // real completion for a model it genuinely advertised.
-func probeOneNode(registry *coordinator.NodeRegistry, nodeUsers *sync.Map, ledger *settlement.Ledger, mx *metrics.Registry, manifest protocol.CapabilityManifest, model protocol.ModelCapability) {
+func probeOneNode(registry *coordinator.NodeRegistry, walletMgr *wallet.Manager, nodeUsers *sync.Map, ledger *settlement.Ledger, mx *metrics.Registry, manifest protocol.CapabilityManifest, model protocol.ModelCapability) {
 	jobID := fmt.Sprintf("availability-probe-%s-%d", manifest.NodeID, time.Now().UnixNano())
 	job, messages := coordinator.BuildProbeJob(jobID, model.ModelID, model.Quantization)
 	mx.Counter("oim_availability_probes_total").Inc()
@@ -1837,7 +1866,7 @@ func probeOneNode(registry *coordinator.NodeRegistry, nodeUsers *sync.Map, ledge
 	if tokens <= 0 {
 		return
 	}
-	if !creditAvailabilityReward(ledger, nodeUsers, manifest.NodeID, jobID, tokens) {
+	if !creditAvailabilityReward(ledger, walletMgr, nodeUsers, manifest.NodeID, jobID, tokens) {
 		return
 	}
 	registry.MarkJobServed(manifest.NodeID)
@@ -1853,17 +1882,14 @@ func probeOneNode(registry *coordinator.NodeRegistry, nodeUsers *sync.Map, ledge
 // and a real completion was measured, just subsidized by the network instead
 // of a paying consumer. Returns false if the computed reward is zero/negative
 // (nothing to credit).
-func creditAvailabilityReward(ledger *settlement.Ledger, nodeUsers *sync.Map, nodeID, jobID string, tokenCount int) bool {
-	accountKey, _ := nodeUsers.Load(nodeID)
-	if accountKey == nil {
-		accountKey = nodeID
-	}
+func creditAvailabilityReward(ledger *settlement.Ledger, walletMgr *wallet.Manager, nodeUsers *sync.Map, nodeID, jobID string, tokenCount int) bool {
+	accountKey := resolveEarningsAccount(walletMgr, nodeUsers, nodeID)
 	reward := economics.ProviderReward(economics.LaneBackground, string(protocol.SensitivityLow), tokenCount)
 	if reward <= 0 {
 		return false
 	}
 	_ = ledger.CreditAccount(settlement.CreditEntry{
-		UserID:            accountKey.(string),
+		UserID:            accountKey,
 		Origin:            settlement.CreditOriginEarnedContrib,
 		Amount:            reward,
 		GrantedOrEarnedAt: time.Now(),
@@ -2022,7 +2048,8 @@ func isSelfAuthenticatingWrite(method, path string) bool {
 	case strings.HasPrefix(path, "/users/") &&
 		(strings.HasSuffix(path, "/startup-grant") || strings.HasSuffix(path, "/api-key")):
 		return true
-	case strings.HasPrefix(path, "/account/") && strings.HasSuffix(path, "/link-device"):
+	case strings.HasPrefix(path, "/account/") &&
+		(strings.HasSuffix(path, "/link-device") || strings.HasSuffix(path, "/unlink-device")):
 		return true
 	}
 	return false
@@ -2255,20 +2282,46 @@ func creditPointerHost(ledger *settlement.Ledger, coordReg *coordinator.Coordina
 	log.Printf("[coordinator] coordination reward acct=%s host=%s credits=%.4f", acct, host, reward)
 }
 
+// resolveEarningsAccount decides which ledger account a node's earnings
+// should credit, checked in order of authority:
+//  1. wallet.Manager.AccountForDevice — a REAL, account-key-signed link (via
+//     POST /account/{address}/link-device, what "Link this Mac"/"Link this
+//     iPad" actually calls). This is the only source a device owner
+//     cryptographically controls, so it must win whenever present.
+//  2. nodeUsers (populated from --user-id at /nodes/register) — a
+//     self-declared, unsigned convenience default, historically the ONLY
+//     thing creditNodeEarning consulted. Kept as a fallback for nodes that
+//     set --user-id but have never linked a wallet.
+//  3. the raw node ID — the ultimate fallback, unchanged from before.
+//
+// Bug this fixes: creditNodeEarning and the availability-reward probe used
+// to check ONLY nodeUsers, so a successful wallet link never actually
+// redirected a compute node's real earnings — they kept landing on the raw
+// node ID (or whatever --user-id it registered with) regardless of what the
+// app showed as "Linked ✓". creditPointerHost (iOS coordination-device
+// rewards) already checked walletMgr.AccountForDevice correctly; this
+// brings compute-node earnings in line with that existing, correct pattern.
+func resolveEarningsAccount(walletMgr *wallet.Manager, nodeUsers *sync.Map, nodeID string) string {
+	if acct, ok := walletMgr.AccountForDevice(nodeID); ok {
+		return acct
+	}
+	if acct, ok := nodeUsers.Load(nodeID); ok {
+		return acct.(string)
+	}
+	return nodeID
+}
+
 // creditNodeEarning pays the account behind servedByNodeID for tokenCount output
 // tokens at the given lane/sensitivity, and credits the network treasury the
 // house-edge margin (economics.NetworkMargin). Provider reward is ALWAYS less
 // than what the consumer was charged — the treasury keeps the spread. Callers
 // must dedup by jobID (via creditedJobs) before calling.
-func creditNodeEarning(ledger *settlement.Ledger, nodeUsers *sync.Map, servedByNodeID, jobID string, lane economics.Lane, sensitivity string, tokenCount int) {
-	accountKey, _ := nodeUsers.Load(servedByNodeID)
-	if accountKey == nil {
-		accountKey = servedByNodeID // fallback: credit node_id directly
-	}
+func creditNodeEarning(ledger *settlement.Ledger, walletMgr *wallet.Manager, nodeUsers *sync.Map, servedByNodeID, jobID string, lane economics.Lane, sensitivity string, tokenCount int) {
+	accountKey := resolveEarningsAccount(walletMgr, nodeUsers, servedByNodeID)
 	reward := economics.ProviderReward(lane, sensitivity, tokenCount)
 	margin := economics.NetworkMargin(lane, sensitivity, tokenCount)
 	_ = ledger.CreditAccount(settlement.CreditEntry{
-		UserID:            accountKey.(string),
+		UserID:            accountKey,
 		Origin:            settlement.CreditOriginEarnedContrib,
 		Amount:            reward,
 		GrantedOrEarnedAt: time.Now(),

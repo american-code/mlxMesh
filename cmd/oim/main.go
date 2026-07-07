@@ -198,6 +198,7 @@ func nodeStartCmd() *cobra.Command {
 	var tlsCA string
 	var tlsSkipVerify bool
 	var tlsCert, tlsKey string
+	var disableAutoPortMap bool
 
 	cmd := &cobra.Command{
 		Use:   "start",
@@ -305,6 +306,7 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 				AttemptEnclaveAttestation: attemptEnclaveAttestation,
 				TLSCert:                   tlsCert,
 				TLSKey:                    tlsKey,
+				DisableAutoPortMap:        disableAutoPortMap,
 			}
 
 			// Trust settings for an HTTPS coordinator (private CA or, for throwaway
@@ -331,6 +333,7 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 	cmd.Flags().StringVar(&listenAddr, "listen", ":8765", "Address for this node to listen for jobs")
 	cmd.Flags().StringVar(&exoURL, "exo-url", exoadapter.DefaultURL, "Exo HTTP endpoint")
 	cmd.Flags().StringVar(&reachabilityEndpoint, "reachability-endpoint", "", "Endpoint advertised to coordinator (overrides auto-derived; use for NAT/Docker)")
+	cmd.Flags().BoolVar(&disableAutoPortMap, "no-auto-port-map", false, "Disable the automatic UPnP/NAT-PMP port-mapping attempt this node makes at startup when --reachability-endpoint is unset. On by default since most contributors are behind a home router's NAT; has no effect at all when --reachability-endpoint is set explicitly. Set this on networks where the attempt is pointless (Docker/cloud/corporate) to skip its ~5s discovery timeout")
 	cmd.Flags().Float64Var(&capPct, "cap", 0.5, "Memory contribution cap (0.0–1.0)")
 	cmd.Flags().IntVar(&refreshSec, "refresh-interval", 30, "Manifest refresh interval in seconds")
 	cmd.Flags().StringVar(&geoHint, "region", "", "Geographic region hint (us/eu/apac); defaults to auto-detect")
