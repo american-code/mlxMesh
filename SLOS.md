@@ -54,10 +54,17 @@ release-path item, not a surprise:
   volumes must be snapshotted regularly (define cadence before real users) —
   today this is manual.
 - **Single-maintainer on-call.** No rotation or secondary escalation yet.
-- **No external synthetic monitoring wired.** The Golden-signals checks in the
-  runbook are manual; objectives 1–4 need an external uptime monitor
-  (e.g. a hosted check) actually configured and pointed at the endpoints to be
-  measured continuously rather than spot-checked.
+- **External monitoring: ServerCat (iPad), container-level.** ServerCat runs
+  off-box (on the operator's iPad) and monitors all containers, with push
+  alerts — this closes the "no monitoring" gap for the beta and catches the most
+  common failure (a container down / crash-looping). Two honest limits remain:
+  (a) container-*up* is not the same as endpoint-*200* — a container can be
+  running while nginx/TLS or a wedged handler returns 502, so an HTTP check on
+  the five public endpoints is still the ideal complement (a hosted uptime check
+  or ServerCat HTTP monitors); and (b) it depends on one device being on/charged/
+  online. Good enough for a solo-maintainer beta; not a substitute for redundant
+  hosted monitoring at real scale.
 
-Closing the first two is the coordinator-HA + Postgres work; closing the last
-two is operational setup that should precede opening the beta to real users.
+Closing the HA/datastore gaps is the coordinator-HA + Postgres work. Monitoring
+is now in place (ServerCat); the remaining operational item before real users is
+a defined backup cadence for the ledger/identity volumes.

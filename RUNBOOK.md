@@ -179,6 +179,10 @@ ensure nginx sets that header. As a stopgap, raise `--rate-limit-rps`.
 ## On-call
 
 - **Primary contact:** the operator (single-maintainer project today).
+- **Alerting:** ServerCat on the operator's iPad monitors all containers off-box
+  and pushes alerts (a container down/crash-looping is the primary trigger).
+  Complement with an HTTP check on the five public endpoints — container-up does
+  not guarantee endpoint-200 (nginx/TLS or a wedged handler can still 502).
 - **Escalation:** none beyond the operator yet — a gap to close before a real
   public SLA (see SLOS.md → "Not yet in place").
 - **First 5 minutes of any page:** run Golden signals, capture
