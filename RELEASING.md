@@ -60,26 +60,43 @@ private key only the release operator holds. Pick one:
 
 - **cosign** (recommended, keyless or key-based):
   ```
-  cosign sign-blob --yes dist/SHA256SUMS --output-signature dist/SHA256SUMS.sig
-  # verify:
-  cosign verify-blob --signature dist/SHA256SUMS.sig dist/SHA256SUMS
+  cosign sign-blob --yes dist/SHA256SUMS --bundle dist/SHA256SUMS.sigbundle
+  # verify (keyless mode requires certificate identity and issuer):
+  cosign verify-blob --bundle dist/SHA256SUMS.sigbundle dist/SHA256SUMS \
+    --certificate-identity <your-email@example.com> \
+    --certificate-oidc-issuer <your-oidc-issuer>
   ```
-  For the image: `cosign sign mlxmesh:v0.16` and `cosign verify mlxmesh:v0.16`.
+  The issuer depends on your OIDC provider (e.g. `https://oauth2.sigstore.dev` for Google,
+  `https://login.microsoftonline.com` for Microsoft/Azure AD). Check the bundle with
+  `cosign bundle verify --bundle dist/SHA256SUMS.sigbundle` to see the actual issuer.
+  For the image: `cosign sign mlxmesh:v0.16` and `cosign verify mlxmesh:v0.16 --certificate-identity <your-email> --certificate-oidc-issuer <your-oidc-issuer>`.
 - **minisign** (simple, offline):
   ```
   minisign -Sm dist/SHA256SUMS        # → dist/SHA256SUMS.minisig
   minisign -Vm dist/SHA256SUMS -P <pubkey>
   ```
 
-Publish the **public key** in the repo (e.g. `SECURITY.md`) so consumers can
-verify without trusting the download page. **TODO (operator):** generate and
-commit the signing public key; wire `cosign sign-blob`/`cosign sign` into the
-release CI job once the key/OIDC identity is provisioned.
+In **keyless mode there is no public-key file to publish** — the signer's
+certificate is embedded in the `.sigbundle` and bound to an identity + issuer.
+What consumers need instead is the **signer identity + OIDC issuer**, published in
+[SECURITY.md](SECURITY.md):
+
+- signer identity: `jmelton@americancode.org`
+- OIDC issuer: `https://login.microsoftonline.com` (Microsoft/Azure AD)
+
+Protect the **Microsoft/Azure AD account** backing that identity — in keyless
+mode, account access *is* signing authority. **Remaining (operator):** wire
+`cosign sign-blob --bundle` (releases) and `cosign sign` (image) into the release
+CI job, authenticating via the CI's OIDC identity.
 
 ## Verifying a downloaded release
 
 ```
 sha256sum -c SHA256SUMS               # integrity
-cosign verify-blob --signature SHA256SUMS.sig SHA256SUMS   # provenance
+cosign verify-blob --bundle SHA256SUMS.sigbundle SHA256SUMS \
+  --certificate-identity <your-email@example.com> \
+  --certificate-oidc-issuer <your-oidc-issuer>   # provenance
 oim version                           # confirm the stamped version/commit
 ```
+
+The OIDC issuer depends on the signer's provider (e.g. `https://login.microsoftonline.com` for Microsoft/Azure AD).

@@ -13,9 +13,25 @@ Email **jacob@paydirt.solutions** with details and a reproduction. Please do
 a few business days. There is no bug-bounty program yet; credit is given in the
 release notes unless you prefer otherwise.
 
-Signed releases: `dist/SHA256SUMS` is signed at release time (see
-[RELEASING.md](RELEASING.md)). **TODO (operator):** publish the signing public
-key here so downloads can be verified against it.
+## Verifying release signatures
+
+Releases are signed with **cosign in keyless mode** (Sigstore OIDC) — there is no
+long-lived public key to distribute; the signer's certificate is embedded in the
+signature bundle and bound to an identity + OIDC issuer. To verify a download,
+check the bundle against **this project's signer identity**:
+
+- **Signer identity (certificate-identity):** `jmelton@americancode.org`
+- **OIDC issuer (certificate-oidc-issuer):** `https://login.microsoftonline.com`
+
+```
+cosign verify-blob --bundle dist/SHA256SUMS.sigbundle dist/SHA256SUMS \
+  --certificate-identity jmelton@americancode.org \
+  --certificate-oidc-issuer https://login.microsoftonline.com
+sha256sum -c dist/SHA256SUMS   # then confirm artifact integrity
+```
+
+A valid signature proves the artifacts were signed by that Microsoft/Azure AD
+identity via Sigstore. See [RELEASING.md](RELEASING.md) for the signing side.
 
 ## What this system is
 
