@@ -50,9 +50,13 @@ release-path item, not a surprise:
   region is down for the duration. This caps objectives 1/3 structurally — HA is
   required to promise more than ~99%.
 - **No managed datastore.** SQLite on one host; a disk/host loss is a restore
-  from backup, not a seamless failover. **Backups:** the ledger/identity data
-  volumes must be snapshotted regularly (define cadence before real users) —
-  today this is manual.
+  from backup, not a seamless failover. **Backups:** `scripts/backup-pull.sh`
+  pulls the two stateful volumes (coordinator: ledger + identities + federation
+  DBs; directory: pins) off-box to the operator's Mac, date-stamped, deleting
+  the server-side temp copy (no server space, no AWS cost). Verified restorable.
+  Cadence: daily via cron/launchd on the Mac (see the script header). Caveat:
+  depends on the Mac being awake at run time — launchd runs a missed job at next
+  wake; cron does not.
 - **Single-maintainer on-call.** No rotation or secondary escalation yet.
 - **External monitoring: ServerCat (iPad), container-level.** ServerCat runs
   off-box (on the operator's iPad) and monitors all containers, with push
@@ -66,5 +70,6 @@ release-path item, not a surprise:
   hosted monitoring at real scale.
 
 Closing the HA/datastore gaps is the coordinator-HA + Postgres work. Monitoring
-is now in place (ServerCat); the remaining operational item before real users is
-a defined backup cadence for the ledger/identity volumes.
+(ServerCat) and off-box backups (`scripts/backup-pull.sh`, verified restorable)
+are now in place — the operational pre-launch items are covered; scheduling the
+backup cron and standing up hosted-monitor redundancy are the remaining polish.
