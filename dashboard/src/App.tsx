@@ -246,6 +246,7 @@ export default function App() {
           )}
           <TryTheMesh
             coordinatorURL={pods[0]?.coordinator_endpoint ?? null}
+            nodes={allNodes}
             onServed={lightUpRoute}
           />
         </section>
@@ -372,10 +373,26 @@ function StatusLegend() {
 // serving node_id + lane straight from the coordinator's response so App can
 // draw the route — nobody else's traffic is ever visible here.
 
+// pickDemoModel prefers a live, real (non-simulated) node's own model over the
+// simulated fleet's shared 'llama-3.2-3b' — so when an actual contributor
+// machine is online and can serve the request, the demo shows real hardware
+// responding instead of always landing on the sim fleet (which every request
+// is otherwise guaranteed to hit, since 'llama-3.2-3b' is a sim-only model no
+// real contributor happens to host). Ties (multiple real live nodes) break on
+// declared throughput — the routing layer's own eligibility/scoring still has
+// the final say on which one actually serves it.
+function pickDemoModel(nodes: NodeSnapshot[]): string {
+  const realLive = nodes
+    .filter(n => !n.simulated && n.status === 'live' && n.models.length > 0)
+    .sort((a, b) => b.measured_toks_per_sec - a.measured_toks_per_sec)
+  return realLive[0]?.models[0]?.model_id ?? 'llama-3.2-3b'
+}
+
 function TryTheMesh({
-  coordinatorURL, onServed,
+  coordinatorURL, nodes, onServed,
 }: {
   coordinatorURL: string | null
+  nodes: NodeSnapshot[]
   onServed: (servedByNodeId: string | null, lane: 'fast' | 'background' | null) => void
 }) {
   const [prompt, setPrompt] = useState('What can this network do?')
@@ -396,10 +413,9 @@ function TryTheMesh({
       // wallet (API key + startup grant) so a first-time visitor doesn't have
       // to visit Account first just to see the mesh respond. Retries once with
       // a freshly minted key if the stored one turns out to be stale.
-      // llama-3.2-3b is the one model every simulated node serves — a reasonable
-      // default so "Try the mesh" works without asking the user to pick a model
-      // they don't yet know is available.
-      const result = await runTestQueryWithAutoAuth(coordinatorURL, prompt.trim(), 'llama-3.2-3b', getOrCreateUserId())
+      // Prefer a live real node's own model over the sim fleet's shared
+      // 'llama-3.2-3b' fallback — see pickDemoModel.
+      const result = await runTestQueryWithAutoAuth(coordinatorURL, prompt.trim(), pickDemoModel(nodes), getOrCreateUserId())
       setReply(result.content || '(empty response)')
       setStats({ tokensPerSec: result.tokensPerSec, latencyMs: result.latencyMs })
       onServed(result.servedByNodeId, result.lane)

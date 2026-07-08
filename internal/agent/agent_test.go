@@ -38,6 +38,35 @@ func TestResolveReachabilityEndpoint_InvalidListenAddr(t *testing.T) {
 	}
 }
 
+func TestIsLoopbackReachability(t *testing.T) {
+	loopback := []string{
+		"http://localhost:8765",
+		"https://localhost:8765",
+		"localhost:8765",
+		"http://127.0.0.1:8765",
+		"127.0.0.1:8765",
+		"http://[::1]:8765",
+		"http://0.0.0.0:8765",
+		"0.0.0.0:8765",
+	}
+	for _, e := range loopback {
+		if !isLoopbackReachability(e) {
+			t.Errorf("isLoopbackReachability(%q) = false, want true (a remote coordinator can't reach it)", e)
+		}
+	}
+	routable := []string{
+		"http://your-host.example:8765",
+		"https://node.mlxmesh.net:8765",
+		"192.168.1.10:8765", // LAN-routable: a same-network coordinator CAN reach it, so keep push mode
+		"http://203.0.113.7:8765",
+	}
+	for _, e := range routable {
+		if isLoopbackReachability(e) {
+			t.Errorf("isLoopbackReachability(%q) = true, want false (should stay in push mode)", e)
+		}
+	}
+}
+
 func TestReachabilityPort(t *testing.T) {
 	port, err := reachabilityPort(":8765")
 	if err != nil {

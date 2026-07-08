@@ -34,7 +34,9 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -154,8 +156,22 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	// portMappingStatus is mirrored to GET /detect so OIMMenuBar can show the
 	// node's real connectivity: "pull" (outbound, always reachable) vs "manual"
 	// (explicit push endpoint).
-	pullMode := cfg.ReachabilityEndpoint == ""
+	// A reachability endpoint that resolves to loopback/an unspecified address
+	// is never a valid PUSH target: the coordinator is remote, so
+	// "http://localhost:8765" points at the COORDINATOR's own loopback, not this
+	// node — every dispatch and availability probe to it fails silently, so the
+	// node registers but never gets work and never earns. This was observed live:
+	// a real contributor node carried a stale http://localhost:8765 (left in
+	// ~/.config/oim/config.json by an older, pre-pull build and prefilled back
+	// into the app's Settings field), which silently forced push mode and killed
+	// all of its earnings. Treat such an endpoint as unset so the node correctly
+	// falls back to PULL mode and earns regardless of that stale value.
 	reachabilityEndpoint := cfg.ReachabilityEndpoint
+	if reachabilityEndpoint != "" && isLoopbackReachability(reachabilityEndpoint) {
+		log.Printf("[agent] ignoring reachability endpoint %q (loopback is unreachable by a remote coordinator) — using pull mode instead", reachabilityEndpoint)
+		reachabilityEndpoint = ""
+	}
+	pullMode := reachabilityEndpoint == ""
 	portMappingStatus := "manual"
 	if pullMode {
 		portMappingStatus = "pull"
@@ -821,6 +837,31 @@ func reachabilityPort(listenAddr string) (int, error) {
 		return 0, fmt.Errorf("parse listen address %q: %w", listenAddr, err)
 	}
 	return strconv.Atoi(port)
+}
+
+// isLoopbackReachability reports whether endpoint (a --reachability-endpoint
+// value such as "http://localhost:8765" or "127.0.0.1:8765") points at a
+// loopback or unspecified address — which a remote coordinator can never reach,
+// so the node should fall back to pull mode rather than advertise a dead push
+// target. A value we can't parse is treated as NOT loopback: we leave an
+// operator's explicit, understood choice intact rather than silently overriding
+// something we don't recognize.
+func isLoopbackReachability(endpoint string) bool {
+	host := endpoint
+	if u, err := url.Parse(endpoint); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback() || ip.IsUnspecified()
+	}
+	return false
 }
 
 // resolveReachabilityEndpoint converts a listen address like ":8765" to a full URL
