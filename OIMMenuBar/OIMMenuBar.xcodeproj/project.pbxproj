@@ -21,6 +21,7 @@
 		659EDCA54DA6B6FDE8F0335B /* ExoHealthMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AC2FD7956A24C3D7B8590C7 /* ExoHealthMonitor.swift */; };
 		6E6CC69F485F259588F3B2DD /* WalletStatusRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB0B1644EE0E9EFB9AA50E70 /* WalletStatusRow.swift */; };
 		6E7A5E27E3705EFB7E300118 /* NodeConfigBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B36EA6075D2982A304A2B21 /* NodeConfigBridge.swift */; };
+		6FBE83E6A8CD110F122F043A /* NodeActivityIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDD926B2291FC560C04DC596 /* NodeActivityIndicator.swift */; };
 		71BF0A41EEB31776D99416BB /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6EF6045D1F1ED54CF297B5B /* Models.swift */; };
 		7B97D5F5DCAF6B27C47DA289 /* WalletStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D0C3485079ECD0ACE2D17AC /* WalletStore.swift */; };
 		8DFDFB0D0C7A71F8A8469E60 /* NodeConfigBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D51CEFAA3FA317F7530E6F0 /* NodeConfigBridgeTests.swift */; };
@@ -96,6 +97,7 @@
 		CB0B1644EE0E9EFB9AA50E70 /* WalletStatusRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletStatusRow.swift; sourceTree = "<group>"; };
 		CDDCE39AD28BE90913B3098F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		D6EF6045D1F1ED54CF297B5B /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		DDD926B2291FC560C04DC596 /* NodeActivityIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeActivityIndicator.swift; sourceTree = "<group>"; };
 		E790C4DB7E86F9FD86427689 /* NetworkClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkClient.swift; sourceTree = "<group>"; };
 		F05004C8B5BE70F37BA9ADA3 /* EmbeddedBinaryLocator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbeddedBinaryLocator.swift; sourceTree = "<group>"; };
 		FEB66FECD0D528484A5D58B3 /* LocalDetectMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDetectMonitor.swift; sourceTree = "<group>"; };
@@ -158,6 +160,7 @@
 				150FA626BCAA8880BEEB4E7A /* LogViewerView.swift */,
 				7CB5AAA958C191274C5A59A9 /* MenuBarIconState.swift */,
 				091386FF2FCC7C5FCD3AC12C /* MenuBarView.swift */,
+				DDD926B2291FC560C04DC596 /* NodeActivityIndicator.swift */,
 				BA1AB3069FFAF2970BE88D07 /* NodeStatusRow.swift */,
 				77791345773053F3C1234DBB /* SettingsSection.swift */,
 				CB0B1644EE0E9EFB9AA50E70 /* WalletStatusRow.swift */,
@@ -399,6 +402,7 @@
 				9093C788B9A477F87D9DFDC7 /* MenuBarView.swift in Sources */,
 				71BF0A41EEB31776D99416BB /* Models.swift in Sources */,
 				0274D7680F438358543E114B /* NetworkClient.swift in Sources */,
+				6FBE83E6A8CD110F122F043A /* NodeActivityIndicator.swift in Sources */,
 				6E7A5E27E3705EFB7E300118 /* NodeConfigBridge.swift in Sources */,
 				B47341DF590A746C4921EA54 /* NodeIdentityReader.swift in Sources */,
 				F2D298107605828D450B6F50 /* NodeLogParser.swift in Sources */,

@@ -16,6 +16,9 @@ struct NodeStatusRow: View {
             Text(statusLabel)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if case .running = appState.nodeController.state {
+                NodeActivityIndicator(activity: appState.nodeActivity)
+            }
             if appState.isExoDegraded {
                 Text("0 models available — Exo not detected")
                     .font(.caption)

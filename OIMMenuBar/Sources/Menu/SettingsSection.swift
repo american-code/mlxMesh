@@ -72,14 +72,14 @@ struct SettingsSection: View {
                 Divider()
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Reachable at (advanced)")
+                    Text("Direct address (advanced — leave blank)")
                         .font(.caption)
-                    TextField("Leave blank unless behind a router/NAT", text: $appState.reachabilityEndpoint)
+                    TextField("Leave blank — your Mac connects out automatically", text: $appState.reachabilityEndpoint)
                         .onChange(of: appState.reachabilityEndpoint) { _, _ in appState.persistSettings() }
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 11, design: .monospaced))
                         .autocorrectionDisabled()
-                    Text("Only needed if this Mac isn't on the same network as the coordinator (true for the public mlxMesh network). Requires forwarding a port on your router to this Mac, then entering the public address here, e.g. http://your-address.example:8765 — otherwise the network can register this node but can never actually send it work.")
+                    Text("You do not need to touch this. Your Mac reaches work by connecting out to the coordinator (like pointing a miner at a pool), so there is no port forwarding, no router changes, and nothing to open — it works behind any home NAT. Only fill this in if you run your OWN coordinator on your LAN and want it to push work directly to a fixed address on this machine. (Roadmap: such trusted, statically-addressed nodes are what a future release will promote into federated/trusted coordinators.)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
