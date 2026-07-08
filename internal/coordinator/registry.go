@@ -3,6 +3,7 @@
 package coordinator
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"sync"
@@ -60,6 +61,49 @@ func (e *nodeEntry) isLive() bool {
 type NodeRegistry struct {
 	mu      sync.RWMutex
 	entries map[string]*nodeEntry
+
+	// pull, when set, delivers jobs to pull-mode nodes (those that long-poll
+	// for work instead of accepting inbound dispatch — see PullDispatcher).
+	// Held here rather than threaded through every DispatchFastLane/
+	// DispatchToResolvedNode signature: the registry is already passed to
+	// every dispatch path, and deliverJob is the single branch point between
+	// pull (mailbox) and push (outbound HTTP) delivery. nil = pull disabled
+	// (every node treated as push), which is the pre-pull behavior.
+	pull *PullDispatcher
+}
+
+// SetPullDispatcher wires the coordinator's PullDispatcher into the registry so
+// deliverJob can route pull-mode nodes through it. Called once at startup.
+func (r *NodeRegistry) SetPullDispatcher(pd *PullDispatcher) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pull = pd
+}
+
+// IsPullNode reports whether nodeID registered as a pull-delivery node. Used by
+// the resolved-node dispatch path, which has only a NodeTarget (endpoint+pin)
+// and not the full manifest in hand.
+func (r *NodeRegistry) IsPullNode(nodeID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.entries[nodeID]
+	return ok && e.manifest.PullDelivery
+}
+
+// deliverJob is the single push-vs-pull branch point every buffered dispatch
+// path funnels through. A pull node (manifest.PullDelivery, and a wired
+// PullDispatcher) gets the job via the mailbox — the node claims it over its
+// own outbound long-poll, so the coordinator never dials in. Everything else
+// (the simulated fleet, LAN nodes with an explicit endpoint) takes the
+// unchanged outbound-HTTP path.
+func (r *NodeRegistry) deliverJob(ctx context.Context, nodeID string, isPull bool, target NodeTarget, job protocol.JobSpec, messages []map[string]any) (map[string]any, error) {
+	r.mu.RLock()
+	pull := r.pull
+	r.mu.RUnlock()
+	if isPull && pull != nil {
+		return pull.Dispatch(ctx, nodeID, job, messages)
+	}
+	return dispatchToNode(ctx, job, messages, target)
 }
 
 func NewNodeRegistry() *NodeRegistry {
@@ -159,6 +203,19 @@ func (r *NodeRegistry) MarkJobServed(nodeID string) {
 	defer r.mu.Unlock()
 	if e, ok := r.entries[nodeID]; ok {
 		e.lastJobServedAt = time.Now()
+	}
+}
+
+// MarkSeen refreshes a node's liveness without a full manifest refresh — a
+// pull node actively long-polling /jobs/claim is provably alive, so its claim
+// doubles as a heartbeat (keeps it in the candidate set between the slower
+// manifest-refresh ticks). No-op for an unregistered node.
+func (r *NodeRegistry) MarkSeen(nodeID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.entries[nodeID]; ok {
+		e.lastSeen = time.Now()
+		e.unreachable = false
 	}
 }
 

@@ -837,3 +837,74 @@ func TestIntegrationExplicitReachabilityEndpointSkipsAutoPortMap(t *testing.T) {
 		t.Fatalf(`expected port_mapping="manual" when --reachability-endpoint is set explicitly, got %v`, got)
 	}
 }
+
+// TestIntegrationPullModeNodeEarns is THE proof the NAT problem is gone: a real
+// node started with NO --reachability-endpoint runs in pull mode — it long-
+// polls the coordinator for work over its own outbound connection. The
+// coordinator NEVER dials into the node (its inbound job port is bound to
+// loopback only), yet a real /v1/chat/completions is served by it and credited.
+// This is exactly the "point an ASIC at a pool" model: no port forwarding, no
+// reachability endpoint, no inbound connectivity of any kind.
+func TestIntegrationPullModeNodeEarns(t *testing.T) {
+	exoPort, coordPort := freePort(t), freePort(t)
+	exoURL := fmt.Sprintf("http://127.0.0.1:%d", exoPort)
+	coordURL := fmt.Sprintf("http://127.0.0.1:%d", coordPort)
+
+	startProc(t, []string{fmt.Sprintf("STUB_LISTEN=:%d", exoPort)}, bin.stubExo)
+	waitHealthy(t, exoURL+"/state")
+
+	startProc(t, nil, bin.coordinator,
+		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0")
+	waitHealthy(t, coordURL+"/health")
+
+	// Crucially: NO --reachability-endpoint. The node goes pull mode. --listen
+	// is still given so the node has a loopback /detect for its own reporting,
+	// but the coordinator never connects to it.
+	nodePort := freePort(t)
+	startProc(t, nil, bin.node, "node", "start",
+		fmt.Sprintf("--coordinator=%s", coordURL),
+		fmt.Sprintf("--listen=:%d", nodePort),
+		fmt.Sprintf("--exo-url=%s", exoURL),
+		"--region=us", "--user-id=pullminer")
+
+	// Wait for the pull node to register.
+	deadline := time.Now().Add(15 * time.Second)
+	registered := false
+	for time.Now().Before(deadline) {
+		nodes := getJSON(t, coordURL+"/nodes")
+		if arr, ok := nodes["nodes"].([]any); ok && len(arr) >= 1 {
+			registered = true
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !registered {
+		t.Fatal("pull node never registered")
+	}
+
+	// A real consumer job. The coordinator must deliver it to the pull node via
+	// the claim mailbox (it has no way to dial the node), the node runs it and
+	// posts the result back.
+	postJSON(t, coordURL+"/users/consumer3/startup-grant", map[string]any{}, nil)
+	status, resp := postJSON(t, coordURL+"/v1/chat/completions", map[string]any{
+		"model":      "llama-3.2-3b",
+		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
+		"max_tokens": 64,
+	}, map[string]string{"X-OIM-User-ID": "consumer3"})
+	if status != http.StatusOK {
+		t.Fatalf("pull-mode dispatch status %d: %v", status, resp)
+	}
+	if _, ok := resp["choices"]; !ok {
+		t.Fatalf("no choices — pull node did not serve the job: %v", resp)
+	}
+	if servedBy, _ := resp["oim_served_by_node_id"].(string); servedBy == "" {
+		t.Fatal("expected oim_served_by_node_id — the pull node should be credited as the server")
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	if bal := balance(t, coordURL, "pullminer"); bal <= 0 {
+		t.Fatalf("pull node earned nothing — expected a credit for the served job, got %v", bal)
+	}
+	t.Logf("pull-mode node served a real job and earned with ZERO inbound reachability")
+}

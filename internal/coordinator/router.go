@@ -87,6 +87,19 @@ func rankCandidates(candidates []NodeWithLoad, job protocol.JobSpec) []NodeWithL
 	return out
 }
 
+// filterPushOnly drops pull-delivery nodes from a ranked candidate list. Used
+// by the streaming path, which can't relay SSE over the request/response pull
+// mailbox (v1). Preserves order.
+func filterPushOnly(ranked []NodeWithLoad) []NodeWithLoad {
+	out := ranked[:0:0]
+	for _, n := range ranked {
+		if !n.Manifest.PullDelivery {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // PickBestNode selects the best eligible node for job WITHOUT dispatching —
 // used by the coordinator's node-reservation endpoint (POST /v1/reserve-node),
 // which must hand a client a node's public key before any request exists to
@@ -130,7 +143,7 @@ func DispatchFastLane(
 		attempted++
 		registry.IncrInFlight(node.Manifest.NodeID)
 		dispatchStart := time.Now()
-		result, err := dispatchToNode(ctx, job, messages, TargetFromManifest(node.Manifest))
+		result, err := registry.deliverJob(ctx, node.Manifest.NodeID, node.Manifest.PullDelivery, TargetFromManifest(node.Manifest), job, messages)
 		elapsed := time.Since(dispatchStart)
 		registry.DecrInFlight(node.Manifest.NodeID)
 		if err != nil {
@@ -256,7 +269,7 @@ func (s *AssignmentStore) Get(jobID string) (*BackgroundAssignment, bool) {
 // the pin can never be paired with a different node's endpoint.
 func DispatchToResolvedNode(ctx context.Context, job protocol.JobSpec, messages []map[string]any, registry *NodeRegistry, target NodeTarget) (map[string]any, error) {
 	registry.IncrInFlight(target.NodeID)
-	result, err := dispatchToNode(ctx, job, messages, target)
+	result, err := registry.deliverJob(ctx, target.NodeID, registry.IsPullNode(target.NodeID), target, job, messages)
 	registry.DecrInFlight(target.NodeID)
 	if err != nil {
 		registry.MarkUnreachable(target.NodeID)
@@ -308,6 +321,13 @@ func DispatchFastLaneStreaming(
 		return "", 0, false, fmt.Errorf("fetch candidates: %w", err)
 	}
 	ranked := rankCandidates(candidates, job)
+	// SSE passthrough requires the coordinator to hold the node's streaming
+	// HTTP response open — impossible over the pull mailbox, which is
+	// request/response only. Pull nodes are therefore skipped for streaming in
+	// v1 (buffered delivery to them still works fully). This only affects
+	// stream:true requests; "Try the mesh" and the availability probe are
+	// buffered, so earning is unaffected. Documented in README as a known v1 gap.
+	ranked = filterPushOnly(ranked)
 
 	attempted := 0
 	for _, node := range ranked {

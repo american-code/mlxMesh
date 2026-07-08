@@ -48,7 +48,6 @@ import (
 	"github.com/open-inference-mesh/oim/internal/httpx"
 	"github.com/open-inference-mesh/oim/internal/identity"
 	"github.com/open-inference-mesh/oim/internal/jobrunner"
-	"github.com/open-inference-mesh/oim/internal/natmap"
 	"github.com/open-inference-mesh/oim/internal/nodeconfig"
 	"github.com/open-inference-mesh/oim/internal/payloadcrypto"
 	"github.com/open-inference-mesh/oim/internal/protocol"
@@ -142,47 +141,25 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	// coordinator pins the fingerprint below rather than chain-verifying.
 	nodeTLSEnabled := httptls.Enabled(cfg.TLSCert, cfg.TLSKey)
 
-	// Parsed once and reused for both the initial port-mapping attempt below
-	// and its periodic renewal later — portErr == nil is also this function's
-	// signal that automatic port mapping is even worth attempting at all
-	// (a non-numeric/empty listen port can't be mapped).
-	internalPort, portErr := reachabilityPort(listenAddr)
-
-	// Derive the reachability endpoint from the listen address so the coordinator
-	// knows how to reach back to this node. An explicit override ALWAYS takes
-	// precedence (needed behind NAT and in Docker containers) and skips the
-	// automatic port-mapping attempt below entirely — this is already exactly
-	// what every simulated Docker node and every integration test does today
-	// (tools/gen-compose and tests/integration_test.go both pass an explicit
-	// --reachability-endpoint), so this change is a no-op for them.
+	// Delivery mode — the fix for nodes behind NAT/home routers. With NO
+	// explicit reachability endpoint the node runs in PULL mode: it long-polls
+	// the coordinator for work (outbound-only, the "mining-pool" model), so
+	// port-forwarding / UPnP / NAT traversal are all irrelevant — the node
+	// opens the connection, the coordinator never dials in. This is the default
+	// for real contributors. An explicit --reachability-endpoint switches to
+	// PUSH mode (coordinator dials into that address) — exactly what the
+	// simulated Docker fleet, LAN nodes, and every integration test already
+	// set, so their behavior is unchanged.
 	//
-	// portMappingStatus mirrors the outcome to GET /detect (see buildJobServer)
-	// so OIMMenuBar/the dashboard can tell a user WHY their node either is or
-	// isn't reachable, instead of a silent failure that looks identical to a
-	// working setup until real traffic quietly never arrives.
+	// portMappingStatus is mirrored to GET /detect so OIMMenuBar can show the
+	// node's real connectivity: "pull" (outbound, always reachable) vs "manual"
+	// (explicit push endpoint).
+	pullMode := cfg.ReachabilityEndpoint == ""
 	reachabilityEndpoint := cfg.ReachabilityEndpoint
 	portMappingStatus := "manual"
-	var portMapClose func()
-	if reachabilityEndpoint == "" {
-		portMappingStatus = "unavailable"
-		if !cfg.DisableAutoPortMap && portErr == nil {
-			if result, ok := natmap.TryMap(ctx, internalPort, nodeTLSEnabled); ok {
-				reachabilityEndpoint = result.Endpoint
-				portMapClose = result.Close
-				portMappingStatus = "auto"
-				log.Printf("[agent] reachable automatically at %s (UPnP/NAT-PMP port mapping)", reachabilityEndpoint)
-			}
-		}
-		if reachabilityEndpoint == "" {
-			var epErr error
-			reachabilityEndpoint, epErr = resolveReachabilityEndpoint(listenAddr, nodeTLSEnabled)
-			if epErr != nil {
-				return fmt.Errorf("resolve reachability endpoint: %w", epErr)
-			}
-			log.Printf("[agent] automatic port mapping unavailable — reachability endpoint auto-derived as %s "+
-				"(only correct if the coordinator can already reach this address on this network; "+
-				"set --reachability-endpoint to override)", reachabilityEndpoint)
-		}
+	if pullMode {
+		portMappingStatus = "pull"
+		log.Printf("[agent] pull mode: receiving work over an outbound connection to %s (no inbound reachability needed)", cfg.CoordinatorURL)
 	}
 
 	opts := capability.DefaultOptions()
@@ -195,6 +172,7 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	}
 	opts.GeoLat = cfg.GeoLat
 	opts.GeoLng = cfg.GeoLng
+	opts.PullDelivery = pullMode
 
 	// Node-side pointer consumption (M8): load/generate this node's P-256
 	// key-agreement keypair so it can decrypt payloads a client encrypted to
@@ -259,23 +237,42 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	var scheduleActive atomic.Bool
 	scheduleActive.Store(true)
 
-	// Start HTTP server for job reception (non-blocking).
+	// Job server: serves /health + /detect always (OIMMenuBar polls /detect on
+	// loopback), and inbound /v1/chat/completions ONLY in push mode. In pull
+	// mode the coordinator never dials in, so bind loopback-only — the inbound
+	// job handler stays present but unreachable from the LAN, and work arrives
+	// exclusively over the outbound claim loop below.
 	nodeID := manifest.NodeID
 	srv := buildJobServer(runner, exo, cfg.CapacityPct, nodeID, cfg.CoordinatorURL, cfg.ExoURL, priv, ecdhPriv, &chaosActive, &scheduleActive, reachabilityEndpoint, portMappingStatus)
-	ln, err := net.Listen("tcp", listenAddr)
+	serverAddr := listenAddr
+	if pullMode {
+		if _, port, splitErr := net.SplitHostPort(listenAddr); splitErr == nil {
+			serverAddr = "127.0.0.1:" + port
+		}
+	}
+	ln, err := net.Listen("tcp", serverAddr)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", listenAddr, err)
+		return fmt.Errorf("listen on %s: %w", serverAddr, err)
 	}
 	go func() {
 		scheme := "http"
 		if nodeTLSEnabled {
 			scheme = "https"
 		}
-		log.Printf("[agent] serving jobs at %s://%s", scheme, listenAddr)
+		log.Printf("[agent] serving jobs at %s://%s", scheme, serverAddr)
 		if err := httptls.Serve(srv, ln, cfg.TLSCert, cfg.TLSKey); err != nil && err != http.ErrServerClosed {
 			log.Printf("[agent] job server error: %v", err)
 		}
 	}()
+
+	// Pull loop: in pull mode, the node claims work over its own outbound
+	// connection to the coordinator and posts results back — the whole reason
+	// no inbound reachability is needed. Runs until ctx is canceled. Respects
+	// the same chaos/schedule gating as the inbound handler (won't claim while
+	// paused). Push nodes skip this entirely.
+	if pullMode {
+		go runPullLoop(ctx, cfg, priv, nodeID, runner, ecdhPriv, &chaosActive, &scheduleActive)
+	}
 
 	// Heartbeat loop: refresh manifest at RefreshInterval; re-bench at BenchInterval if set.
 	ticker := time.NewTicker(cfg.RefreshInterval)
@@ -287,33 +284,13 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 		benchC = bt.C
 	}
 
-	// Renew the automatic port mapping well before its lease expires — only
-	// running at all when TryMap actually succeeded above (portMapClose is
-	// non-nil). A failed renewal is logged, not fatal: the node keeps
-	// running, it may just become unreachable again until a later renewal
-	// succeeds, same as it would without automatic mapping at all.
-	var portMapRenewC <-chan time.Time
-	if portMapClose != nil {
-		rt := time.NewTicker(natmap.RenewInterval)
-		defer rt.Stop()
-		portMapRenewC = rt.C
-	}
-
 	for {
 		select {
 		case <-ctx.Done():
 			log.Printf("[agent] shutting down")
-			if portMapClose != nil {
-				portMapClose()
-			}
 			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			return srv.Shutdown(shutCtx)
-
-		case <-portMapRenewC:
-			if !natmap.Renew(internalPort) {
-				log.Printf("[agent] port mapping renewal failed — this node may become unreachable again until a later renewal succeeds")
-			}
 
 		case <-ticker.C:
 			// Re-read the contribution schedule live from disk every tick —

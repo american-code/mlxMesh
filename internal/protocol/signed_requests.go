@@ -92,6 +92,51 @@ func (r *JobOutcomeRequest) SigningBytes() ([]byte, error) {
 	}{r.JobID, r.Success, r.LatencyMs, r.TokensDelivered, r.Timestamp})
 }
 
+// ClaimRequest is a node's outbound long-poll asking the coordinator for work
+// (the "mining-pool" pull model). Signed with the node's registration keypair
+// for the same reason every other node→coordinator write is: an unsigned claim
+// would let anyone drain a victim node's queued jobs (stealing its work and
+// its earnings) just by knowing the victim's node_id. NodeID rides inside the
+// signed payload so it can't be swapped after signing.
+type ClaimRequest struct {
+	NodeID    string `json:"node_id"`
+	Timestamp int64  `json:"timestamp"`
+	Signature []byte `json:"signature"`
+}
+
+func (r *ClaimRequest) SigningBytes() ([]byte, error) {
+	return json.Marshal(struct {
+		NodeID    string `json:"node_id"`
+		Timestamp int64  `json:"timestamp"`
+	}{r.NodeID, r.Timestamp})
+}
+
+// JobResultRequest is a node returning a completed job's output over its own
+// outbound connection (pull model). Signed with the node's registration
+// keypair — this is the earning side, exactly like JobOutcomeRequest: an
+// unsigned result submission would let anyone inject a fabricated completion
+// for a job_id and get it credited to a node they don't control. The
+// coordinator matches JobID to an outstanding Dispatch waiter; a result for an
+// unknown/expired job is safely ignored.
+type JobResultRequest struct {
+	NodeID    string         `json:"node_id"`
+	JobID     string         `json:"job_id"`
+	Result    map[string]any `json:"result"`
+	Error     string         `json:"error"` // node-side execution error, empty on success
+	Timestamp int64          `json:"timestamp"`
+	Signature []byte         `json:"signature"`
+}
+
+func (r *JobResultRequest) SigningBytes() ([]byte, error) {
+	return json.Marshal(struct {
+		NodeID    string         `json:"node_id"`
+		JobID     string         `json:"job_id"`
+		Result    map[string]any `json:"result"`
+		Error     string         `json:"error"`
+		Timestamp int64          `json:"timestamp"`
+	}{r.NodeID, r.JobID, r.Result, r.Error, r.Timestamp})
+}
+
 // EnclaveAttestationRequest proves a node possesses a Secure Enclave-backed
 // signing key, replacing trust in the plain self-reported
 // CapabilityManifest.HasSecureEnclave boolean (Fable security review:

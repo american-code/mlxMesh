@@ -398,6 +398,14 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		registry, maxAttempts,
 	)
 
+	// pullDispatcher delivers jobs to outbound-pull ("mining-pool") nodes that
+	// long-poll for work instead of accepting inbound dispatch — the fix for
+	// nodes behind NAT/home routers. Wired into the registry so the dispatch
+	// path routes pull-mode nodes through it transparently (see
+	// NodeRegistry.deliverJob); push nodes are unaffected.
+	pullDispatcher := coordinator.NewPullDispatcher()
+	registry.SetPullDispatcher(pullDispatcher)
+
 	// nodeUsers maps node_id → user_id so earned credits reach the right account.
 	var nodeUsers sync.Map // string → string
 
@@ -475,6 +483,64 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "refreshed"})
+	})
+
+	// POST /jobs/claim — a pull-mode node's outbound long-poll for work (the
+	// "mining-pool" model). Blocks up to ~25s until a job is queued for this
+	// node, then returns it; 204 on timeout so the node simply re-polls. The
+	// node connecting IS the whole point — the coordinator never dials in, so
+	// NAT/port-forwarding is irrelevant. Node-signed exactly like /refresh.
+	mux.HandleFunc("POST /jobs/claim", func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.ClaimRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse claim request: "+err.Error())
+			return
+		}
+		signingBytes, err := req.SigningBytes()
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "build signing bytes: "+err.Error())
+			return
+		}
+		if err := coordinator.VerifyNodeSignature(registry, req.NodeID, req.Timestamp, signingBytes, req.Signature); err != nil {
+			writeErr(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		registry.MarkSeen(req.NodeID) // an active claim is a heartbeat
+		claimCtx, cancel := context.WithTimeout(r.Context(), pullClaimTimeout)
+		defer cancel()
+		job, ok := pullDispatcher.Claim(claimCtx, req.NodeID)
+		if !ok {
+			w.WriteHeader(http.StatusNoContent) // long-poll timeout — node re-polls
+			return
+		}
+		writeJSON(w, http.StatusOK, job)
+	})
+
+	// POST /jobs/result — a pull-mode node returning a completed job's output
+	// over its own outbound connection. Matched to the blocked Dispatch waiter
+	// by job_id. Node-signed (this is the earning side — an unsigned result is
+	// a credit-forging oracle, same threat as /job-outcome).
+	mux.HandleFunc("POST /jobs/result", func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.JobResultRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse result request: "+err.Error())
+			return
+		}
+		signingBytes, err := req.SigningBytes()
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "build signing bytes: "+err.Error())
+			return
+		}
+		if err := coordinator.VerifyNodeSignature(registry, req.NodeID, req.Timestamp, signingBytes, req.Signature); err != nil {
+			writeErr(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		var execErr error
+		if req.Error != "" {
+			execErr = fmt.Errorf("node execution error: %s", req.Error)
+		}
+		delivered := pullDispatcher.SubmitResult(req.JobID, req.Result, execErr)
+		writeJSON(w, http.StatusOK, map[string]any{"delivered": delivered})
 	})
 
 	// POST /nodes/{id}/attest-enclave — proves possession of a Secure Enclave-backed
@@ -2037,7 +2103,12 @@ func isSelfAuthenticatingWrite(method, path string) bool {
 		path == "/account/challenge",
 		path == "/account/auth",
 		path == "/coordination/announce",
-		path == "/coordination/withdraw":
+		path == "/coordination/withdraw",
+		// Pull-mode work delivery — both node-signed (ClaimRequest/
+		// JobResultRequest verified against the registered key inside the
+		// handler), same self-authenticating pattern as /nodes/{id}/refresh.
+		path == "/jobs/claim",
+		path == "/jobs/result":
 		return true
 	case strings.HasPrefix(path, "/nodes/") &&
 		(strings.HasSuffix(path, "/refresh") ||
@@ -2205,6 +2276,12 @@ func originAllowed(origin string, allowlist []string) bool {
 // so a tight-ish cadence is fine; the point is to surface a corruption/bug fast
 // via logs + the oim_ledger_consistent gauge rather than discover it later.
 const reconcileInterval = 5 * time.Minute
+
+// pullClaimTimeout bounds one long-poll on POST /jobs/claim. Long enough to
+// amortize reconnect overhead, short enough to stay well under typical
+// proxy/load-balancer idle timeouts (60s) so the connection isn't cut
+// mid-wait — the node just re-polls on a 204.
+const pullClaimTimeout = 25 * time.Second
 
 // Verified-availability reward tuning (--availability-reward, opt-in). Kept as
 // constants, not flags — this is deliberately a small, non-configurable
