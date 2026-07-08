@@ -96,12 +96,24 @@ struct TryMeshView: View {
         stats = nil
         defer { sending = false }
         do {
-            let result = try await NetworkClient.submitTestQuery(coordinatorURL: url, prompt: trimmed, userId: getOrCreateUserId())
+            let result = try await NetworkClient.submitTestQuery(
+                coordinatorURL: url, prompt: trimmed, model: pickDemoModel(store.allNodes), userId: getOrCreateUserId())
             reply = result.content
             stats = (result.tokensPerSec, result.latencyMs)
         } catch {
             errorMsg = error.localizedDescription
         }
+    }
+
+    // Prefers a live, real (non-simulated) node's own model over the simulated
+    // fleet's shared 'llama-3.2-3b' default — mirrors dashboard/src/App.tsx's
+    // pickDemoModel so a real contributor's hardware can actually be chosen
+    // once it's reachable, instead of every request landing on the sim fleet.
+    private func pickDemoModel(_ nodes: [NodeSnapshot]) -> String {
+        let realLive = nodes
+            .filter { $0.simulated != true && $0.status == "live" && !($0.models?.isEmpty ?? true) }
+            .sorted { $0.measuredToksPerSec > $1.measuredToksPerSec }
+        return realLive.first?.models?.first?.modelId ?? "llama-3.2-3b"
     }
 }
 

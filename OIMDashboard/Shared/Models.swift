@@ -20,6 +20,9 @@ struct NodeSnapshot: Codable, Identifiable, Hashable {
     let clusterChipFamilies: [String]?
     let lastSeenAt: String
     let inFlightJobs: Int
+    // Decorative/seed capacity, not a real operator's hardware — absent/false
+    // for genuine contributor nodes. See pickDemoModel in TryMeshView.swift.
+    let simulated: Bool?
 
     var id: String { nodeId }
 
