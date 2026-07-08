@@ -96,8 +96,21 @@ struct TryMeshView: View {
         stats = nil
         defer { sending = false }
         do {
-            let result = try await NetworkClient.submitTestQuery(
-                coordinatorURL: url, prompt: trimmed, model: pickDemoModel(store.allNodes), userId: getOrCreateUserId())
+            // A node the topology snapshot reported as "live" can still turn
+            // out to be undispatchable at the exact moment of the request
+            // (stale reachability info, a brief network hiccup) — and since
+            // it may be the ONLY node hosting its own model, that failure has
+            // no fallback candidate for the coordinator to try on its own.
+            // Retry once against the sim fleet's guaranteed-servable model
+            // rather than surfacing a hard "no eligible nodes" error.
+            let preferred = pickDemoModel(store.allNodes)
+            let userId = getOrCreateUserId()
+            let result: TestQueryResult
+            do {
+                result = try await NetworkClient.submitTestQuery(coordinatorURL: url, prompt: trimmed, model: preferred, userId: userId)
+            } catch where preferred != Self.simFleetModel {
+                result = try await NetworkClient.submitTestQuery(coordinatorURL: url, prompt: trimmed, model: Self.simFleetModel, userId: userId)
+            }
             reply = result.content
             stats = (result.tokensPerSec, result.latencyMs)
         } catch {
@@ -105,15 +118,19 @@ struct TryMeshView: View {
         }
     }
 
+    // Served by every simulated node — a guaranteed-dispatchable fallback
+    // distinct from a real node's own (often exclusively-hosted) model.
+    private static let simFleetModel = "llama-3.2-3b"
+
     // Prefers a live, real (non-simulated) node's own model over the simulated
-    // fleet's shared 'llama-3.2-3b' default — mirrors dashboard/src/App.tsx's
+    // fleet's shared default — mirrors dashboard/src/App.tsx's
     // pickDemoModel so a real contributor's hardware can actually be chosen
     // once it's reachable, instead of every request landing on the sim fleet.
     private func pickDemoModel(_ nodes: [NodeSnapshot]) -> String {
         let realLive = nodes
             .filter { $0.simulated != true && $0.status == "live" && !($0.models?.isEmpty ?? true) }
             .sorted { $0.measuredToksPerSec > $1.measuredToksPerSec }
-        return realLive.first?.models?.first?.modelId ?? "llama-3.2-3b"
+        return realLive.first?.models?.first?.modelId ?? Self.simFleetModel
     }
 }
 

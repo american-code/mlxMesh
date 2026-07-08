@@ -373,11 +373,15 @@ function StatusLegend() {
 // serving node_id + lane straight from the coordinator's response so App can
 // draw the route — nobody else's traffic is ever visible here.
 
+// SIM_FLEET_MODEL is served by every simulated node — a guaranteed-dispatchable
+// fallback distinct from a real node's own (often exclusively-hosted) model.
+const SIM_FLEET_MODEL = 'llama-3.2-3b'
+
 // pickDemoModel prefers a live, real (non-simulated) node's own model over the
-// simulated fleet's shared 'llama-3.2-3b' — so when an actual contributor
+// simulated fleet's shared SIM_FLEET_MODEL — so when an actual contributor
 // machine is online and can serve the request, the demo shows real hardware
 // responding instead of always landing on the sim fleet (which every request
-// is otherwise guaranteed to hit, since 'llama-3.2-3b' is a sim-only model no
+// is otherwise guaranteed to hit, since SIM_FLEET_MODEL is a sim-only model no
 // real contributor happens to host). Ties (multiple real live nodes) break on
 // declared throughput — the routing layer's own eligibility/scoring still has
 // the final say on which one actually serves it.
@@ -385,7 +389,7 @@ function pickDemoModel(nodes: NodeSnapshot[]): string {
   const realLive = nodes
     .filter(n => !n.simulated && n.status === 'live' && n.models.length > 0)
     .sort((a, b) => b.measured_toks_per_sec - a.measured_toks_per_sec)
-  return realLive[0]?.models[0]?.model_id ?? 'llama-3.2-3b'
+  return realLive[0]?.models[0]?.model_id ?? SIM_FLEET_MODEL
 }
 
 function TryTheMesh({
@@ -414,8 +418,22 @@ function TryTheMesh({
       // to visit Account first just to see the mesh respond. Retries once with
       // a freshly minted key if the stored one turns out to be stale.
       // Prefer a live real node's own model over the sim fleet's shared
-      // 'llama-3.2-3b' fallback — see pickDemoModel.
-      const result = await runTestQueryWithAutoAuth(coordinatorURL, prompt.trim(), pickDemoModel(nodes), getOrCreateUserId())
+      // fallback — see pickDemoModel. A node the topology snapshot reported as
+      // "live" can still turn out to be undispatchable at the exact moment of
+      // the request (stale reachability info, a brief network hiccup) — and
+      // since it may be the ONLY node hosting its own model, that failure has
+      // no fallback candidate for the coordinator to try on its own. Retry
+      // once against the sim fleet's guaranteed-servable model rather than
+      // surfacing a hard "no eligible nodes" error to the user.
+      const preferred = pickDemoModel(nodes)
+      const userId = getOrCreateUserId()
+      let result
+      try {
+        result = await runTestQueryWithAutoAuth(coordinatorURL, prompt.trim(), preferred, userId)
+      } catch (e) {
+        if (preferred === SIM_FLEET_MODEL) throw e
+        result = await runTestQueryWithAutoAuth(coordinatorURL, prompt.trim(), SIM_FLEET_MODEL, userId)
+      }
       setReply(result.content || '(empty response)')
       setStats({ tokensPerSec: result.tokensPerSec, latencyMs: result.latencyMs })
       onServed(result.servedByNodeId, result.lane)
