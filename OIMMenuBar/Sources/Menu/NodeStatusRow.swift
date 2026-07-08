@@ -41,20 +41,20 @@ struct NodeStatusRow: View {
         }
     }
 
-    // Answers "can the coordinator actually dispatch jobs to me" — a node
-    // can register and heartbeat fine while every real dispatch to it fails
-    // silently, which looks identical to a working setup until real traffic
-    // (or the availability reward) quietly never arrives. See
-    // internal/agent.Run's automatic UPnP/NAT-PMP port-mapping attempt.
+    // How this node receives work. In the default pull mode it connects OUT to
+    // the coordinator (like an ASIC pointed at a mining pool), so there's
+    // nothing to configure and no NAT/reachability concern — hence no warning.
+    // "manual" is the opt-in push mode (an explicit "Reachable at (advanced)"
+    // address). Driven off /detect's port_mapping.
     private var reachabilityLine: (text: String, isWarning: Bool)? {
         guard let snapshot = appState.detectMonitor.snapshot else { return nil }
         switch snapshot.portMapping {
-        case "auto":
-            return ("Reachable automatically ✓", false)
+        case "pull":
+            return ("Connected — receiving work ✓", false)
         case "manual":
             return ("Reachable — manually configured ✓", false)
         default:
-            return ("⚠ Not reachable from outside your network — see Settings", true)
+            return nil
         }
     }
 

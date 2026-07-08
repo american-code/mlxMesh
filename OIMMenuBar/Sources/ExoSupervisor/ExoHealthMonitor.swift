@@ -26,9 +26,16 @@ final class ExoHealthMonitor {
 
     private(set) var health: Health = .checking
 
-    /// Matches oim's own exoadapter default (internal/exoadapter) and Exo's
-    /// confirmed default port/endpoint.
-    var exoURL = "http://localhost:52415"
+    /// 127.0.0.1, NOT "localhost", is deliberate. On macOS `localhost`
+    /// resolves to IPv6 `::1` first, but Exo's API server binds IPv4 only —
+    /// so a `localhost` connection tries `::1:52415`, gets an immediate
+    /// "connection refused" (the flood of `nw_socket_handle_socket_event …
+    /// SO_ERROR [61: Connection refused]` on `::1.52415` in the console), and
+    /// can report Exo as unreachable even while it's running fine on IPv4.
+    /// Pinning IPv4 skips the doomed IPv6 attempt entirely. This value also
+    /// flows to the node as `--exo-url` (AppState.startNode), so the Go
+    /// exoadapter hits IPv4 too.
+    var exoURL = "http://127.0.0.1:52415"
 
     private let session: HTTPDataFetching
     private var pollTask: Task<Void, Never>?
