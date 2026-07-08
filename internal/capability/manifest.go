@@ -133,6 +133,8 @@ func AssembleManifest(
 		// contributor node — mirrors the OIM_INITIAL_TPS/OIM_CHAOS_DOWNTIME_PCT
 		// simulation-only backdoors above.
 		Simulated: os.Getenv("OIM_SIMULATED_NODE") == "true",
+		// Outbound-pull ("mining-pool") delivery — see protocol.CapabilityManifest.PullDelivery.
+		PullDelivery: opts.PullDelivery,
 	}, nil
 }
 
@@ -153,6 +155,10 @@ type Options struct {
 	// TLSCertFingerprint — see protocol.CapabilityManifest.TLSCertFingerprint.
 	// Empty means this node serves its job endpoint over plain HTTP.
 	TLSCertFingerprint string
+	// PullDelivery — see protocol.CapabilityManifest.PullDelivery. True when
+	// this node receives work by long-polling the coordinator instead of
+	// accepting inbound dispatch (set when started with no reachability endpoint).
+	PullDelivery bool
 }
 
 // DefaultOptions returns sensible defaults for a new node.

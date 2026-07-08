@@ -337,34 +337,35 @@ Key settings:
 | `geographic_hint` | `us` | Coarse region for pod assignment (`us` / `eu` / `apac`) |
 | `reachability_endpoint` | — | How the pod coordinator reaches this node |
 
-### Reachability: automatic port mapping
+### Reachability: outbound work-pull (default — no port forwarding, ever)
 
-A node behind a home router's NAT is unreachable to a remote coordinator by
-default — the coordinator can register it but every real job dispatch fails
-silently. `oim node start` now tries to fix this **automatically** whenever
-`--reachability-endpoint`/`reachability_endpoint` is left unset: it asks the
-local router directly (UPnP IGD or NAT-PMP, whichever it supports — the same
-protocols game consoles and torrent clients use) to forward an external port
-to this node, then advertises the resulting public address to the
-coordinator. No manual router login, no looking up your own public IP.
+By default a node receives work the way an ASIC miner receives it from a
+pool: it opens an **outbound** connection to the coordinator, long-polls for
+jobs, runs them via Exo, and posts results back — all outbound. The
+coordinator never dials into the node, so **NAT, home routers, port
+forwarding, UPnP, and firewalls are all irrelevant**. Point the node at a
+coordinator and it just works. This is "pull mode," and it's on automatically
+whenever no `--reachability-endpoint` is set.
 
-This can't work for everyone — carrier-grade NAT (the ISP itself does the
-NAT, so there's no local router that can help), UPnP/NAT-PMP disabled, and
-most corporate/cloud networks all fall through to the pre-existing manual
-path. Check `GET /detect` on the node's own listen port (or the "Reachable
-automatically ✓" / "⚠ Not reachable" line in OIMMenuBar's popover) for
-`port_mapping`: `"auto"` (worked), `"manual"` (you set
-`--reachability-endpoint` yourself), or `"unavailable"` (neither — this node
-is very likely not reachable by the coordinator right now). When it's
-`"unavailable"`, fall back to the manual path: forward a port on your router
-yourself and set `--reachability-endpoint http://<your-public-ip-or-ddns-
-host>:8765` (OIMMenuBar: Settings → "Reachable at (advanced)").
+```
+oim node start --coordinator https://us.mlxmesh.net   # pull mode, zero network config
+```
 
-Disable the attempt entirely with `--no-auto-port-map` (e.g. on a
-Docker/cloud network where it's pointless — this just skips its ~5s
-discovery timeout; it already has no effect at all once
-`--reachability-endpoint` is set explicitly, which every simulated node in
-this repo's own Docker fleet already does).
+`GET /detect` (or OIMMenuBar's popover) reports `port_mapping: "pull"` and the
+node shows "Connected — receiving work ✓".
+
+**Push mode (opt-in, for LAN / simulated / advanced setups):** set an explicit
+`--reachability-endpoint http://<addr>:8765` and the coordinator dispatches
+*into* the node over HTTP instead. This is what the simulated Docker fleet and
+the integration tests use (they pass an explicit endpoint), and it's available
+to a LAN operator who wants inbound dispatch. `port_mapping` then reports
+`"manual"`.
+
+> **v1 limitation:** SSE streaming (`stream: true`) is served buffered for
+> pull-mode nodes — the pull mailbox is request/response, so token-by-token
+> passthrough isn't available over it yet (a fast-follow). This doesn't affect
+> earning, credit accounting, or the non-streaming "Try the mesh" path;
+> streaming requests are simply routed to push-mode nodes when available.
 
 ---
 

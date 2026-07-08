@@ -195,20 +195,28 @@ enabled, watch for:
   default) — a seed-only deployment or one under constant real traffic will
   correctly never see a probe.
 
-### A registered node never earns anything (real traffic AND availability-reward both silent)
-**Cause:** almost always reachability, not credit routing — a node can
-register and heartbeat fine while every real job dispatch to it fails
-silently, because the coordinator simply can't reach it (see README's
-"Reachability: automatic port mapping" section). **Action:** `curl
-<node's own address>:8765/detect` (or ask the operator to) and check
-`port_mapping`: `"unavailable"` means neither automatic UPnP/NAT-PMP mapping
-nor a manual `--reachability-endpoint` worked, and the node is very likely
-dark to the coordinator. Confirm by checking this coordinator's own logs for
-`dial tcp ... connect: connection refused` against that node's advertised
-`reachability_endpoint` — that error is definitive proof, not a guess. This
-is NOT the same bug as "linked but earnings land on the wrong account" — the
-device must actually be reachable AND correctly linked; check both
-independently, don't assume fixing one fixes the other.
+### A registered node never earns anything
+**First, which delivery mode?** `curl <node's own address>:8765/detect` and
+check `port_mapping`:
+- `"pull"` (the default): the node long-polls the coordinator for work — no
+  inbound reachability involved, so reachability is NOT the cause. If a pull
+  node isn't earning, look instead at: (a) is it **linked** to the right
+  wallet (else earnings land on its raw node_id — see the "linked but earnings
+  land on the wrong account" fix); (b) does it actually have a **downloaded
+  model** (a node with zero models is never dispatched real jobs); (c) is
+  there any **real traffic / availability-reward** to serve at all. Confirm
+  the pull path is healthy: the coordinator's `/jobs/claim` should show the
+  node long-polling, and dispatches to it go through the mailbox, not an
+  outbound dial.
+- `"manual"` (push mode, explicit `--reachability-endpoint`): this is the only
+  mode where reachability can be the cause. Check the coordinator's logs for
+  `dial tcp ... connect: connection refused` against that node's advertised
+  `reachability_endpoint` — definitive proof the coordinator can't reach it.
+  Fix the endpoint/port-forward, or drop `--reachability-endpoint` to switch
+  the node to pull mode (which sidesteps reachability entirely).
+
+Reachability and wallet-linking are independent — a node must be reachable
+(or pull) AND correctly linked; don't assume fixing one fixes the other.
 
 ## On-call
 

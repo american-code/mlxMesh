@@ -87,6 +87,18 @@ type CapabilityManifest struct {
 	// can't be stripped in transit — the dashboard and API consumers use this
 	// to label demo capacity distinctly from measured real capacity.
 	Simulated bool `json:"simulated,omitempty"`
+	// PullDelivery marks a node that receives work by long-polling the
+	// coordinator (outbound-only, "mining-pool" model) instead of the
+	// coordinator dialing INTO the node at ReachabilityEndpoint. When true,
+	// the coordinator routes this node's jobs through the PullDispatcher
+	// mailbox rather than an outbound HTTP POST — so the node needs no inbound
+	// reachability at all (no port forwarding / UPnP / NAT traversal). A node
+	// sets this when started without an explicit reachability endpoint;
+	// ReachabilityEndpoint is empty/ignored in that case. Absent = false =
+	// legacy push delivery (the simulated Docker fleet, LAN nodes with an
+	// explicit endpoint). Rides the existing manifest signature so it can't be
+	// flipped in transit.
+	PullDelivery bool `json:"pull_delivery,omitempty"`
 }
 
 // Bytes serializes the manifest to canonical JSON bytes for signing.
