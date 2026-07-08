@@ -204,6 +204,32 @@ export async function runTestQueryWithAutoAuth(
   }
 }
 
+// warmModel triggers POST /nodes/{id}/warm-model — the "Load model" action
+// next to a Cold-badged model in NodeDetail. Reuses the same demo-credential
+// flow as Try the Mesh (this write goes through the standard Bearer/API-key
+// auth gate, same as any other consumer-initiated action) and the same
+// one-retry-on-401 recovery as runTestQueryWithAutoAuth. Can legitimately
+// take minutes (a cold multi-shard model load), so no client-side timeout is
+// set here — the coordinator's own warmModelTimeout is the real bound.
+export async function warmModel(coordinatorURL: string, nodeId: string, modelId: string, userId: string): Promise<void> {
+  const call = async (apiKey: string) => {
+    const res = await fetch(`${coordinatorURL}/nodes/${nodeId}/warm-model`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model_id: modelId }),
+    })
+    if (!res.ok) throw new Error(`warm-model returned ${res.status}`)
+  }
+  const apiKey = await ensureDemoCredentials(coordinatorURL, userId)
+  try {
+    await call(apiKey)
+  } catch (e) {
+    const msg = (e as Error).message
+    if (!msg.includes('401')) throw e
+    await call(await ensureDemoCredentials(coordinatorURL, userId, true))
+  }
+}
+
 // submitTestQuery sends a real inference job through the mesh from the browser.
 // The response carries which node served it (oim_served_by_node_id) — that's
 // how the dashboard can light up a route for THIS request only, without the

@@ -5,10 +5,13 @@ package capability
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,6 +47,9 @@ func AssembleManifest(
 	}
 	// Treat high-memory nodes as clusters even when topology detection is unavailable
 	// (common in simulated environments where Exo doesn't report multi-device peers).
+	// ClusterSignature deliberately stays empty here: there is no real device
+	// list to hash, so coordinator-side dedup simply doesn't engage for this
+	// heuristic path.
 	if !cluster.IsCluster && totalGB >= 128 {
 		cluster.IsCluster = true
 		cluster.DeviceCount = int(totalGB / 80) // rough device estimate: one ~80 GB GPU per device
@@ -116,6 +122,7 @@ func AssembleManifest(
 		IsCluster:            cluster.IsCluster,
 		ClusterDeviceCount:   dcPtr,
 		ClusterChipFamilies:  cluster.ChipFamilies,
+		ClusterSignature:     cluster.ClusterSignature,
 		DeclaredMemoryGB:     round2(totalGB),
 		DeclaredMemoryCapPct: round2(effectiveCapPct),
 		GeographicHint:       opts.GeographicHint,
@@ -181,6 +188,14 @@ type ClusterInfo struct {
 	DeviceCount  int
 	TotalMemGB   float64  // summed nodeMemory.ramTotal across every cluster device; 0 when not a cluster
 	ChipFamilies []string // one coarse chip family per device (e.g. "Apple M1") — no hostnames, no exact chip variant (Pro/Max/Ultra), no OS/model info
+	// ClusterSignature is an opaque, order-independent fingerprint of the
+	// cluster's full device-ID set — identical from every member device's
+	// point of view, so the coordinator can recognize two independent
+	// registrations as the same physical ring. Only set when the full,
+	// self-inclusive membership is knowable (topology.nodes shape); empty
+	// for the self-excluding topology.peers shape and the high-memory
+	// heuristic, where dedup would mis-key. See clusterSignature.
+	ClusterSignature string
 	// SafeContributableGB is the sum, across every device, of that device's
 	// CURRENTLY free memory (Exo's nodeMemory.ramAvailable) minus a per-device
 	// safety reserve — never how much RAM a device HAS, but how much it can
@@ -245,6 +260,9 @@ func DetectClusterNode(ctx context.Context, exo *exoadapter.Client) (ClusterInfo
 	if peers, _ := topology["peers"].([]any); len(peers) > 0 {
 		// peers excludes self — self's own device isn't identifiable from this
 		// list alone, so it's counted but not included in the chip/memory scan.
+		// No ClusterSignature here either: without self's ID, each member of
+		// the same ring would hash a DIFFERENT peer set, so a signature from
+		// this shape could never match across devices — worse than none.
 		for _, p := range peers {
 			if id, ok := p.(string); ok {
 				deviceIDs = append(deviceIDs, id)
@@ -269,9 +287,25 @@ func DetectClusterNode(ctx context.Context, exo *exoadapter.Client) (ClusterInfo
 		agg := aggregateClusterStats(state, deviceIDs)
 		agg.IsCluster = true
 		agg.DeviceCount = len(deviceIDs)
+		// Self-inclusive membership means every device in this ring computes
+		// the identical signature — the property coordinator-side dedup keys on.
+		agg.ClusterSignature = clusterSignature(deviceIDs)
 		return agg, nil
 	}
 	return solo, nil
+}
+
+// clusterSignature hashes a cluster's sorted device-ID set into an opaque,
+// stable fingerprint — same set (any order) always yields the same value,
+// and it never decodes back to real device IDs (same non-broadcast principle
+// as ClusterChipFamilies' coarsening). Used only so the coordinator can
+// recognize "these two independent registrations are the same physical ring"
+// — see coordinator.NodeRegistry's cluster-standby handling.
+func clusterSignature(deviceIDs []string) string {
+	sorted := append([]string(nil), deviceIDs...)
+	sort.Strings(sorted)
+	sum := sha256.Sum256([]byte(strings.Join(sorted, ",")))
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 // aggregateClusterStats sums nodeMemory.ramTotal/ramAvailable and collects
@@ -356,6 +390,18 @@ func buildModelList(ctx context.Context, exo *exoadapter.Client, allowedModels [
 		return nil, err
 	}
 
+	// Downloaded-to-disk and actively-loaded-in-Exo are different facts (a
+	// model can sit on disk with no inference instance ever created for it —
+	// confirmed live: dispatching to one fails outright). Best-effort only:
+	// if Exo doesn't support this endpoint or the call otherwise fails, fail
+	// open to "nothing is loaded" (every model reports Loaded:false) rather
+	// than block registration entirely — same fallback philosophy already
+	// used elsewhere in AssembleManifest when Exo is unreachable.
+	active, err := exo.GetActiveModels(ctx)
+	if err != nil {
+		active = nil
+	}
+
 	allowed := make(map[string]bool, len(allowedModels))
 	for _, id := range allowedModels {
 		allowed[id] = true
@@ -376,6 +422,7 @@ func buildModelList(ctx context.Context, exo *exoadapter.Client, allowedModels [
 			Runtime:          inferRuntime(modelID),
 			MaxContextTokens: intField(m, 4096, "context_length", "max_context_tokens"),
 			IsMoE:            isMoE(modelID),
+			Loaded:           active[modelID],
 		})
 	}
 	return models, nil

@@ -59,6 +59,33 @@ func (r *Runner) ExecuteFastLane(
 	return result, nil
 }
 
+// WarmModel asks Exo to create (or confirm) an active inference instance for
+// modelID and blocks until it's ready — the node-side half of the
+// JobLaneWarm control message (see internal/agent/pull.go's
+// executePulledJob). Follows Exo's own documented sequence: preview a
+// placement, create the instance from it, then await readiness (POST
+// /instance is asynchronous — Exo's docs: "wait until the API sees the new
+// instance for this model" before inferring). No memory pre-flight check
+// here unlike ExecuteFastLane/ExecuteBackgroundLane — a deliberate warm-up
+// request should proceed even if the node is at its contribution cap for
+// REAL traffic, since warming doesn't itself serve a paying job.
+func (r *Runner) WarmModel(ctx context.Context, modelID string) (map[string]any, error) {
+	placements, err := r.exo.PreviewInstancePlacements(ctx, modelID)
+	if err != nil {
+		return nil, fmt.Errorf("preview instance placement: %w", err)
+	}
+	if len(placements) == 0 {
+		return nil, fmt.Errorf("no instance placement available for model %s", modelID)
+	}
+	if _, err := r.exo.CreateInstance(ctx, placements[0]); err != nil {
+		return nil, fmt.Errorf("create instance: %w", err)
+	}
+	if err := r.exo.AwaitInstance(ctx, modelID); err != nil {
+		return nil, fmt.Errorf("await instance: %w", err)
+	}
+	return map[string]any{"warmed": true, "model_id": modelID}, nil
+}
+
 // ExecuteFastLaneStreaming is ExecuteFastLane's streaming counterpart: it
 // relays Exo's SSE response directly to w as it arrives (same
 // header/Flusher pattern used elsewhere for SSE — see the coordinator's

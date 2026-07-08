@@ -220,8 +220,23 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 			if !cmd.Flags().Changed("coordinator") && savedCfg.PodEndpoint != "" {
 				coordinatorURL = savedCfg.PodEndpoint
 			}
+			// A saved reachability_endpoint is only trusted here when it's
+			// NOT a loopback/unspecified address. Confirmed live: a stale
+			// http://localhost:8765 left in ~/.config/oim/config.json by a
+			// pre-pull-mode run got silently resurrected as this fallback on
+			// every subsequent start, even though the caller (the menu-bar
+			// app) never passed --reachability-endpoint at all — forcing
+			// push mode against a target that could never actually be
+			// reached and killing the node's earnings entirely. An
+			// EXPLICITLY passed --reachability-endpoint (this run's own
+			// flag, Changed()==true) is never filtered here, loopback or
+			// not — that's a deliberate caller choice, not a stale leftover.
 			if !cmd.Flags().Changed("reachability-endpoint") && savedCfg.ReachabilityEndpoint != "" {
-				reachabilityEndpoint = savedCfg.ReachabilityEndpoint
+				if agent.IsLoopbackReachability(savedCfg.ReachabilityEndpoint) {
+					fmt.Printf("Ignoring saved reachability endpoint %q (loopback/unreachable by a remote coordinator) — using pull mode instead\n", savedCfg.ReachabilityEndpoint)
+				} else {
+					reachabilityEndpoint = savedCfg.ReachabilityEndpoint
+				}
 			}
 			if !cmd.Flags().Changed("exo-url") && savedCfg.ExoURL != "" {
 				exoURL = savedCfg.ExoURL

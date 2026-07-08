@@ -11,22 +11,33 @@ const availabilityProbePrompt = "Reply with a single word to confirm you're onli
 
 // SelectProbeTarget picks the first (already oldest-idle-sorted, per
 // NodeRegistry.IdleCandidates) node from candidates and one of its own
-// advertised models. Deliberately reuses the node's own self-reported model
-// list rather than a guessed/global model name — this is the same
-// eligibility signal real routing already trusts (registry.Candidates),
+// advertised, actively-loaded models. Deliberately reuses the node's own
+// self-reported model list rather than a guessed/global model name — this is
+// the same eligibility signal real routing already trusts (registry.Candidates),
 // so a probe never asks a node for something it never claimed to serve.
-// Returns ok=false if candidates is empty or the chosen node advertises no
-// models (the latter shouldn't happen given IdleCandidates already filters
-// on it, but this function must stay safe called with any slice).
+//
+// Only a LOADED model is picked — DispatchToResolvedNode (unlike
+// DispatchFastLane's rankCandidates) bypasses eligibility scoring entirely
+// and dispatches straight to whatever job/target it's given, so probing a
+// downloaded-but-cold model would fail the probe and call
+// registry.MarkUnreachable on an otherwise perfectly healthy, reachable node —
+// a false negative caused entirely by which of its models happened to be
+// picked. Returns ok=false if candidates is empty, the chosen node advertises
+// no models, or none of its models are currently loaded (an idle node with
+// nothing warm genuinely isn't available for anything right now, so it
+// correctly earns no availability reward this round rather than being
+// falsely marked unreachable).
 func SelectProbeTarget(candidates []protocol.CapabilityManifest) (protocol.CapabilityManifest, protocol.ModelCapability, bool) {
 	if len(candidates) == 0 {
 		return protocol.CapabilityManifest{}, protocol.ModelCapability{}, false
 	}
 	chosen := candidates[0]
-	if len(chosen.Models) == 0 {
-		return protocol.CapabilityManifest{}, protocol.ModelCapability{}, false
+	for _, model := range chosen.Models {
+		if model.Loaded {
+			return chosen, model, true
+		}
 	}
-	return chosen, chosen.Models[0], true
+	return protocol.CapabilityManifest{}, protocol.ModelCapability{}, false
 }
 
 // BuildProbeJob constructs the minimal JobSpec + chat messages for one

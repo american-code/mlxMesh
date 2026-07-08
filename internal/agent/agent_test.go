@@ -50,8 +50,8 @@ func TestIsLoopbackReachability(t *testing.T) {
 		"0.0.0.0:8765",
 	}
 	for _, e := range loopback {
-		if !isLoopbackReachability(e) {
-			t.Errorf("isLoopbackReachability(%q) = false, want true (a remote coordinator can't reach it)", e)
+		if !IsLoopbackReachability(e) {
+			t.Errorf("IsLoopbackReachability(%q) = false, want true (a remote coordinator can't reach it)", e)
 		}
 	}
 	routable := []string{
@@ -61,8 +61,8 @@ func TestIsLoopbackReachability(t *testing.T) {
 		"http://203.0.113.7:8765",
 	}
 	for _, e := range routable {
-		if isLoopbackReachability(e) {
-			t.Errorf("isLoopbackReachability(%q) = true, want false (should stay in push mode)", e)
+		if IsLoopbackReachability(e) {
+			t.Errorf("IsLoopbackReachability(%q) = true, want false (should stay in push mode)", e)
 		}
 	}
 }

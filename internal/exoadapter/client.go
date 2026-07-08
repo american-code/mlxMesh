@@ -5,6 +5,7 @@
 package exoadapter
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -47,12 +48,23 @@ func (c *Client) IsHealthy(ctx context.Context) bool {
 // actually present, not what the operator hand-declares.
 //
 // Exo's ?downloaded=true query param does not reliably filter server-side across
-// versions (observed: returns the full catalog unfiltered), so this cross-checks
-// each candidate against /state's per-node download progress and excludes anything
-// that isn't fully downloaded. A node must never advertise a model it hasn't
-// actually pulled — that's the exact self-declared-vs-measured gap this protocol
-// exists to close (proposal §8.2/9.2), and it applies just as much to "do I have
-// this model" as it does to "how fast can I run it."
+// versions (observed live: returns essentially its ENTIRE catalog — ~100 models,
+// including ones with zero bytes ever downloaded), so this cross-checks each
+// candidate against /state's per-node download progress and only includes a
+// model with POSITIVE evidence of a completed download. A node must never
+// advertise a model it hasn't actually pulled — that's the exact self-declared-
+// vs-measured gap this protocol exists to close (proposal §8.2/9.2), and it
+// applies just as much to "do I have this model" as it does to "how fast can I
+// run it."
+//
+// This must be a whitelist (only include confirmed-complete IDs), not a
+// blacklist (exclude confirmed-incomplete IDs): confirmed live, a model that
+// had NEVER been queued for download at all (zero entries in /state's
+// downloads map — the exact state of a model before a user ever triggers a
+// pull) has no "incomplete" evidence against it either, so a blacklist
+// approach wrongly treated "no evidence" as "downloaded" and advertised a
+// model still sitting at 0 of 20.4GB. Whitelisting on an explicit
+// "DownloadCompleted" record closes that gap.
 func (c *Client) GetDownloadedModels(ctx context.Context) ([]map[string]any, error) {
 	catalog, err := c.getJSON(ctx, "/models?downloaded=true")
 	if err != nil {
@@ -64,12 +76,12 @@ func (c *Client) GetDownloadedModels(ctx context.Context) ([]map[string]any, err
 		// rather than trust a catalog endpoint that may include undownloaded models.
 		return nil, fmt.Errorf("get state for download cross-check: %w", err)
 	}
-	incomplete := incompleteModelIDs(state)
+	completed := completedModelIDs(state)
 
 	out := make([]map[string]any, 0, len(catalog))
 	for _, m := range catalog {
 		id, _ := m["id"].(string)
-		if id == "" || incomplete[id] {
+		if id == "" || !completed[id] {
 			continue
 		}
 		out = append(out, m)
@@ -77,45 +89,35 @@ func (c *Client) GetDownloadedModels(ctx context.Context) ([]map[string]any, err
 	return out, nil
 }
 
-// incompleteModelIDs walks /state's downloads map and returns the set of model IDs
-// that have an in-progress or not-yet-started download on any local node
-// (downloaded bytes < total bytes). Models absent from this set are either fully
-// downloaded or were never queued — GetDownloadedModels treats "not incomplete" as
-// the closest available signal to "ready to serve" without hand-parsing every
-// possible Exo download-state enum value.
-//
-// A "DownloadCompleted" entry is trusted directly from its status key rather
-// than compared by bytes: Exo omits the "downloaded" progress field entirely
-// once a download finishes (only "total" remains), so byte-comparing it
-// against the missing field (read as 0) would always read as 0 < total —
-// misclassifying every genuinely-downloaded model as incomplete and
-// silently emptying a node's whole servable-model list. Confirmed live: a
-// fully downloaded Qwen model was excluded this way before this fix.
-func incompleteModelIDs(state map[string]any) map[string]bool {
-	incomplete := make(map[string]bool)
+// completedModelIDs walks /state's downloads map and returns the set of model
+// IDs with at least one "DownloadCompleted" entry on any local node — the
+// only positive signal that a model is actually ready to serve. Any other
+// status ("DownloadPending", in-progress, or simply absent from the downloads
+// map entirely) does NOT count, on purpose: GetDownloadedModels must whitelist
+// confirmed-complete models rather than blacklist confirmed-incomplete ones,
+// since "absent from this map" describes both "fully downloaded before Exo
+// started tracking it" and "never queued at all" identically, and only the
+// former should ever be servable.
+func completedModelIDs(state map[string]any) map[string]bool {
+	completed := make(map[string]bool)
 	downloads, _ := state["downloads"].(map[string]any)
 	for _, rawEntries := range downloads {
 		entries, _ := rawEntries.([]any)
 		for _, rawEntry := range entries {
 			entry, _ := rawEntry.(map[string]any)
 			for status, rawInner := range entry { // single key: status name (e.g. "DownloadPending", "DownloadCompleted")
+				if status != "DownloadCompleted" {
+					continue
+				}
 				inner, _ := rawInner.(map[string]any)
 				modelID := extractModelID(inner)
-				if modelID == "" {
-					continue
-				}
-				if status == "DownloadCompleted" {
-					continue
-				}
-				downloadedBytes := extractBytes(inner, "downloaded")
-				totalBytes := extractBytes(inner, "total")
-				if totalBytes <= 0 || downloadedBytes < totalBytes {
-					incomplete[modelID] = true
+				if modelID != "" {
+					completed[modelID] = true
 				}
 			}
 		}
 	}
-	return incomplete
+	return completed
 }
 
 func extractModelID(inner map[string]any) string {
@@ -126,10 +128,40 @@ func extractModelID(inner map[string]any) string {
 	return id
 }
 
-func extractBytes(inner map[string]any, key string) float64 {
-	obj, _ := inner[key].(map[string]any)
-	n, _ := obj["inBytes"].(float64)
-	return n
+// GetActiveModels returns the set of model IDs Exo currently has an active
+// inference instance for — a strict subset of GetDownloadedModels (a model
+// can be downloaded to disk without an instance ever having been created for
+// it). Backed by Exo's Ollama-compatibility endpoint (GET /ollama/api/ps,
+// "returns list of running models"). The exact field name Exo uses per entry
+// isn't documented upstream, so this defensively checks several plausible
+// keys (mirrors capability.buildModelList's stringField pattern) rather than
+// hard-coding one — confirm against a real Exo instance before trusting this
+// blindly in production.
+func (c *Client) GetActiveModels(ctx context.Context) (map[string]bool, error) {
+	raw, err := c.getJSON(ctx, "/ollama/api/ps")
+	if err != nil {
+		return nil, err
+	}
+	active := make(map[string]bool, len(raw))
+	for _, m := range raw {
+		if id := firstStringField(m, "model_id", "model", "name", "id"); id != "" {
+			active[id] = true
+		}
+	}
+	return active, nil
+}
+
+// firstStringField returns the first non-empty string value found under any
+// of keys, in order. Package-local mirror of capability.stringField (that
+// helper is unexported in a different package — exoadapter must not import
+// capability, which itself imports exoadapter).
+func firstStringField(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if v, _ := m[k].(string); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // GetAllModels calls GET /models.
@@ -171,6 +203,63 @@ func (c *Client) CreateInstance(ctx context.Context, placement map[string]any) (
 		return id, nil
 	}
 	return "", fmt.Errorf("create_instance: no id in response: %v", resp)
+}
+
+// AwaitInstance blocks until Exo reports the instance for modelID is ready to
+// serve, or reports a timeout. POST /instance is documented as asynchronous
+// ("wait until the API sees the new instance for this model" before sending
+// inference requests) — this wraps the documented poll/await companion,
+// GET /instance/await?model_id=..., which streams SSE events and terminates
+// with exactly one of two documented types: {"type":"ready",...} or
+// {"type":"timeout","message":"..."}. No client-wide timeout is set here
+// (mirrors StreamChatCompletion's streamClient) — the caller controls the
+// deadline entirely via ctx, since a cold multi-shard model load can
+// legitimately take minutes.
+func (c *Client) AwaitInstance(ctx context.Context, modelID string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.baseURL+"/instance/await?model_id="+url.QueryEscape(modelID), nil)
+	if err != nil {
+		return fmt.Errorf("build await instance request: %w", err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("await instance: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("await instance HTTP %d: %s", resp.StatusCode, raw)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		data, ok := strings.CutPrefix(scanner.Text(), "data: ")
+		if !ok {
+			continue
+		}
+		var event struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal([]byte(data), &event) != nil {
+			continue // ignore malformed/unrecognized SSE lines rather than fail the whole await
+		}
+		switch event.Type {
+		case "ready":
+			return nil
+		case "timeout":
+			msg := event.Message
+			if msg == "" {
+				msg = "no instance became ready before timeout"
+			}
+			return fmt.Errorf("await instance: %s", msg)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read await instance stream: %w", err)
+	}
+	return fmt.Errorf("await instance: stream closed before a ready/timeout event")
 }
 
 // DeleteInstance calls DELETE /instance/{instanceID}.

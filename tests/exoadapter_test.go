@@ -146,11 +146,19 @@ func TestPreviewInstancePlacementsHandlesPreviewsWrapperKey(t *testing.T) {
 	}
 }
 
-// TestGetDownloadedModelsIncludesModelAbsentFromDownloadsMap confirms a model
-// that never appears in the downloads map at all (e.g. bundled/pre-existing,
-// never queued through Exo's download pipeline) is still treated as available
-// — absence, not just explicit completion, counts as "not incomplete."
-func TestGetDownloadedModelsIncludesModelAbsentFromDownloadsMap(t *testing.T) {
+// TestGetDownloadedModelsExcludesModelAbsentFromDownloadsMap guards a second
+// real bug caught live this session, the mirror image of the one above: Exo's
+// /models?downloaded=true returns essentially its ENTIRE catalog (~100
+// models) regardless of real download status. A model with NO entry at all
+// in /state's downloads map — the exact state of a model before it's ever
+// been queued — has no "incomplete" evidence against it, so the previous
+// blacklist-only logic (exclude only on explicit incomplete evidence) wrongly
+// treated "no evidence" as "downloaded" and advertised a 0-byte, never-pulled
+// 35B model as this node's servable capability, while completely omitting a
+// different, fully-downloaded-and-running model. Only an explicit
+// "DownloadCompleted" entry may now mark a model available (whitelist, not
+// blacklist).
+func TestGetDownloadedModelsExcludesModelAbsentFromDownloadsMap(t *testing.T) {
 	models := []map[string]any{
 		{"id": "mlx-community/llama-3.2-3b-4bit", "context_length": float64(4096)},
 	}
@@ -162,7 +170,7 @@ func TestGetDownloadedModelsIncludesModelAbsentFromDownloadsMap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDownloadedModels: %v", err)
 	}
-	if len(got) != 1 {
-		t.Errorf("expected the untracked model to be included, got %d models: %v", len(got), got)
+	if len(got) != 0 {
+		t.Errorf("expected the never-queued, untracked model to be excluded, got %d models: %v", len(got), got)
 	}
 }

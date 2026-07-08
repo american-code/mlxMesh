@@ -163,6 +163,69 @@ func TestDetectClusterNodePeersShapeExcludesSelfCorrectly(t *testing.T) {
 	}
 }
 
+// TestDetectClusterNodeSignatureStableAcrossDeviceOrder guards the property
+// coordinator-side cluster dedup depends on: every device in a ring sees the
+// same topology.nodes membership (possibly in a different order) and must
+// compute the IDENTICAL ClusterSignature, or the coordinator could never
+// match up two independent registrations of the same physical ring.
+func TestDetectClusterNodeSignatureStableAcrossDeviceOrder(t *testing.T) {
+	sigFor := func(nodeOrder []any) string {
+		state := realClusterState()
+		state["topology"] = map[string]any{"nodes": nodeOrder}
+		srv := stateServer(t, state)
+		info, err := capability.DetectClusterNode(context.Background(), exoadapter.New(srv.URL))
+		if err != nil {
+			t.Fatalf("DetectClusterNode: %v", err)
+		}
+		if info.ClusterSignature == "" {
+			t.Fatal("expected a non-empty ClusterSignature from the self-inclusive nodes shape")
+		}
+		return info.ClusterSignature
+	}
+
+	sigA := sigFor([]any{
+		"6c1ed5f107db1f493a5867e033d525b2",
+		"629ae8788ab947024cefc387256fa090",
+		"38c002ca35fd8548b3f19880882dcc9d",
+	})
+	sigB := sigFor([]any{ // same ring, as a different member would list it
+		"38c002ca35fd8548b3f19880882dcc9d",
+		"6c1ed5f107db1f493a5867e033d525b2",
+		"629ae8788ab947024cefc387256fa090",
+	})
+	if sigA != sigB {
+		t.Errorf("same device set in different order produced different signatures: %q vs %q", sigA, sigB)
+	}
+
+	sigOther := sigFor([]any{ // genuinely different ring
+		"6c1ed5f107db1f493a5867e033d525b2",
+		"an-entirely-different-device-id00",
+	})
+	if sigOther == sigA {
+		t.Error("a different device set must not collide with the original ring's signature")
+	}
+}
+
+// TestDetectClusterNodePeersShapeHasNoSignature: the peers shape excludes
+// self, so each ring member would hash a DIFFERENT peer set — a signature
+// from this shape could never match across devices and would mis-key dedup.
+// It must stay empty.
+func TestDetectClusterNodePeersShapeHasNoSignature(t *testing.T) {
+	state := map[string]any{
+		"topology": map[string]any{
+			"peers": []any{"peer-a", "peer-b"},
+		},
+	}
+	srv := stateServer(t, state)
+	info, err := capability.DetectClusterNode(context.Background(), exoadapter.New(srv.URL))
+	if err != nil {
+		t.Fatalf("DetectClusterNode: %v", err)
+	}
+	if info.ClusterSignature != "" {
+		t.Errorf("peers shape must leave ClusterSignature empty (self-identity unknowable), got %q", info.ClusterSignature)
+	}
+}
+
 func TestDetectClusterNodeSafeContributableDefersToRoomierDevices(t *testing.T) {
 	srv := stateServer(t, realClusterState())
 	exo := exoadapter.New(srv.URL)

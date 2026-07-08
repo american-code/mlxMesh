@@ -908,3 +908,379 @@ func TestIntegrationPullModeNodeEarns(t *testing.T) {
 	}
 	t.Logf("pull-mode node served a real job and earned with ZERO inbound reachability")
 }
+
+// A node can have a model downloaded (advertised in its manifest) without Exo
+// having an active instance for it — confirmed live this session: a real
+// dispatch to such a node failed with "no eligible nodes" even though the
+// node was healthy and reachable. This test proves the fix end to end: the
+// cold model is correctly excluded from dispatch, then POST
+// /nodes/{id}/warm-model brings it online, then the EXACT SAME dispatch
+// succeeds — no code changes between the two attempts, just the warm-up call.
+func TestIntegrationColdModelExcludedUntilWarmed(t *testing.T) {
+	exoPort, coordPort, nodePort := freePort(t), freePort(t), freePort(t)
+	exoURL := fmt.Sprintf("http://127.0.0.1:%d", exoPort)
+	coordURL := fmt.Sprintf("http://127.0.0.1:%d", coordPort)
+
+	// The node's only model starts cold — downloaded (STUB_MODELS) but not
+	// loaded (STUB_COLD_MODELS), exactly the gap this feature closes.
+	startProc(t, []string{
+		fmt.Sprintf("STUB_LISTEN=:%d", exoPort),
+		"STUB_MODELS=cold-test-model",
+		"STUB_COLD_MODELS=cold-test-model",
+	}, bin.stubExo)
+	waitHealthy(t, exoURL+"/state")
+
+	startProc(t, nil, bin.coordinator,
+		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0")
+	waitHealthy(t, coordURL+"/health")
+
+	startProc(t, nil, bin.node, "node", "start",
+		fmt.Sprintf("--coordinator=%s", coordURL),
+		fmt.Sprintf("--listen=:%d", nodePort),
+		fmt.Sprintf("--exo-url=%s", exoURL),
+		fmt.Sprintf("--reachability-endpoint=http://127.0.0.1:%d", nodePort),
+		// Short refresh interval (default 30s) so the "model reports loaded
+		// after warm-model" assertion below doesn't need a generous timeout
+		// just to outlast an unrelated default.
+		"--refresh-interval=2",
+		"--region=us", "--user-id=coldminer")
+
+	// Wait for registration AND confirm the manifest reports the model cold —
+	// otherwise a later assertion failure could just as easily mean "never
+	// registered" as "eligibility gate didn't fire."
+	var nodeID string
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		nodes := getJSON(t, coordURL+"/nodes")
+		if arr, ok := nodes["nodes"].([]any); ok && len(arr) >= 1 {
+			n, _ := arr[0].(map[string]any)
+			models, _ := n["models"].([]any)
+			if len(models) == 1 {
+				m, _ := models[0].(map[string]any)
+				if loaded, _ := m["loaded"].(bool); !loaded {
+					nodeID, _ = n["node_id"].(string)
+					break
+				}
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if nodeID == "" {
+		t.Fatal("node never registered with its model correctly reported cold")
+	}
+
+	postJSON(t, coordURL+"/users/coldconsumer/startup-grant", map[string]any{}, nil)
+	dispatchBody := map[string]any{
+		"model":      "cold-test-model",
+		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
+		"max_tokens": 64,
+	}
+	dispatchHeaders := map[string]string{"X-OIM-User-ID": "coldconsumer"}
+
+	// 1. Cold: the only node hosting this model must be excluded.
+	status, resp := postJSON(t, coordURL+"/v1/chat/completions", dispatchBody, dispatchHeaders)
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 (no eligible nodes) while cold, got %d: %v", status, resp)
+	}
+
+	// 2. Warm it up.
+	status, resp = postJSON(t, coordURL+fmt.Sprintf("/nodes/%s/warm-model", nodeID),
+		map[string]any{"model_id": "cold-test-model"}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("warm-model failed: %d: %v", status, resp)
+	}
+	if warmed, _ := resp["warmed"].(bool); !warmed {
+		t.Fatalf("expected warmed:true in response, got %v", resp)
+	}
+
+	// The node's next heartbeat refresh must report the model loaded before
+	// dispatch will succeed — poll rather than assume timing.
+	deadline = time.Now().Add(15 * time.Second)
+	loaded := false
+	for time.Now().Before(deadline) {
+		nodes := getJSON(t, coordURL+"/nodes")
+		if arr, ok := nodes["nodes"].([]any); ok && len(arr) >= 1 {
+			n, _ := arr[0].(map[string]any)
+			models, _ := n["models"].([]any)
+			if len(models) == 1 {
+				m, _ := models[0].(map[string]any)
+				if l, _ := m["loaded"].(bool); l {
+					loaded = true
+					break
+				}
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !loaded {
+		t.Fatal("model never reported loaded after warm-model succeeded")
+	}
+
+	// 3. Same exact dispatch, now succeeds.
+	status, resp = postJSON(t, coordURL+"/v1/chat/completions", dispatchBody, dispatchHeaders)
+	if status != http.StatusOK {
+		t.Fatalf("expected dispatch to succeed once warmed, got %d: %v", status, resp)
+	}
+	if _, ok := resp["choices"]; !ok {
+		t.Fatalf("no choices in post-warm dispatch: %v", resp)
+	}
+	if servedBy, _ := resp["oim_served_by_node_id"].(string); servedBy != nodeID {
+		t.Fatalf("expected node %s to serve the post-warm dispatch, got %v", nodeID, servedBy)
+	}
+}
+
+// A node that registered without ever running `oim bench run` reports
+// measured_toks_per_sec == 0 forever, even after serving real traffic — the
+// exact "Reduced perf" staleness bug found live this session. This test
+// proves the fix: real fast-lane dispatches feed a coordinator-owned rolling
+// average (RecordObservedThroughput) that Snapshot()'s measured_toks_per_sec
+// now prefers, so the number moves off zero without any manual benchmark
+// step. STUB_RESPONSE_FILLER_WORDS pads the stub's canned completion past
+// the coordinator's minThroughputSampleTokens floor (~16) so each dispatch
+// contributes a real sample.
+func TestIntegrationObservedThroughputUpdatesMeasuredSignature(t *testing.T) {
+	exoPort, coordPort, nodePort := freePort(t), freePort(t), freePort(t)
+	exoURL := fmt.Sprintf("http://127.0.0.1:%d", exoPort)
+	coordURL := fmt.Sprintf("http://127.0.0.1:%d", coordPort)
+
+	startProc(t, []string{
+		fmt.Sprintf("STUB_LISTEN=:%d", exoPort),
+		"STUB_RESPONSE_FILLER_WORDS=40",
+	}, bin.stubExo)
+	waitHealthy(t, exoURL+"/state")
+
+	startProc(t, nil, bin.coordinator,
+		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0")
+	waitHealthy(t, coordURL+"/health")
+
+	startProc(t, nil, bin.node, "node", "start",
+		fmt.Sprintf("--coordinator=%s", coordURL),
+		fmt.Sprintf("--listen=:%d", nodePort),
+		fmt.Sprintf("--exo-url=%s", exoURL),
+		fmt.Sprintf("--reachability-endpoint=http://127.0.0.1:%d", nodePort),
+		"--region=us", "--user-id=throughputminer")
+
+	var nodeID string
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		nodes := getJSON(t, coordURL+"/nodes")
+		if arr, ok := nodes["nodes"].([]any); ok && len(arr) >= 1 {
+			n, _ := arr[0].(map[string]any)
+			nodeID, _ = n["node_id"].(string)
+			// This node never ran `oim bench run` — confirm the claimed
+			// signature really is the pre-fix zero, or a later nonzero
+			// reading wouldn't prove anything about observed throughput.
+			if tps, _ := n["measured_toks_per_sec"].(float64); tps == 0 && nodeID != "" {
+				break
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if nodeID == "" {
+		t.Fatal("node never registered")
+	}
+
+	postJSON(t, coordURL+"/users/throughputconsumer/startup-grant", map[string]any{}, nil)
+	dispatchBody := map[string]any{
+		"model":      "llama-3.2-3b",
+		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
+		"max_tokens": 128,
+	}
+	dispatchHeaders := map[string]string{"X-OIM-User-ID": "throughputconsumer"}
+
+	// Several real dispatches — each padded completion crosses the minimum
+	// sample floor, so each should fold into the node's rolling average.
+	const numDispatches = 5
+	for i := 0; i < numDispatches; i++ {
+		status, resp := postJSON(t, coordURL+"/v1/chat/completions", dispatchBody, dispatchHeaders)
+		if status != http.StatusOK {
+			t.Fatalf("dispatch %d failed: %d: %v", i, status, resp)
+		}
+	}
+
+	// The node's measured_toks_per_sec must now reflect real observed
+	// traffic instead of staying at its pre-fix zero.
+	deadline = time.Now().Add(10 * time.Second)
+	var lastTPS float64
+	var lastSamples float64
+	for time.Now().Before(deadline) {
+		nodes := getJSON(t, coordURL+"/nodes")
+		if arr, ok := nodes["nodes"].([]any); ok && len(arr) >= 1 {
+			n, _ := arr[0].(map[string]any)
+			lastTPS, _ = n["measured_toks_per_sec"].(float64)
+			lastSamples, _ = n["observed_sample_count"].(float64)
+			if lastTPS > 0 && lastSamples == float64(numDispatches) {
+				break
+			}
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	if lastTPS <= 0 {
+		t.Fatalf("measured_toks_per_sec still 0 after %d real dispatches — observed throughput never landed", numDispatches)
+	}
+	if lastSamples != float64(numDispatches) {
+		t.Fatalf("expected observed_sample_count=%d, got %v", numDispatches, lastSamples)
+	}
+	t.Logf("measured_toks_per_sec moved to %.2f after %d real dispatches (node never self-benchmarked)", lastTPS, numDispatches)
+}
+
+// TestIntegrationSimulatedNodeNotCreditedByFastLane guards a real bug caught
+// live: the coordinator's own production logs showed the seeded demo/"Try
+// the mesh" fleet (OIM_SIMULATED_NODE=true) earning real ledger credit —
+// reward + treasury margin — every time real consumer traffic landed on it,
+// exactly like a real operator's hardware. Simulated nodes are already
+// excluded from the availability-reward probe pool (IdleCandidates) on the
+// theory that they're "decorative/seed capacity, not a real operator's
+// hardware" — this test confirms the same rule now holds for the ordinary
+// fast-lane earning path, not just the probe.
+func TestIntegrationSimulatedNodeNotCreditedByFastLane(t *testing.T) {
+	exoPort, coordPort, nodePort := freePort(t), freePort(t), freePort(t)
+	exoURL := fmt.Sprintf("http://127.0.0.1:%d", exoPort)
+	coordURL := fmt.Sprintf("http://127.0.0.1:%d", coordPort)
+
+	startProc(t, []string{fmt.Sprintf("STUB_LISTEN=:%d", exoPort)}, bin.stubExo)
+	waitHealthy(t, exoURL+"/state")
+
+	startProc(t, nil, bin.coordinator,
+		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0")
+	waitHealthy(t, coordURL+"/health")
+
+	startProc(t, []string{"OIM_SIMULATED_NODE=true"}, bin.node, "node", "start",
+		fmt.Sprintf("--coordinator=%s", coordURL),
+		fmt.Sprintf("--listen=:%d", nodePort),
+		fmt.Sprintf("--exo-url=%s", exoURL),
+		fmt.Sprintf("--reachability-endpoint=http://127.0.0.1:%d", nodePort),
+		"--region=us", "--user-id=sim-miner")
+
+	deadline := time.Now().Add(15 * time.Second)
+	registered := false
+	for time.Now().Before(deadline) {
+		nodes := getJSON(t, coordURL+"/nodes")
+		if arr, ok := nodes["nodes"].([]any); ok && len(arr) >= 1 {
+			n, _ := arr[0].(map[string]any)
+			if sim, _ := n["simulated"].(bool); sim {
+				registered = true
+				break
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !registered {
+		t.Fatal("simulated node never registered as simulated=true")
+	}
+
+	postJSON(t, coordURL+"/users/simconsumer/startup-grant", map[string]any{}, nil)
+	status, resp := postJSON(t, coordURL+"/v1/chat/completions", map[string]any{
+		"model":      "llama-3.2-3b",
+		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
+		"max_tokens": 64,
+	}, map[string]string{"X-OIM-User-ID": "simconsumer"})
+	if status != http.StatusOK {
+		t.Fatalf("dispatch to simulated node failed: %d: %v", status, resp)
+	}
+	if _, ok := resp["choices"]; !ok {
+		t.Fatalf("no choices in response: %v", resp)
+	}
+
+	// Give the async job-outcome time to arrive, same as TestIntegrationFullMoneyPath.
+	time.Sleep(2 * time.Second)
+
+	if got := balance(t, coordURL, "sim-miner"); got != 0 {
+		t.Errorf("simulated node earned %.6f from real dispatch — should be 0, real hardware wasn't behind it", got)
+	}
+	if got := balance(t, coordURL, "oim-treasury"); got != 0 {
+		t.Errorf("treasury earned %.6f margin from a simulated-node dispatch — should be 0", got)
+	}
+}
+
+// TestIntegrationClusterRingDeduplicated reproduces the real double-
+// registration bug found live on lab-01/lab-02: every device in one physical
+// Exo ring runs its own independent oim agent, and each registers as a
+// separate coordinator node claiming the ring's FULL pooled capacity. Two
+// independent stub-exo + oim-agent process pairs are configured with the
+// IDENTICAL topology.nodes device-ID list (exactly what real Exo reports from
+// every member of one ring); the coordinator must (a) label exactly one of
+// the two registrations cluster_standby, and (b) route every dispatch to the
+// one primary.
+func TestIntegrationClusterRingDeduplicated(t *testing.T) {
+	coordPort := freePort(t)
+	coordURL := fmt.Sprintf("http://127.0.0.1:%d", coordPort)
+
+	startProc(t, nil, bin.coordinator,
+		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0")
+	waitHealthy(t, coordURL+"/health")
+
+	// Two devices of ONE ring: independent stub-exo and oim-agent processes,
+	// same topology membership — just like two Macs in one Exo cluster. Each
+	// agent gets its OWN HOME: identity.LoadOrCreate persists the node
+	// keypair under $HOME/.config/oim, and two agents sharing a HOME would
+	// silently collapse into one node ID — the opposite of the two
+	// independent devices this test needs.
+	ringIDs := "device-aaa,device-bbb"
+	for i, user := range []string{"ring-miner-1", "ring-miner-2"} {
+		exoPort, nodePort := freePort(t), freePort(t)
+		exoURL := fmt.Sprintf("http://127.0.0.1:%d", exoPort)
+		startProc(t, []string{
+			fmt.Sprintf("STUB_LISTEN=:%d", exoPort),
+			fmt.Sprintf("STUB_NODE_NAME=ring-dev-%d", i+1),
+			"STUB_TOPOLOGY_NODE_IDS=" + ringIDs,
+		}, bin.stubExo)
+		waitHealthy(t, exoURL+"/state")
+
+		startProc(t, []string{"HOME=" + t.TempDir()}, bin.node, "node", "start",
+			fmt.Sprintf("--coordinator=%s", coordURL),
+			fmt.Sprintf("--listen=:%d", nodePort),
+			fmt.Sprintf("--exo-url=%s", exoURL),
+			fmt.Sprintf("--reachability-endpoint=http://127.0.0.1:%d", nodePort),
+			"--region=us", "--user-id="+user)
+	}
+
+	// Wait for both registrations, then confirm exactly one is standby.
+	var primaryID string
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		nodes := getJSON(t, coordURL+"/nodes")
+		arr, _ := nodes["nodes"].([]any)
+		if len(arr) == 2 {
+			var primaries, standbys []string
+			for _, raw := range arr {
+				n, _ := raw.(map[string]any)
+				id, _ := n["node_id"].(string)
+				if standby, _ := n["cluster_standby"].(bool); standby {
+					standbys = append(standbys, id)
+				} else {
+					primaries = append(primaries, id)
+				}
+			}
+			if len(primaries) == 1 && len(standbys) == 1 {
+				primaryID = primaries[0]
+				break
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if primaryID == "" {
+		t.Fatal("never saw exactly one primary + one cluster_standby registration for the ring")
+	}
+
+	// Every dispatch must land on the primary — the standby duplicate of the
+	// same physical ring must never be routed to.
+	postJSON(t, coordURL+"/users/ringconsumer/startup-grant", map[string]any{}, nil)
+	for i := 0; i < 3; i++ {
+		status, resp := postJSON(t, coordURL+"/v1/chat/completions", map[string]any{
+			"model":      "llama-3.2-3b",
+			"messages":   []map[string]any{{"role": "user", "content": "hi"}},
+			"max_tokens": 64,
+		}, map[string]string{"X-OIM-User-ID": "ringconsumer"})
+		if status != http.StatusOK {
+			t.Fatalf("dispatch %d failed: %d: %v", i, status, resp)
+		}
+		if servedBy, _ := resp["oim_served_by_node_id"].(string); servedBy != primaryID {
+			t.Fatalf("dispatch %d served by %s — expected only the ring primary %s to ever be routed to", i, servedBy, primaryID)
+		}
+	}
+}

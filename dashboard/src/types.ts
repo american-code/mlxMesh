@@ -4,6 +4,11 @@ export interface ModelCapability {
   runtime: string
   max_context_tokens: number
   is_moe: boolean
+  // Whether Exo currently has an active inference instance for this model —
+  // distinct from merely being downloaded to disk (the only thing that gates
+  // whether a model appears in this list at all). Absent/false on older
+  // coordinators that predate this field.
+  loaded?: boolean
 }
 
 export interface NodeSnapshot {

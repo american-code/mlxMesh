@@ -7,7 +7,7 @@ enum NetworkClient {
     // progressive decentralization) — mirrors the coordinator's own
     // --directory flag and the web dashboard's VITE_DIRECTORY_URL, both of
     // which accept the same list-of-endpoints shape.
-    static var directoryURL = "http://192.168.1.135:9100"
+    static var directoryURL = "https://directory.mlxmesh.net"
 
     private static var directoryCandidates: [String] {
         directoryURL.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }

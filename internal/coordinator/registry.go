@@ -50,6 +50,42 @@ type nodeEntry struct {
 	// Reset to false on every re-registration; a node must re-attest.
 	enclaveAttested  bool
 	enclavePublicKey []byte
+
+	// observedTPS is a coordinator-computed EMA of real per-job decode tok/s,
+	// fed by RecordObservedThroughput after each completed dispatch. nil
+	// until at least one job has been observed. Deliberately separate from
+	// manifest.MeasuredSignature (the node's self-declared/benchmarked
+	// claim) — Refresh() replaces manifest wholesale every heartbeat, so a
+	// value stored there would be erased by the node's own next check-in.
+	// This field persists across heartbeats; it resets only when the entry
+	// itself is evicted/re-registered.
+	observedTPS     *float64
+	observedSamples int
+}
+
+// throughputEMAAlpha weights how quickly RecordObservedThroughput's rolling
+// average reacts to a new sample — recent-weighted but not single-sample-jumpy.
+const throughputEMAAlpha = 0.3
+
+// RecordObservedThroughput folds one real, coordinator-measured decode tok/s
+// sample into nodeID's rolling average. Call only from dispatch paths that
+// measured real wall-clock time against a real completion-token count —
+// never from anything the node self-reports (that self-reported path is
+// exactly what VerifyTierClaim/MeasurementStore exist to audit separately).
+func (r *NodeRegistry) RecordObservedThroughput(nodeID string, tokensPerSec float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.entries[nodeID]
+	if !ok || tokensPerSec <= 0 {
+		return
+	}
+	if e.observedTPS == nil {
+		v := tokensPerSec
+		e.observedTPS = &v
+	} else {
+		*e.observedTPS = *e.observedTPS*(1-throughputEMAAlpha) + tokensPerSec*throughputEMAAlpha
+	}
+	e.observedSamples++
 }
 
 func (e *nodeEntry) isLive() bool {
@@ -227,15 +263,50 @@ func (r *NodeRegistry) IsLive(nodeID string) bool {
 	return ok && e.isLive()
 }
 
+// clusterStandbyNodeIDs returns the set of live node IDs that duplicate
+// another live node's same physical Exo ring (same non-empty
+// manifest.ClusterSignature). Every device in a clustered ring runs its own
+// agent and independently registers claiming the SAME pooled capacity
+// (capability.DetectClusterNode runs per-device against a per-device view of
+// the whole ring) — without this, routing, idle-probing, and capacity totals
+// would all double-count one physical ring. Deterministic, stateless
+// tiebreak: within each ClusterSignature group, the lexicographically lowest
+// live NodeID is the sole non-standby representative — recomputed fresh on
+// every call, so when the primary goes stale/evicted the standby becomes
+// eligible immediately, with no promotion bookkeeping to get out of sync.
+// Must be called with r.mu held (read or write).
+func (r *NodeRegistry) clusterStandbyNodeIDs() map[string]bool {
+	best := map[string]string{}
+	for id, e := range r.entries {
+		if e.manifest.ClusterSignature == "" || !e.isLive() {
+			continue
+		}
+		if cur, ok := best[e.manifest.ClusterSignature]; !ok || id < cur {
+			best[e.manifest.ClusterSignature] = id
+		}
+	}
+	standby := map[string]bool{}
+	for id, e := range r.entries {
+		sig := e.manifest.ClusterSignature
+		if sig != "" && e.isLive() && best[sig] != id {
+			standby[id] = true
+		}
+	}
+	return standby
+}
+
 // Candidates returns all currently-eligible nodes for a job.
 // Filtering only — no scoring/ranking (that's the router's job).
 // Excludes nodes past the liveness TTL even if not explicitly marked unreachable.
+// Also excludes cluster-standby duplicates (see clusterStandbyNodeIDs) so one
+// physical Exo ring is never dispatched to twice under two registrations.
 func (r *NodeRegistry) Candidates(modelID, quantization string) ([]protocol.CapabilityManifest, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	standby := r.clusterStandbyNodeIDs()
 	var out []protocol.CapabilityManifest
-	for _, e := range r.entries {
-		if !e.isLive() {
+	for id, e := range r.entries {
+		if !e.isLive() || standby[id] {
 			continue
 		}
 		if !hasModel(e.manifest, modelID, quantization) {
@@ -254,6 +325,11 @@ type NodeWithLoad struct {
 	// never the client-declared Manifest.HasSecureEnclave. This is what
 	// routing gates must check for SensitivityHighRequiresAttestation jobs.
 	EnclaveAttested bool
+	// ObservedTPS is the coordinator's own rolling-average decode tok/s for
+	// this node (see nodeEntry.observedTPS), nil until at least one real job
+	// has been observed. Routing should prefer this over the node's
+	// self-declared Manifest.MeasuredSignature — see effectiveManifest.
+	ObservedTPS *float64
 }
 
 // CandidatesWithLoad is like Candidates but includes the live in-flight counter for each node.
@@ -261,9 +337,10 @@ type NodeWithLoad struct {
 func (r *NodeRegistry) CandidatesWithLoad(modelID, quantization string) ([]NodeWithLoad, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	standby := r.clusterStandbyNodeIDs()
 	var out []NodeWithLoad
-	for _, e := range r.entries {
-		if !e.isLive() {
+	for id, e := range r.entries {
+		if !e.isLive() || standby[id] {
 			continue
 		}
 		if !hasModel(e.manifest, modelID, quantization) {
@@ -273,6 +350,7 @@ func (r *NodeRegistry) CandidatesWithLoad(modelID, quantization string) ([]NodeW
 			Manifest:        e.manifest,
 			InFlight:        atomic.LoadInt32(&e.inFlight),
 			EnclaveAttested: e.enclaveAttested,
+			ObservedTPS:     e.observedTPS,
 		})
 	}
 	return out, nil
@@ -306,9 +384,13 @@ func (r *NodeRegistry) IdleCandidates(idleSince time.Duration) []protocol.Capabi
 		idleFrom time.Time
 	}
 	cutoff := time.Now().Add(-idleSince)
+	standby := r.clusterStandbyNodeIDs()
 	var candidates []candidate
-	for _, e := range r.entries {
-		if !e.isLive() || e.manifest.Simulated || len(e.manifest.Models) == 0 {
+	for id, e := range r.entries {
+		// Cluster-standby duplicates are excluded for the same reason as
+		// Simulated: probing both registrations of one physical ring would
+		// mint two availability rewards for one ring's worth of hardware.
+		if !e.isLive() || e.manifest.Simulated || standby[id] || len(e.manifest.Models) == 0 {
 			continue
 		}
 		idleFrom := e.lastJobServedAt
@@ -427,8 +509,13 @@ func (r *NodeRegistry) HealthDigest(podID, regionHint, coordinatorEndpoint strin
 	realCount := 0
 	realTPS := 0.0
 	realMemGB := 0.0
-	for _, e := range r.entries {
-		if !e.isLive() {
+	standby := r.clusterStandbyNodeIDs()
+	for id, e := range r.entries {
+		// A cluster-standby duplicate's manifest already reports its ring's
+		// FULL pooled memory/throughput — counting it again isn't extra
+		// capacity, it's the same capacity twice. Excluded from every total,
+		// including liveCount.
+		if !e.isLive() || standby[id] {
 			continue
 		}
 		liveCount++
@@ -438,6 +525,14 @@ func (r *NodeRegistry) HealthDigest(podID, regionHint, coordinatorEndpoint strin
 		nodeTPS := 0.0
 		if e.manifest.MeasuredSignature != nil {
 			nodeTPS = e.manifest.MeasuredSignature.TokensPerSecDecode
+		}
+		// Prefer the coordinator's own observed throughput over the node's
+		// self-declared/benchmarked claim — same rationale as Snapshot()
+		// below. Deliberately NOT applied to VerifiedCapacityScore, which
+		// must keep comparing the claimed signature against a submitted
+		// benchmark for fraud detection.
+		if e.observedTPS != nil {
+			nodeTPS = *e.observedTPS
 		}
 		nodeMemGB := e.manifest.DeclaredMemoryGB * e.manifest.DeclaredMemoryCapPct
 		totalTPS += nodeTPS
@@ -494,6 +589,20 @@ type NodeSnapshot struct {
 	// Simulated is decorative/seed capacity, not a real operator's hardware —
 	// see protocol.CapabilityManifest.Simulated.
 	Simulated bool `json:"simulated,omitempty"`
+	// ClusterStandby marks a duplicate registration of a physical Exo ring
+	// another live node already represents (same cluster_signature, higher
+	// node ID) — kept visible here for operator transparency, but excluded
+	// from routing, idle-probing, and every HealthDigest capacity total.
+	// See NodeRegistry.clusterStandbyNodeIDs.
+	ClusterStandby bool `json:"cluster_standby,omitempty"`
+	// ObservedToksPerSec is the coordinator's own rolling-average decode
+	// tok/s from real dispatched jobs (nil until at least one job has been
+	// observed) — distinct from MeasuredToksPerSec, which may still reflect
+	// a one-time self-reported benchmark. MeasuredToksPerSec already
+	// prefers this value once set; these are exposed separately purely for
+	// operator transparency (e.g. "benchmark: 40 t/s vs. observed: 61 t/s").
+	ObservedToksPerSec  *float64 `json:"observed_toks_per_sec,omitempty"`
+	ObservedSampleCount int      `json:"observed_sample_count,omitempty"`
 }
 
 // Snapshot returns a point-in-time view of all registered nodes (live and recently stale).
@@ -501,7 +610,8 @@ func (r *NodeRegistry) Snapshot() []NodeSnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make([]NodeSnapshot, 0, len(r.entries))
-	for _, e := range r.entries {
+	standby := r.clusterStandbyNodeIDs()
+	for id, e := range r.entries {
 		status := "live"
 		if e.unreachable {
 			status = "unreachable"
@@ -511,6 +621,12 @@ func (r *NodeRegistry) Snapshot() []NodeSnapshot {
 		tps := 0.0
 		if e.manifest.MeasuredSignature != nil {
 			tps = e.manifest.MeasuredSignature.TokensPerSecDecode
+		}
+		// Prefer the coordinator's own observed throughput over the node's
+		// self-declared/benchmarked claim — this is what actually clears a
+		// stale "Reduced perf" badge once real traffic has been served.
+		if e.observedTPS != nil {
+			tps = *e.observedTPS
 		}
 		models := e.manifest.Models
 		if models == nil {
@@ -536,6 +652,9 @@ func (r *NodeRegistry) Snapshot() []NodeSnapshot {
 			InFlightJobs:         int(atomic.LoadInt32(&e.inFlight)),
 			ECDHPublicKey:        e.manifest.ECDHPublicKey,
 			Simulated:            e.manifest.Simulated,
+			ClusterStandby:       standby[id],
+			ObservedToksPerSec:   e.observedTPS,
+			ObservedSampleCount:  e.observedSamples,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
@@ -576,6 +695,25 @@ func hasModel(m protocol.CapabilityManifest, modelID, quantization string) bool 
 			continue
 		}
 		return true
+	}
+	return false
+}
+
+// modelIsLoaded reports whether the node has an ACTIVELY LOADED (not merely
+// downloaded) instance for modelID — used to gate real dispatch eligibility
+// (see ScoreForFastLane) separately from hasModel's broader "does this node
+// have this model at all" check, which the warm-model path still needs (it
+// specifically targets nodes that have a model downloaded but not yet
+// loaded, so it must NOT be gated by this).
+func modelIsLoaded(m protocol.CapabilityManifest, modelID, quantization string) bool {
+	for _, model := range m.Models {
+		if model.ModelID != modelID {
+			continue
+		}
+		if quantization != "" && model.Quantization != quantization {
+			continue
+		}
+		return model.Loaded
 	}
 	return false
 }

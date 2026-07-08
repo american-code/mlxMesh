@@ -301,7 +301,13 @@ export default function App() {
         </div>
       </main>
 
-      {selected && <NodeDetail node={selected} onClose={() => setSelected(null)} />}
+      {selected && (
+        <NodeDetail
+          node={selected}
+          coordinatorURL={podNodes.find(p => p.nodes.some(n => n.node_id === selected.node_id))?.pod.coordinator_endpoint ?? null}
+          onClose={() => setSelected(null)}
+        />
+      )}
     </div>
   )
 }

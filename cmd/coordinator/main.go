@@ -485,6 +485,38 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		writeJSON(w, http.StatusOK, map[string]string{"status": "refreshed"})
 	})
 
+	// POST /nodes/{id}/warm-model — dashboard/app-triggered "Load model"
+	// action: ask a specific node to create+await an Exo instance for a model
+	// it has downloaded but isn't actively serving yet (see the "Cold" badge
+	// in the node detail views). NOT node-signed — this is initiated by a
+	// consumer/operator, not the node itself, so it goes through the normal
+	// Bearer/API-key auth gate every other write does (see authMiddleware),
+	// not isSelfAuthenticatingWrite. A deliberately generous deadline: a
+	// cold multi-shard model load can legitimately take minutes, unlike a
+	// real dispatch attempt's ~25s budget.
+	mux.HandleFunc("POST /nodes/{id}/warm-model", func(w http.ResponseWriter, r *http.Request) {
+		nodeID := r.PathValue("id")
+		var req struct {
+			ModelID string `json:"model_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse warm-model request: "+err.Error())
+			return
+		}
+		if req.ModelID == "" {
+			writeErr(w, http.StatusBadRequest, "model_id is required")
+			return
+		}
+		warmCtx, cancel := context.WithTimeout(r.Context(), warmModelTimeout)
+		defer cancel()
+		result, err := coordinator.WarmModel(warmCtx, nodeID, req.ModelID, registry)
+		if err != nil {
+			writeErr(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
+
 	// POST /jobs/claim — a pull-mode node's outbound long-poll for work (the
 	// "mining-pool" model). Blocks up to ~25s until a job is queued for this
 	// node, then returns it; 204 on timeout so the node simply re-polls. The
@@ -783,7 +815,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 			// applies identically either way).
 			if servedBy != "" && tokens > 0 {
 				if _, dup := creditedJobs.LoadOrStore(jobID, struct{}{}); !dup {
-					creditNodeEarning(ledger, walletMgr, &nodeUsers, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, tokens)
+					creditNodeEarning(ledger, walletMgr, &nodeUsers, registry, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, tokens)
 					registry.MarkJobServed(servedBy)
 					mx.Counter("oim_credits_total").Inc()
 					mx.AddCounter("oim_tokens_served_total", int64(tokens))
@@ -846,7 +878,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		observedTok := extractCompletionTokens(result, maxTok)
 		if servedBy, _ := result["oim_served_by_node_id"].(string); servedBy != "" && observedTok > 0 {
 			if _, dup := creditedJobs.LoadOrStore(jobID, struct{}{}); !dup {
-				creditNodeEarning(ledger, walletMgr, &nodeUsers, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, observedTok)
+				creditNodeEarning(ledger, walletMgr, &nodeUsers, registry, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, observedTok)
 				registry.MarkJobServed(servedBy)
 				mx.Counter("oim_credits_total").Inc()
 				mx.AddCounter("oim_tokens_served_total", int64(observedTok))
@@ -978,7 +1010,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		// cycles, and each executed cycle is a distinct earning, so this is NOT
 		// deduped by job_id (job-outcome no longer credits, so there's no double).
 		if observedTok := extractCompletionTokens(result, 2048); observedTok > 0 {
-			creditNodeEarning(ledger, walletMgr, &nodeUsers, nodeID, req.JobID, economics.LaneBackground, string(a.JobSpec.Sensitivity), observedTok)
+			creditNodeEarning(ledger, walletMgr, &nodeUsers, registry, nodeID, req.JobID, economics.LaneBackground, string(a.JobSpec.Sensitivity), observedTok)
 			registry.MarkJobServed(nodeID)
 		}
 		log.Printf("[coordinator] background/execute job=%s node=%s continuation=%v", req.JobID, nodeID, isCont)
@@ -2283,6 +2315,12 @@ const reconcileInterval = 5 * time.Minute
 // mid-wait — the node just re-polls on a 204.
 const pullClaimTimeout = 25 * time.Second
 
+// warmModelTimeout bounds POST /nodes/{id}/warm-model end to end — deliberately
+// minutes, not seconds: creating an Exo instance for a large/multi-shard
+// model is a genuinely slow, one-time cost the caller has explicitly opted
+// into (unlike a real dispatch attempt, which must fail fast).
+const warmModelTimeout = 3 * time.Minute
+
 // Verified-availability reward tuning (--availability-reward, opt-in). Kept as
 // constants, not flags — this is deliberately a small, non-configurable
 // bootstrap incentive, not a policy surface for operators to tune per-deployment.
@@ -2393,7 +2431,19 @@ func resolveEarningsAccount(walletMgr *wallet.Manager, nodeUsers *sync.Map, node
 // house-edge margin (economics.NetworkMargin). Provider reward is ALWAYS less
 // than what the consumer was charged — the treasury keeps the spread. Callers
 // must dedup by jobID (via creditedJobs) before calling.
-func creditNodeEarning(ledger *settlement.Ledger, walletMgr *wallet.Manager, nodeUsers *sync.Map, servedByNodeID, jobID string, lane economics.Lane, sensitivity string, tokenCount int) {
+//
+// Mints nothing for a Simulated node (the seeded demo/"Try the mesh" fleet,
+// OIM_SIMULATED_NODE — see protocol.CapabilityManifest.Simulated). Simulated
+// capacity is decorative, not a real operator's hardware — the exact
+// principle IdleCandidates already applies to keep it out of the
+// availability-reward probe pool (registry.go). Every real dispatch path
+// (fast-lane buffered/streaming, background /execute) funnels through this
+// one function, so the guard lives here rather than at each call site.
+func creditNodeEarning(ledger *settlement.Ledger, walletMgr *wallet.Manager, nodeUsers *sync.Map, registry *coordinator.NodeRegistry, servedByNodeID, jobID string, lane economics.Lane, sensitivity string, tokenCount int) {
+	if m, ok := registry.Manifest(servedByNodeID); ok && m.Simulated {
+		log.Printf("[coordinator] job=%s served_by=%s is a simulated demo node — not credited (no real compute behind it)", jobID, servedByNodeID)
+		return
+	}
 	accountKey := resolveEarningsAccount(walletMgr, nodeUsers, servedByNodeID)
 	reward := economics.ProviderReward(lane, sensitivity, tokenCount)
 	margin := economics.NetworkMargin(lane, sensitivity, tokenCount)

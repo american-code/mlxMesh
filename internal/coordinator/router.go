@@ -49,6 +49,15 @@ func ScoreForFastLane(node protocol.CapabilityManifest, job protocol.JobSpec, in
 	if !hasModel(node, job.ModelID, job.QuantizationRequired) {
 		return math.Inf(-1)
 	}
+	// A model that's downloaded but not actively loaded in Exo can't actually
+	// serve a request right now — confirmed live: dispatching to one fails
+	// outright instead of a clean, understandable ineligibility. Gate real
+	// dispatch on Loaded so "no eligible nodes" means what it says. The
+	// warm-model path (WarmModel/JobLaneWarm) deliberately targets a node
+	// directly rather than through this scoring function, so it's unaffected.
+	if !modelIsLoaded(node, job.ModelID, job.QuantizationRequired) {
+		return math.Inf(-1)
+	}
 	if job.MaxPricePerUnit > 0 {
 		if price, ok := node.PricePerUnit["compute_cycles"]; ok && price > job.MaxPricePerUnit {
 			return math.Inf(-1)
@@ -63,6 +72,27 @@ func ScoreForFastLane(node protocol.CapabilityManifest, job protocol.JobSpec, in
 	return base / (1.0 + float64(inFlight)*0.5)
 }
 
+// effectiveManifest overrides a node's self-declared decode throughput with
+// the coordinator's own observed measurement (NodeWithLoad.ObservedTPS) once
+// at least one real job has been observed — never the reverse. Used only for
+// ranking/scoring: VerifyTierClaim and VerifiedCapacityScore read
+// node.Manifest.MeasuredSignature directly and must keep comparing the
+// claimed value against a submitted benchmark, so they are deliberately NOT
+// routed through this function.
+func effectiveManifest(node NodeWithLoad) protocol.CapabilityManifest {
+	if node.ObservedTPS == nil {
+		return node.Manifest
+	}
+	m := node.Manifest
+	sig := protocol.MeasuredSignature{}
+	if m.MeasuredSignature != nil {
+		sig = *m.MeasuredSignature
+	}
+	sig.TokensPerSecDecode = *node.ObservedTPS
+	m.MeasuredSignature = &sig
+	return m
+}
+
 // rankCandidates scores candidates for job via ScoreForFastLane and returns
 // them sorted best-first, filtering out ineligible nodes (-Inf score). Shared
 // by DispatchFastLane and PickBestNode so "who is eligible and best" is
@@ -74,7 +104,7 @@ func rankCandidates(candidates []NodeWithLoad, job protocol.JobSpec) []NodeWithL
 	}
 	var ranked []scored
 	for _, n := range candidates {
-		s := ScoreForFastLane(n.Manifest, job, n.InFlight, n.EnclaveAttested)
+		s := ScoreForFastLane(effectiveManifest(n), job, n.InFlight, n.EnclaveAttested)
 		if !math.IsInf(s, -1) {
 			ranked = append(ranked, scored{s, n})
 		}
@@ -162,7 +192,15 @@ func DispatchFastLane(
 			// tokens — never the node's self-declared/benchmarked signature — so
 			// "Try the mesh" can show a real, this-request tok/s figure.
 			if tokens := completionTokensFromResult(result); tokens > 0 && elapsed > 0 {
-				result["oim_tokens_per_sec"] = math.Round(float64(tokens)/elapsed.Seconds()*100) / 100
+				tps := math.Round(float64(tokens)/elapsed.Seconds()*100) / 100
+				result["oim_tokens_per_sec"] = tps
+				// Feed this same real, coordinator-measured sample into the
+				// node's rolling average — see RecordObservedThroughput's
+				// doc comment for why this (not self-reported benchmark) is
+				// what routing/health should trust going forward.
+				if tokens >= minThroughputSampleTokens {
+					registry.RecordObservedThroughput(node.Manifest.NodeID, tps)
+				}
 			}
 		}
 		return result, nil
@@ -195,7 +233,7 @@ func AssignBackgroundJob(job protocol.JobSpec, registry *NodeRegistry) (*Backgro
 	}
 	var ranked []scored
 	for _, n := range candidates {
-		s := ScoreForFastLane(n.Manifest, job, n.InFlight, n.EnclaveAttested)
+		s := ScoreForFastLane(effectiveManifest(n), job, n.InFlight, n.EnclaveAttested)
 		if !math.IsInf(s, -1) {
 			ranked = append(ranked, scored{s, n})
 		}
@@ -269,14 +307,62 @@ func (s *AssignmentStore) Get(jobID string) (*BackgroundAssignment, bool) {
 // the pin can never be paired with a different node's endpoint.
 func DispatchToResolvedNode(ctx context.Context, job protocol.JobSpec, messages []map[string]any, registry *NodeRegistry, target NodeTarget) (map[string]any, error) {
 	registry.IncrInFlight(target.NodeID)
+	dispatchStart := time.Now()
 	result, err := registry.deliverJob(ctx, target.NodeID, registry.IsPullNode(target.NodeID), target, job, messages)
+	elapsed := time.Since(dispatchStart)
 	registry.DecrInFlight(target.NodeID)
 	if err != nil {
 		registry.MarkUnreachable(target.NodeID)
 		return nil, err
 	}
+	// Same real, coordinator-measured sample as DispatchFastLane feeds into
+	// the node's rolling average. A JobLaneWarm result has no usage field
+	// (tokens==0), so warm-up calls naturally never contribute a sample —
+	// no special-casing needed here.
+	if tokens := completionTokensFromResult(result); tokens >= minThroughputSampleTokens && elapsed > 0 {
+		tps := math.Round(float64(tokens)/elapsed.Seconds()*100) / 100
+		registry.RecordObservedThroughput(target.NodeID, tps)
+	}
 	return result, nil
 }
+
+// WarmModel asks a SPECIFIC node (chosen by the caller — a dashboard/app
+// "Load model" action, not routing) to create+await an Exo instance for
+// modelID, via a JobLaneWarm control message routed through the exact same
+// mailbox real jobs use (see protocol.JobLaneWarm's doc comment for why this
+// reuses that transport rather than a new subsystem). The caller supplies
+// ctx's deadline — this is a deliberate, possibly multi-minute warm-up call,
+// not a latency-sensitive one, so it should be set generously (minutes, not
+// the ~25s a real dispatch attempt gets).
+//
+// Reuses DispatchToResolvedNode as-is, including its MarkUnreachable-on-error
+// behavior: a slow-but-legitimate warm-up that outruns ctx will transiently
+// flag the node unreachable, but this self-corrects on the node's very next
+// heartbeat (a pull node's next claim poll is usually under a second away;
+// a push node's next manifest refresh) — not worth a special case for what a
+// slow warm-up call already earned honestly (the node genuinely wasn't
+// responsive to real requests during that heartbeat gap either).
+func WarmModel(ctx context.Context, nodeID, modelID string, registry *NodeRegistry) (map[string]any, error) {
+	manifest, ok := registry.Manifest(nodeID)
+	if !ok {
+		return nil, fmt.Errorf("unknown node %s", nodeID)
+	}
+	if !hasModel(manifest, modelID, "") {
+		return nil, fmt.Errorf("node %s has no model %s downloaded", nodeID, modelID)
+	}
+	job := protocol.JobSpec{
+		JobID:   fmt.Sprintf("warm-%s-%d", nodeID, time.Now().UnixNano()),
+		ModelID: modelID,
+		Lane:    protocol.JobLaneWarm,
+	}
+	return DispatchToResolvedNode(ctx, job, nil, registry, TargetFromManifest(manifest))
+}
+
+// minThroughputSampleTokens is the floor below which a completion is too
+// short to trust for RecordObservedThroughput — a handful of output tokens
+// produces a noisy, TTFT-dominated tok/s figure that shouldn't move a node's
+// rolling average.
+const minThroughputSampleTokens = 16
 
 // completionTokensFromResult reads usage.completion_tokens from an OpenAI-shaped
 // chat-completion response, returning 0 when absent rather than guessing.
@@ -336,7 +422,9 @@ func DispatchFastLaneStreaming(
 		}
 		attempted++
 		registry.IncrInFlight(node.Manifest.NodeID)
+		dispatchStart := time.Now()
 		started, tok, dispatchErr := dispatchToNodeStreaming(ctx, job, messages, TargetFromManifest(node.Manifest), clientW)
+		elapsed := time.Since(dispatchStart)
 		registry.DecrInFlight(node.Manifest.NodeID)
 		if dispatchErr != nil {
 			if started {
@@ -344,6 +432,15 @@ func DispatchFastLaneStreaming(
 			}
 			registry.MarkUnreachable(node.Manifest.NodeID)
 			continue
+		}
+		// Same real, coordinator-measured sample as the buffered path feeds
+		// into the node's rolling average. Streaming's elapsed includes SSE
+		// relay time to the client, a slightly more pessimistic figure than
+		// pure decode time — an accepted approximation, consistent with this
+		// path's own "measured from this request's own wall-clock time" rule.
+		if tok >= minThroughputSampleTokens && elapsed > 0 {
+			tps := math.Round(float64(tok)/elapsed.Seconds()*100) / 100
+			registry.RecordObservedThroughput(node.Manifest.NodeID, tps)
 		}
 		return node.Manifest.NodeID, tok, true, nil
 	}
@@ -466,6 +563,12 @@ func dispatchToNode(
 		"model":    job.ModelID,
 		"messages": messages,
 		"stream":   false,
+		// The agent's inbound handler branches on this (oim_lane) to pick
+		// ExecuteFastLane/ExecuteBackgroundLane/WarmModel — never forwarding
+		// it meant every push-mode job silently ran fast-lane regardless of
+		// job.Lane, confirmed live via JobLaneWarm always executing as a
+		// normal chat completion instead of a warm-up.
+		"oim_lane": string(job.Lane),
 	}
 	// Encrypted-pointer path (M8): forward the pointer so the assigned node can
 	// fetch + decrypt it. Previously dropped silently here — the coordinator
