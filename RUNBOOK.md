@@ -176,6 +176,48 @@ nginx-proxied traffic into one bucket (nginx's IP) at the default 20 rps.
 coordinators) so the limiter keys on the real client via X-Forwarded-For, and
 ensure nginx sets that header. As a stopgap, raise `--rate-limit-rps`.
 
+### `--availability-reward` (verified availability bootstrap incentive)
+Opt-in, off by default (see README's "Verified availability reward" section
+for the full rationale — throttled by queue backpressure, not a treasury
+cap, since credits have no external monetary value in this system). When
+enabled, watch for:
+- `oim_availability_probes_total` / `oim_availability_rewards_total`
+  (Prometheus, `/metrics/prometheus`) — probes attempted vs. actually
+  credited. A large gap between the two means probed nodes are failing
+  dispatch (dead/misconfigured Exo, model not actually downloaded) more
+  often than they're succeeding — check node logs, not the coordinator.
+- Log lines `[coordinator] availability-reward: skipping round — backpressure
+  X% > 40% ceiling` are expected and healthy during real traffic spikes —
+  the feature is deliberately standing down, not broken.
+- If `oim_availability_rewards_total` never increments at all with the flag
+  on: confirm at least one registered node is genuinely non-simulated
+  (`OIM_SIMULATED_NODE` unset) and idle for the full threshold (30 min
+  default) — a seed-only deployment or one under constant real traffic will
+  correctly never see a probe.
+
+### A registered node never earns anything
+**First, which delivery mode?** `curl <node's own address>:8765/detect` and
+check `port_mapping`:
+- `"pull"` (the default): the node long-polls the coordinator for work — no
+  inbound reachability involved, so reachability is NOT the cause. If a pull
+  node isn't earning, look instead at: (a) is it **linked** to the right
+  wallet (else earnings land on its raw node_id — see the "linked but earnings
+  land on the wrong account" fix); (b) does it actually have a **downloaded
+  model** (a node with zero models is never dispatched real jobs); (c) is
+  there any **real traffic / availability-reward** to serve at all. Confirm
+  the pull path is healthy: the coordinator's `/jobs/claim` should show the
+  node long-polling, and dispatches to it go through the mailbox, not an
+  outbound dial.
+- `"manual"` (push mode, explicit `--reachability-endpoint`): this is the only
+  mode where reachability can be the cause. Check the coordinator's logs for
+  `dial tcp ... connect: connection refused` against that node's advertised
+  `reachability_endpoint` — definitive proof the coordinator can't reach it.
+  Fix the endpoint/port-forward, or drop `--reachability-endpoint` to switch
+  the node to pull mode (which sidesteps reachability entirely).
+
+Reachability and wallet-linking are independent — a node must be reachable
+(or pull) AND correctly linked; don't assume fixing one fixes the other.
+
 ## On-call
 
 - **Primary contact:** the operator (single-maintainer project today).

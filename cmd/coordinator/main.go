@@ -31,6 +31,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	mathrand "math/rand/v2"
 	"net"
 	"net/http"
 	"os"
@@ -203,7 +204,7 @@ func rootCmd() *cobra.Command {
 	var directoryURLs []string
 	var maxDispatchAttempts, directoryIntervalSec, grantPoWBits int
 	var rateLimitRPS, rateLimitBurst, grantRateLimitPerHour, userQuotaPerHour float64
-	var protectUserReads bool
+	var protectUserReads, availabilityRewardEnabled bool
 	var corsOrigins, trustedProxies []string
 	var tlsCert, tlsKey string
 	var identityPath, federationKey, federationDBPath string
@@ -223,7 +224,7 @@ Optionally report aggregate health to a directory with --directory.`,
 				maxDispatchAttempts, time.Duration(directoryIntervalSec)*time.Second, rateLimitRPS, rateLimitBurst,
 				corsOrigins, grantPoWBits, grantRateLimitPerHour, tlsCert, tlsKey,
 				identityPath, federationKey, federationDBPath, time.Duration(federationPollIntervalSec)*time.Second,
-				protectUserReads, userQuotaPerHour, trustedProxies)
+				protectUserReads, userQuotaPerHour, trustedProxies, availabilityRewardEnabled)
 		},
 	}
 	cmd.Flags().StringVar(&listenAddr, "listen", ":9000", "Address to listen on")
@@ -249,6 +250,7 @@ Optionally report aggregate health to a directory with --directory.`,
 	cmd.Flags().BoolVar(&protectUserReads, "protect-user-reads", false, "Require auth on per-user read endpoints (GET /users/{id}/balance, GET /users/{id}/api-key): the caller must present the admin --api-key or that user's own oim_ key. Off by default so the public dashboard can read aggregate topology; turn ON for a public deployment so balances aren't enumerable by user_id. Aggregate reads (/topology, /nodes, /metrics) stay open")
 	cmd.Flags().Float64Var(&userQuotaPerHour, "user-quota-per-hour", 0, "Per-account request quota: max requests per hour for a single authenticated user_id, layered on top of the per-IP --rate-limit-rps so one account can't abuse the API from many IPs (0 disables). Only applies to requests that resolve to a user via Bearer auth")
 	cmd.Flags().StringSliceVar(&trustedProxies, "trusted-proxy", nil, "IP or CIDR of reverse proxies (e.g. a fronting nginx) whose X-Forwarded-For may be trusted to identify the real client for per-IP rate limiting. Without this, requests behind a proxy all share one bucket (the proxy's IP), making per-IP limits ineffective. Ignored for any peer not in this list, since XFF is otherwise spoofable")
+	cmd.Flags().BoolVar(&availabilityRewardEnabled, "availability-reward", false, "Enable periodic verified-availability probes: the coordinator occasionally dispatches one small real inference request to an idle, non-simulated node and pays a tiny reward through the same measured-throughput pricing path as real traffic (never a flat/heartbeat-based reward). Throttled by queue backpressure, not a treasury cap — credits have no external monetary value in this system, so minting a small bootstrap incentive isn't deflationary the way it would be for a real currency. Off by default")
 	return cmd
 }
 
@@ -275,7 +277,7 @@ func (s *settlementRecordStore) store(r map[string]any) {
 	s.records = append(s.records, r)
 }
 
-func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string, publicURL, apiKey, dbPath string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64, tlsCert, tlsKey, identityPath, federationKey, federationDBPath string, federationPollInterval time.Duration, protectUserReads bool, userQuotaPerHour float64, trustedProxies []string) error {
+func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string, publicURL, apiKey, dbPath string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64, tlsCert, tlsKey, identityPath, federationKey, federationDBPath string, federationPollInterval time.Duration, protectUserReads bool, userQuotaPerHour float64, trustedProxies []string, availabilityRewardEnabled bool) error {
 	log.Printf("[coordinator] oim-coordinator %s", version.String())
 	proxyNets, err := httpmw.ParseTrustedProxies(trustedProxies)
 	if err != nil {
@@ -396,6 +398,14 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		registry, maxAttempts,
 	)
 
+	// pullDispatcher delivers jobs to outbound-pull ("mining-pool") nodes that
+	// long-poll for work instead of accepting inbound dispatch — the fix for
+	// nodes behind NAT/home routers. Wired into the registry so the dispatch
+	// path routes pull-mode nodes through it transparently (see
+	// NodeRegistry.deliverJob); push nodes are unaffected.
+	pullDispatcher := coordinator.NewPullDispatcher()
+	registry.SetPullDispatcher(pullDispatcher)
+
 	// nodeUsers maps node_id → user_id so earned credits reach the right account.
 	var nodeUsers sync.Map // string → string
 
@@ -473,6 +483,64 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "refreshed"})
+	})
+
+	// POST /jobs/claim — a pull-mode node's outbound long-poll for work (the
+	// "mining-pool" model). Blocks up to ~25s until a job is queued for this
+	// node, then returns it; 204 on timeout so the node simply re-polls. The
+	// node connecting IS the whole point — the coordinator never dials in, so
+	// NAT/port-forwarding is irrelevant. Node-signed exactly like /refresh.
+	mux.HandleFunc("POST /jobs/claim", func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.ClaimRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse claim request: "+err.Error())
+			return
+		}
+		signingBytes, err := req.SigningBytes()
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "build signing bytes: "+err.Error())
+			return
+		}
+		if err := coordinator.VerifyNodeSignature(registry, req.NodeID, req.Timestamp, signingBytes, req.Signature); err != nil {
+			writeErr(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		registry.MarkSeen(req.NodeID) // an active claim is a heartbeat
+		claimCtx, cancel := context.WithTimeout(r.Context(), pullClaimTimeout)
+		defer cancel()
+		job, ok := pullDispatcher.Claim(claimCtx, req.NodeID)
+		if !ok {
+			w.WriteHeader(http.StatusNoContent) // long-poll timeout — node re-polls
+			return
+		}
+		writeJSON(w, http.StatusOK, job)
+	})
+
+	// POST /jobs/result — a pull-mode node returning a completed job's output
+	// over its own outbound connection. Matched to the blocked Dispatch waiter
+	// by job_id. Node-signed (this is the earning side — an unsigned result is
+	// a credit-forging oracle, same threat as /job-outcome).
+	mux.HandleFunc("POST /jobs/result", func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.JobResultRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse result request: "+err.Error())
+			return
+		}
+		signingBytes, err := req.SigningBytes()
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "build signing bytes: "+err.Error())
+			return
+		}
+		if err := coordinator.VerifyNodeSignature(registry, req.NodeID, req.Timestamp, signingBytes, req.Signature); err != nil {
+			writeErr(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		var execErr error
+		if req.Error != "" {
+			execErr = fmt.Errorf("node execution error: %s", req.Error)
+		}
+		delivered := pullDispatcher.SubmitResult(req.JobID, req.Result, execErr)
+		writeJSON(w, http.StatusOK, map[string]any{"delivered": delivered})
 	})
 
 	// POST /nodes/{id}/attest-enclave — proves possession of a Secure Enclave-backed
@@ -715,7 +783,8 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 			// applies identically either way).
 			if servedBy != "" && tokens > 0 {
 				if _, dup := creditedJobs.LoadOrStore(jobID, struct{}{}); !dup {
-					creditNodeEarning(ledger, &nodeUsers, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, tokens)
+					creditNodeEarning(ledger, walletMgr, &nodeUsers, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, tokens)
+					registry.MarkJobServed(servedBy)
 					mx.Counter("oim_credits_total").Inc()
 					mx.AddCounter("oim_tokens_served_total", int64(tokens))
 				}
@@ -777,7 +846,8 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		observedTok := extractCompletionTokens(result, maxTok)
 		if servedBy, _ := result["oim_served_by_node_id"].(string); servedBy != "" && observedTok > 0 {
 			if _, dup := creditedJobs.LoadOrStore(jobID, struct{}{}); !dup {
-				creditNodeEarning(ledger, &nodeUsers, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, observedTok)
+				creditNodeEarning(ledger, walletMgr, &nodeUsers, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, observedTok)
+				registry.MarkJobServed(servedBy)
 				mx.Counter("oim_credits_total").Inc()
 				mx.AddCounter("oim_tokens_served_total", int64(observedTok))
 			}
@@ -908,7 +978,8 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		// cycles, and each executed cycle is a distinct earning, so this is NOT
 		// deduped by job_id (job-outcome no longer credits, so there's no double).
 		if observedTok := extractCompletionTokens(result, 2048); observedTok > 0 {
-			creditNodeEarning(ledger, &nodeUsers, nodeID, req.JobID, economics.LaneBackground, string(a.JobSpec.Sensitivity), observedTok)
+			creditNodeEarning(ledger, walletMgr, &nodeUsers, nodeID, req.JobID, economics.LaneBackground, string(a.JobSpec.Sensitivity), observedTok)
+			registry.MarkJobServed(nodeID)
 		}
 		log.Printf("[coordinator] background/execute job=%s node=%s continuation=%v", req.JobID, nodeID, isCont)
 		writeJSON(w, http.StatusOK, result)
@@ -1316,6 +1387,35 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		writeJSON(w, http.StatusOK, map[string]any{"status": "linked", "device_node_id": body.DeviceNodeID, "account": address})
 	})
 
+	// POST /account/{address}/unlink-device {device_node_id, account_public_key,
+	// signature} — revokes a device's earnings binding (account-signed, same
+	// message/signature scheme as link-device — see wallet.Manager.UnlinkDevice).
+	// Lets an operator remove a stale/lost device without any server-side
+	// notion of "who's allowed to edit this list" beyond the account key itself.
+	mux.HandleFunc("POST /account/{address}/unlink-device", func(w http.ResponseWriter, r *http.Request) {
+		address := r.PathValue("address")
+		var body struct {
+			DeviceNodeID     string `json:"device_node_id"`
+			AccountPublicKey string `json:"account_public_key"`
+			Signature        string `json:"signature"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse unlink: "+err.Error())
+			return
+		}
+		pub, err1 := base64.StdEncoding.DecodeString(body.AccountPublicKey)
+		sig, err2 := base64.StdEncoding.DecodeString(body.Signature)
+		if err1 != nil || err2 != nil {
+			writeErr(w, http.StatusBadRequest, "account_public_key and signature must be base64")
+			return
+		}
+		if err := walletMgr.UnlinkDevice(address, body.DeviceNodeID, pub, sig); err != nil {
+			writeErr(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "unlinked", "device_node_id": body.DeviceNodeID, "account": address})
+	})
+
 	// GET /nodes/stream — SSE push of node snapshots every 2 s.
 	// Clients connect once; the server pushes updates without polling overhead.
 	// EventSource cannot send custom headers, so this endpoint is always unauthenticated.
@@ -1635,6 +1735,24 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 	// on; cheap and unconditional so the books are provably consistent at all times.
 	go runLedgerReconciliation(done, ledger, mx, reconcileInterval)
 
+	// Verified-availability reward (opt-in, --availability-reward): a periodic,
+	// randomly-timed synthetic probe that pays idle real nodes a tiny bootstrap
+	// reward through the exact same measured-throughput pricing path as real
+	// traffic. Off by default — see the flag's help text for the full rationale.
+	if availabilityRewardEnabled {
+		// Interval/idle-threshold are internal constants by design (see their
+		// doc comments) — NOT a public CLI flag surface. The env-var overrides
+		// exist solely so integration tests can exercise this on a real clock
+		// without waiting 10+ minutes; same pattern as OIM_SIMULATED_NODE
+		// (internal/capability/manifest.go) — an internal signal, not a
+		// documented user-facing knob.
+		interval := durationFromEnv("OIM_AVAILABILITY_PROBE_INTERVAL", availabilityProbeInterval)
+		idleThreshold := durationFromEnv("OIM_AVAILABILITY_IDLE_THRESHOLD", availabilityIdleThreshold)
+		go runAvailabilityProbe(done, registry, jobQueue, walletMgr, &nodeUsers, ledger, mx, interval, idleThreshold)
+		log.Printf("[coordinator] availability-reward probing enabled: every ~%s (jittered), idle threshold %s, skipped above %.0f%% backpressure",
+			interval, idleThreshold, availabilityProbeBackpressureCeiling)
+	}
+
 	go func() {
 		<-quit
 		cancelCtx() // stop job queue workers
@@ -1744,6 +1862,122 @@ func runLedgerReconciliation(done <-chan struct{}, ledger *settlement.Ledger, mx
 			check()
 		}
 	}
+}
+
+// runAvailabilityProbe is the top-level ticker for the opt-in
+// --availability-reward feature. Each wait is interval + up to half of
+// interval again in jitter, so an operator can't predict exactly when a
+// probe will land and pre-stage a response — the whole point is verifying
+// REAL, spontaneous availability, not a scheduled heartbeat. Jitter scales
+// with interval (rather than a separate fixed constant) so the two internal
+// test-only env-var overrides (see durationFromEnv) stay proportional
+// automatically instead of needing a matching second override.
+func runAvailabilityProbe(done <-chan struct{}, registry *coordinator.NodeRegistry, jobQueue *coordinator.JobQueue, walletMgr *wallet.Manager, nodeUsers *sync.Map, ledger *settlement.Ledger, mx *metrics.Registry, interval, idleThreshold time.Duration) {
+	for {
+		wait := interval + mathrand.N(interval/2+1)
+		select {
+		case <-done:
+			return
+		case <-time.After(wait):
+		}
+		probeIdleNodes(registry, jobQueue, walletMgr, nodeUsers, ledger, mx, idleThreshold)
+	}
+}
+
+// probeIdleNodes runs one round: skip entirely if the network is already
+// under real load (backpressure means real traffic is the priority, not
+// subsidizing standby capacity), otherwise probe up to
+// availabilityProbeMaxPerRound of the longest-idle real nodes.
+func probeIdleNodes(registry *coordinator.NodeRegistry, jobQueue *coordinator.JobQueue, walletMgr *wallet.Manager, nodeUsers *sync.Map, ledger *settlement.Ledger, mx *metrics.Registry, idleThreshold time.Duration) {
+	if bp := jobQueue.BackpressurePct(); bp > availabilityProbeBackpressureCeiling {
+		log.Printf("[coordinator] availability-reward: skipping round — backpressure %.1f%% > %.0f%% ceiling", bp, availabilityProbeBackpressureCeiling)
+		return
+	}
+	candidates := registry.IdleCandidates(idleThreshold)
+	if len(candidates) > availabilityProbeMaxPerRound {
+		candidates = candidates[:availabilityProbeMaxPerRound]
+	}
+	for len(candidates) > 0 {
+		manifest, model, ok := coordinator.SelectProbeTarget(candidates)
+		candidates = candidates[1:]
+		if !ok {
+			continue
+		}
+		probeOneNode(registry, walletMgr, nodeUsers, ledger, mx, manifest, model)
+	}
+}
+
+// probeOneNode dispatches one real, tiny inference request to manifest (the
+// exact same dispatch path real consumer traffic uses — DispatchToResolvedNode),
+// and, only on a genuine successful completion with observed output tokens,
+// mints a small reward via the same pricing function real earnings use
+// (economics.ProviderReward). No debit and no treasury margin: nobody is
+// being charged for this — it's a self-funded subsidy exactly like the
+// startup grant, minted from nothing. Safe by construction: a node can't
+// fake this by merely being registered, since it has to actually return a
+// real completion for a model it genuinely advertised.
+func probeOneNode(registry *coordinator.NodeRegistry, walletMgr *wallet.Manager, nodeUsers *sync.Map, ledger *settlement.Ledger, mx *metrics.Registry, manifest protocol.CapabilityManifest, model protocol.ModelCapability) {
+	jobID := fmt.Sprintf("availability-probe-%s-%d", manifest.NodeID, time.Now().UnixNano())
+	job, messages := coordinator.BuildProbeJob(jobID, model.ModelID, model.Quantization)
+	mx.Counter("oim_availability_probes_total").Inc()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := coordinator.DispatchToResolvedNode(ctx, job, messages, registry, coordinator.TargetFromManifest(manifest))
+	if err != nil {
+		log.Printf("[coordinator] availability-reward: probe to node=%s failed: %v", manifest.NodeID, err)
+		return
+	}
+	tokens := extractCompletionTokens(result, availabilityProbeFallbackTokens)
+	if tokens <= 0 {
+		return
+	}
+	if !creditAvailabilityReward(ledger, walletMgr, nodeUsers, manifest.NodeID, jobID, tokens) {
+		return
+	}
+	registry.MarkJobServed(manifest.NodeID)
+	mx.Counter("oim_availability_rewards_total").Inc()
+	log.Printf("[coordinator] availability-reward: credited node=%s tokens=%d job=%s", manifest.NodeID, tokens, jobID)
+}
+
+// creditAvailabilityReward mints a background-lane-priced reward for tokenCount
+// observed output tokens directly into the node's linked account (or the raw
+// node_id if unlinked, same fallback creditNodeEarning uses) — reusing the
+// EXISTING CreditOriginEarnedContrib origin rather than a new ledger category,
+// since this is qualitatively real earned income: a real job was dispatched
+// and a real completion was measured, just subsidized by the network instead
+// of a paying consumer. Returns false if the computed reward is zero/negative
+// (nothing to credit).
+func creditAvailabilityReward(ledger *settlement.Ledger, walletMgr *wallet.Manager, nodeUsers *sync.Map, nodeID, jobID string, tokenCount int) bool {
+	accountKey := resolveEarningsAccount(walletMgr, nodeUsers, nodeID)
+	reward := economics.ProviderReward(economics.LaneBackground, string(protocol.SensitivityLow), tokenCount)
+	if reward <= 0 {
+		return false
+	}
+	_ = ledger.CreditAccount(settlement.CreditEntry{
+		UserID:            accountKey,
+		Origin:            settlement.CreditOriginEarnedContrib,
+		Amount:            reward,
+		GrantedOrEarnedAt: time.Now(),
+		SourceReference:   jobID,
+	})
+	return true
+}
+
+// durationFromEnv reads an internal (non-flag, non-help-text) override for a
+// normally-constant duration — used only so integration tests can exercise
+// the availability-reward feature on a real clock without waiting the full
+// production interval/idle-threshold. Same "internal signal, not a
+// documented user-facing knob" pattern as OIM_SIMULATED_NODE
+// (internal/capability/manifest.go). Falls back to def on anything not a
+// valid positive duration.
+func durationFromEnv(name string, def time.Duration) time.Duration {
+	if raw := os.Getenv(name); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			return d
+		}
+	}
+	return def
 }
 
 func federationAuthorized(r *http.Request, federationKey string) bool {
@@ -1869,7 +2103,12 @@ func isSelfAuthenticatingWrite(method, path string) bool {
 		path == "/account/challenge",
 		path == "/account/auth",
 		path == "/coordination/announce",
-		path == "/coordination/withdraw":
+		path == "/coordination/withdraw",
+		// Pull-mode work delivery — both node-signed (ClaimRequest/
+		// JobResultRequest verified against the registered key inside the
+		// handler), same self-authenticating pattern as /nodes/{id}/refresh.
+		path == "/jobs/claim",
+		path == "/jobs/result":
 		return true
 	case strings.HasPrefix(path, "/nodes/") &&
 		(strings.HasSuffix(path, "/refresh") ||
@@ -1880,7 +2119,8 @@ func isSelfAuthenticatingWrite(method, path string) bool {
 	case strings.HasPrefix(path, "/users/") &&
 		(strings.HasSuffix(path, "/startup-grant") || strings.HasSuffix(path, "/api-key")):
 		return true
-	case strings.HasPrefix(path, "/account/") && strings.HasSuffix(path, "/link-device"):
+	case strings.HasPrefix(path, "/account/") &&
+		(strings.HasSuffix(path, "/link-device") || strings.HasSuffix(path, "/unlink-device")):
 		return true
 	}
 	return false
@@ -2037,6 +2277,46 @@ func originAllowed(origin string, allowlist []string) bool {
 // via logs + the oim_ledger_consistent gauge rather than discover it later.
 const reconcileInterval = 5 * time.Minute
 
+// pullClaimTimeout bounds one long-poll on POST /jobs/claim. Long enough to
+// amortize reconnect overhead, short enough to stay well under typical
+// proxy/load-balancer idle timeouts (60s) so the connection isn't cut
+// mid-wait — the node just re-polls on a 204.
+const pullClaimTimeout = 25 * time.Second
+
+// Verified-availability reward tuning (--availability-reward, opt-in). Kept as
+// constants, not flags — this is deliberately a small, non-configurable
+// bootstrap incentive, not a policy surface for operators to tune per-deployment.
+const (
+	// availabilityProbeInterval is the base cadence between probe rounds.
+	// runAvailabilityProbe adds up to half of it again as jitter on EVERY
+	// round (never subtracted) so the actual gap is always >= this and
+	// unpredictable — no fixed period an operator could pre-stage a response
+	// for. Overridable via OIM_AVAILABILITY_PROBE_INTERVAL for integration
+	// tests — see durationFromEnv.
+	availabilityProbeInterval = 10 * time.Minute
+
+	// availabilityProbeBackpressureCeiling: skip the whole round above this
+	// queue saturation percent — real consumer demand is already using the
+	// network, so there's no bootstrap gap left to subsidize right now.
+	availabilityProbeBackpressureCeiling = 40.0
+
+	// availabilityIdleThreshold: a node must have gone at least this long
+	// without completing ANY real, credited job (probe or consumer) to be
+	// probe-eligible — this is what "idle" means for this feature.
+	// Overridable via OIM_AVAILABILITY_IDLE_THRESHOLD — see durationFromEnv.
+	availabilityIdleThreshold = 30 * time.Minute
+
+	// availabilityProbeMaxPerRound bounds how many nodes get probed per tick —
+	// this is a small bootstrap nudge, not a bulk job-generation mechanism.
+	availabilityProbeMaxPerRound = 3
+
+	// availabilityProbeFallbackTokens is the token count assumed when a
+	// probe's response omits usage entirely (mirrors extractCompletionTokens'
+	// existing fallback pattern for real traffic) — kept small and fixed so a
+	// non-compliant node can't inflate its own reward by omitting usage.
+	availabilityProbeFallbackTokens = 32
+)
+
 // maxConcurrentRequests bounds total in-flight requests across the whole server
 // (task #53). A distributed flood defeats per-IP limiting, so this caps aggregate
 // resource use; excess requests get 503 + Retry-After. Sized for a single
@@ -2079,20 +2359,46 @@ func creditPointerHost(ledger *settlement.Ledger, coordReg *coordinator.Coordina
 	log.Printf("[coordinator] coordination reward acct=%s host=%s credits=%.4f", acct, host, reward)
 }
 
+// resolveEarningsAccount decides which ledger account a node's earnings
+// should credit, checked in order of authority:
+//  1. wallet.Manager.AccountForDevice — a REAL, account-key-signed link (via
+//     POST /account/{address}/link-device, what "Link this Mac"/"Link this
+//     iPad" actually calls). This is the only source a device owner
+//     cryptographically controls, so it must win whenever present.
+//  2. nodeUsers (populated from --user-id at /nodes/register) — a
+//     self-declared, unsigned convenience default, historically the ONLY
+//     thing creditNodeEarning consulted. Kept as a fallback for nodes that
+//     set --user-id but have never linked a wallet.
+//  3. the raw node ID — the ultimate fallback, unchanged from before.
+//
+// Bug this fixes: creditNodeEarning and the availability-reward probe used
+// to check ONLY nodeUsers, so a successful wallet link never actually
+// redirected a compute node's real earnings — they kept landing on the raw
+// node ID (or whatever --user-id it registered with) regardless of what the
+// app showed as "Linked ✓". creditPointerHost (iOS coordination-device
+// rewards) already checked walletMgr.AccountForDevice correctly; this
+// brings compute-node earnings in line with that existing, correct pattern.
+func resolveEarningsAccount(walletMgr *wallet.Manager, nodeUsers *sync.Map, nodeID string) string {
+	if acct, ok := walletMgr.AccountForDevice(nodeID); ok {
+		return acct
+	}
+	if acct, ok := nodeUsers.Load(nodeID); ok {
+		return acct.(string)
+	}
+	return nodeID
+}
+
 // creditNodeEarning pays the account behind servedByNodeID for tokenCount output
 // tokens at the given lane/sensitivity, and credits the network treasury the
 // house-edge margin (economics.NetworkMargin). Provider reward is ALWAYS less
 // than what the consumer was charged — the treasury keeps the spread. Callers
 // must dedup by jobID (via creditedJobs) before calling.
-func creditNodeEarning(ledger *settlement.Ledger, nodeUsers *sync.Map, servedByNodeID, jobID string, lane economics.Lane, sensitivity string, tokenCount int) {
-	accountKey, _ := nodeUsers.Load(servedByNodeID)
-	if accountKey == nil {
-		accountKey = servedByNodeID // fallback: credit node_id directly
-	}
+func creditNodeEarning(ledger *settlement.Ledger, walletMgr *wallet.Manager, nodeUsers *sync.Map, servedByNodeID, jobID string, lane economics.Lane, sensitivity string, tokenCount int) {
+	accountKey := resolveEarningsAccount(walletMgr, nodeUsers, servedByNodeID)
 	reward := economics.ProviderReward(lane, sensitivity, tokenCount)
 	margin := economics.NetworkMargin(lane, sensitivity, tokenCount)
 	_ = ledger.CreditAccount(settlement.CreditEntry{
-		UserID:            accountKey.(string),
+		UserID:            accountKey,
 		Origin:            settlement.CreditOriginEarnedContrib,
 		Amount:            reward,
 		GrantedOrEarnedAt: time.Now(),

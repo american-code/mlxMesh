@@ -34,6 +34,9 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -98,6 +101,18 @@ type Config struct {
 	// unchanged.
 	TLSCert string
 	TLSKey  string
+
+	// DisableAutoPortMap opts OUT of the default automatic UPnP/NAT-PMP port
+	// mapping attempt (see internal/natmap) that runs whenever
+	// ReachabilityEndpoint is empty. Default false — the attempt is ON by
+	// default because most real contributors are behind a home router's
+	// NAT, and manually port-forwarding + finding your own public IP is not
+	// something an average user should have to do. Has no effect at all
+	// when ReachabilityEndpoint is explicitly set (an explicit override
+	// always wins and skips the attempt entirely) — this is what already
+	// happens for every simulated Docker node and every integration test
+	// today, unchanged.
+	DisableAutoPortMap bool
 }
 
 func DefaultConfig() Config {
@@ -128,16 +143,39 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	// coordinator pins the fingerprint below rather than chain-verifying.
 	nodeTLSEnabled := httptls.Enabled(cfg.TLSCert, cfg.TLSKey)
 
-	// Derive the reachability endpoint from the listen address so the coordinator
-	// knows how to reach back to this node. An explicit override takes precedence
-	// (needed behind NAT and in Docker containers).
+	// Delivery mode — the fix for nodes behind NAT/home routers. With NO
+	// explicit reachability endpoint the node runs in PULL mode: it long-polls
+	// the coordinator for work (outbound-only, the "mining-pool" model), so
+	// port-forwarding / UPnP / NAT traversal are all irrelevant — the node
+	// opens the connection, the coordinator never dials in. This is the default
+	// for real contributors. An explicit --reachability-endpoint switches to
+	// PUSH mode (coordinator dials into that address) — exactly what the
+	// simulated Docker fleet, LAN nodes, and every integration test already
+	// set, so their behavior is unchanged.
+	//
+	// portMappingStatus is mirrored to GET /detect so OIMMenuBar can show the
+	// node's real connectivity: "pull" (outbound, always reachable) vs "manual"
+	// (explicit push endpoint).
+	// A reachability endpoint that resolves to loopback/an unspecified address
+	// is never a valid PUSH target: the coordinator is remote, so
+	// "http://localhost:8765" points at the COORDINATOR's own loopback, not this
+	// node — every dispatch and availability probe to it fails silently, so the
+	// node registers but never gets work and never earns. This was observed live:
+	// a real contributor node carried a stale http://localhost:8765 (left in
+	// ~/.config/oim/config.json by an older, pre-pull build and prefilled back
+	// into the app's Settings field), which silently forced push mode and killed
+	// all of its earnings. Treat such an endpoint as unset so the node correctly
+	// falls back to PULL mode and earns regardless of that stale value.
 	reachabilityEndpoint := cfg.ReachabilityEndpoint
-	if reachabilityEndpoint == "" {
-		var epErr error
-		reachabilityEndpoint, epErr = resolveReachabilityEndpoint(listenAddr, nodeTLSEnabled)
-		if epErr != nil {
-			return fmt.Errorf("resolve reachability endpoint: %w", epErr)
-		}
+	if reachabilityEndpoint != "" && isLoopbackReachability(reachabilityEndpoint) {
+		log.Printf("[agent] ignoring reachability endpoint %q (loopback is unreachable by a remote coordinator) — using pull mode instead", reachabilityEndpoint)
+		reachabilityEndpoint = ""
+	}
+	pullMode := reachabilityEndpoint == ""
+	portMappingStatus := "manual"
+	if pullMode {
+		portMappingStatus = "pull"
+		log.Printf("[agent] pull mode: receiving work over an outbound connection to %s (no inbound reachability needed)", cfg.CoordinatorURL)
 	}
 
 	opts := capability.DefaultOptions()
@@ -150,6 +188,7 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	}
 	opts.GeoLat = cfg.GeoLat
 	opts.GeoLng = cfg.GeoLng
+	opts.PullDelivery = pullMode
 
 	// Node-side pointer consumption (M8): load/generate this node's P-256
 	// key-agreement keypair so it can decrypt payloads a client encrypted to
@@ -214,23 +253,42 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	var scheduleActive atomic.Bool
 	scheduleActive.Store(true)
 
-	// Start HTTP server for job reception (non-blocking).
+	// Job server: serves /health + /detect always (OIMMenuBar polls /detect on
+	// loopback), and inbound /v1/chat/completions ONLY in push mode. In pull
+	// mode the coordinator never dials in, so bind loopback-only — the inbound
+	// job handler stays present but unreachable from the LAN, and work arrives
+	// exclusively over the outbound claim loop below.
 	nodeID := manifest.NodeID
-	srv := buildJobServer(runner, exo, cfg.CapacityPct, nodeID, cfg.CoordinatorURL, cfg.ExoURL, priv, ecdhPriv, &chaosActive, &scheduleActive)
-	ln, err := net.Listen("tcp", listenAddr)
+	srv := buildJobServer(runner, exo, cfg.CapacityPct, nodeID, cfg.CoordinatorURL, cfg.ExoURL, priv, ecdhPriv, &chaosActive, &scheduleActive, reachabilityEndpoint, portMappingStatus)
+	serverAddr := listenAddr
+	if pullMode {
+		if _, port, splitErr := net.SplitHostPort(listenAddr); splitErr == nil {
+			serverAddr = "127.0.0.1:" + port
+		}
+	}
+	ln, err := net.Listen("tcp", serverAddr)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", listenAddr, err)
+		return fmt.Errorf("listen on %s: %w", serverAddr, err)
 	}
 	go func() {
 		scheme := "http"
 		if nodeTLSEnabled {
 			scheme = "https"
 		}
-		log.Printf("[agent] serving jobs at %s://%s", scheme, listenAddr)
+		log.Printf("[agent] serving jobs at %s://%s", scheme, serverAddr)
 		if err := httptls.Serve(srv, ln, cfg.TLSCert, cfg.TLSKey); err != nil && err != http.ErrServerClosed {
 			log.Printf("[agent] job server error: %v", err)
 		}
 	}()
+
+	// Pull loop: in pull mode, the node claims work over its own outbound
+	// connection to the coordinator and posts results back — the whole reason
+	// no inbound reachability is needed. Runs until ctx is canceled. Respects
+	// the same chaos/schedule gating as the inbound handler (won't claim while
+	// paused). Push nodes skip this entirely.
+	if pullMode {
+		go runPullLoop(ctx, cfg, priv, nodeID, runner, ecdhPriv, &chaosActive, &scheduleActive)
+	}
 
 	// Heartbeat loop: refresh manifest at RefreshInterval; re-bench at BenchInterval if set.
 	ticker := time.NewTicker(cfg.RefreshInterval)
@@ -333,7 +391,7 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 // scheduleActive is the operator-controlled counterpart: false outside the
 // contributor's configured sharing window (nodeconfig.Schedule) — same
 // refuse-jobs effect as chaos, but deliberate rather than simulated.
-func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct float64, nodeID, coordinatorURL, exoURL string, priv []byte, ecdhPriv *ecdh.PrivateKey, chaosActive, scheduleActive *atomic.Bool) *http.Server {
+func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct float64, nodeID, coordinatorURL, exoURL string, priv []byte, ecdhPriv *ecdh.PrivateKey, chaosActive, scheduleActive *atomic.Bool, reachabilityEndpoint, portMappingStatus string) *http.Server {
 	mux := http.NewServeMux()
 
 	// Health endpoint for coordinator liveness checks.
@@ -397,6 +455,18 @@ func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct flo
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"node_id":               nodeID,
+			// reachability_endpoint/port_mapping: what the dashboard/OIMMenuBar
+			// need to tell a user WHETHER their node is actually reachable by
+			// the coordinator, not just registered — a node can register and
+			// look "Running" while every real job dispatch to it silently
+			// fails, which is exactly the bug this pair of fields exists to
+			// make visible instead of silent. port_mapping is one of
+			// "auto" (UPnP/NAT-PMP succeeded), "manual" (an explicit
+			// --reachability-endpoint was configured), or "unavailable"
+			// (neither worked — this node likely isn't reachable from outside
+			// its own network).
+			"reachability_endpoint": reachabilityEndpoint,
+			"port_mapping":          portMappingStatus,
 			"platform":              sysInfo["platform"],
 			"is_apple_silicon":      sysInfo["is_apple_silicon"],
 			"total_ram_gb":          totalRAMGB,
@@ -757,6 +827,41 @@ func extractTokenCount(result map[string]any) int {
 		return int(n)
 	}
 	return 0
+}
+
+// reachabilityPort extracts the numeric port from a listen address like
+// ":8765" — natmap.TryMap needs the internal port as an int, not a string.
+func reachabilityPort(listenAddr string) (int, error) {
+	_, port, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return 0, fmt.Errorf("parse listen address %q: %w", listenAddr, err)
+	}
+	return strconv.Atoi(port)
+}
+
+// isLoopbackReachability reports whether endpoint (a --reachability-endpoint
+// value such as "http://localhost:8765" or "127.0.0.1:8765") points at a
+// loopback or unspecified address — which a remote coordinator can never reach,
+// so the node should fall back to pull mode rather than advertise a dead push
+// target. A value we can't parse is treated as NOT loopback: we leave an
+// operator's explicit, understood choice intact rather than silently overriding
+// something we don't recognize.
+func isLoopbackReachability(endpoint string) bool {
+	host := endpoint
+	if u, err := url.Parse(endpoint); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback() || ip.IsUnspecified()
+	}
+	return false
 }
 
 // resolveReachabilityEndpoint converts a listen address like ":8765" to a full URL

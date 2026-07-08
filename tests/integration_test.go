@@ -34,6 +34,8 @@ import (
 	"time"
 
 	"github.com/open-inference-mesh/oim/internal/payloadcrypto"
+	"github.com/open-inference-mesh/oim/internal/protocol"
+	"github.com/open-inference-mesh/oim/internal/wallet"
 )
 
 var bin struct{ coordinator, node, stubExo string }
@@ -607,4 +609,302 @@ func TestIntegrationNodeTLSPinning(t *testing.T) {
 	if servedBy, _ := resp["oim_served_by_node_id"].(string); servedBy == "" {
 		t.Error("expected oim_served_by_node_id on a successful TLS dispatch")
 	}
+}
+
+// TestIntegrationAvailabilityReward is the real end-to-end proof for the
+// opt-in --availability-reward feature: a real coordinator + real oim node +
+// stub-exo, with the node registered and idle, and NO consumer traffic EVER
+// submitted by this test. If earned_balance increases anyway, it can only be
+// the coordinator's own periodic probe crediting it — exactly the guarantee
+// this feature exists to provide (a node earns something for genuinely being
+// available, without anyone gaming it via a fake heartbeat, since the probe
+// dispatches a real job through the same path real consumer traffic uses).
+//
+// OIM_AVAILABILITY_PROBE_INTERVAL / OIM_AVAILABILITY_IDLE_THRESHOLD are
+// internal test-only env-var overrides (see durationFromEnv in
+// cmd/coordinator/main.go) — production defaults are 10 minutes / 30 minutes,
+// far too slow for a test to wait on.
+func TestIntegrationAvailabilityReward(t *testing.T) {
+	exoPort, coordPort, nodePort := freePort(t), freePort(t), freePort(t)
+	exoURL := fmt.Sprintf("http://127.0.0.1:%d", exoPort)
+	coordURL := fmt.Sprintf("http://127.0.0.1:%d", coordPort)
+
+	startProc(t, []string{fmt.Sprintf("STUB_LISTEN=:%d", exoPort)}, bin.stubExo)
+	waitHealthy(t, exoURL+"/state")
+
+	startProc(t, []string{
+		"OIM_AVAILABILITY_PROBE_INTERVAL=500ms",
+		"OIM_AVAILABILITY_IDLE_THRESHOLD=1ms",
+	}, bin.coordinator,
+		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0",
+		"--availability-reward")
+	waitHealthy(t, coordURL+"/health")
+
+	startProc(t, nil, bin.node, "node", "start",
+		fmt.Sprintf("--coordinator=%s", coordURL),
+		fmt.Sprintf("--listen=:%d", nodePort),
+		fmt.Sprintf("--exo-url=%s", exoURL),
+		fmt.Sprintf("--reachability-endpoint=http://127.0.0.1:%d", nodePort),
+		"--region=us", "--user-id=idle-miner")
+
+	deadline := time.Now().Add(15 * time.Second)
+	registered := false
+	for time.Now().Before(deadline) {
+		nodes := getJSON(t, coordURL+"/nodes")
+		if arr, ok := nodes["nodes"].([]any); ok && len(arr) >= 1 {
+			registered = true
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !registered {
+		t.Fatal("node never registered with coordinator")
+	}
+
+	deadline = time.Now().Add(20 * time.Second)
+	var earned float64
+	for time.Now().Before(deadline) {
+		earned = balance(t, coordURL, "idle-miner")
+		if earned > 0 {
+			break
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	if earned <= 0 {
+		t.Fatal("expected balance > 0 from the availability-reward probe alone — no consumer traffic was ever submitted in this test")
+	}
+	t.Logf("availability-reward credited %.6f with zero consumer traffic", earned)
+}
+
+// TestIntegrationLinkAndUnlinkDevice exercises the real HTTP account-link
+// lifecycle end-to-end (never covered at the HTTP layer before — only
+// wallet.Manager itself had unit tests): link a device, confirm its earnings
+// land on the account, unlink it, confirm a THIRD party (a different account
+// key) cannot unlink someone else's device.
+func TestIntegrationLinkAndUnlinkDevice(t *testing.T) {
+	coord := startMesh(t)
+
+	accPriv, accPub, err := protocol.GenerateNodeIdentity()
+	if err != nil {
+		t.Fatalf("generate account identity: %v", err)
+	}
+	address := wallet.AddressFromPubKey(accPub)
+	deviceNodeID := "test-device-node-id"
+
+	linkMsg := []byte("oim-account-link:" + address + ":" + deviceNodeID)
+	sig, err := protocol.SignPayload(accPriv, linkMsg)
+	if err != nil {
+		t.Fatalf("sign link message: %v", err)
+	}
+
+	linkBody := map[string]any{
+		"device_node_id":     deviceNodeID,
+		"account_public_key": base64.StdEncoding.EncodeToString(accPub),
+		"signature":          base64.StdEncoding.EncodeToString(sig),
+	}
+
+	// A different account's key must NOT be able to link/unlink this device.
+	_, otherPub, err := protocol.GenerateNodeIdentity()
+	if err != nil {
+		t.Fatalf("generate other identity: %v", err)
+	}
+	otherStatus, otherResp := postJSON(t, coord+"/account/"+address+"/link-device", map[string]any{
+		"device_node_id":     deviceNodeID,
+		"account_public_key": base64.StdEncoding.EncodeToString(otherPub), // mismatched key
+		"signature":          base64.StdEncoding.EncodeToString(sig),
+	}, nil)
+	if otherStatus != http.StatusUnauthorized {
+		t.Fatalf("expected 401 linking with a mismatched key, got %d: %v", otherStatus, otherResp)
+	}
+
+	status, resp := postJSON(t, coord+"/account/"+address+"/link-device", linkBody, nil)
+	if status != http.StatusOK {
+		t.Fatalf("link-device status %d: %v", status, resp)
+	}
+	if resp["status"] != "linked" {
+		t.Fatalf("expected status=linked, got %v", resp)
+	}
+
+	// Unlinking with the account key succeeds.
+	status, resp = postJSON(t, coord+"/account/"+address+"/unlink-device", linkBody, nil)
+	if status != http.StatusOK {
+		t.Fatalf("unlink-device status %d: %v", status, resp)
+	}
+	if resp["status"] != "unlinked" {
+		t.Fatalf("expected status=unlinked, got %v", resp)
+	}
+}
+
+// TestIntegrationLinkedNodeEarningsRouteToWallet is the regression test for a
+// real bug found live: a device could show "Linked ✓" in the app yet its
+// compute-node earnings kept landing on its raw node_id (or --user-id)
+// account, because creditNodeEarning only ever consulted the nodeUsers map
+// (populated from --user-id at registration) and never wallet.Manager's
+// actual signed link. This proves the fix: link the real running node's ID
+// to a fresh wallet address, submit a real job, and confirm the WALLET
+// address — not "miner" (this node's --user-id) — receives the earned credit.
+func TestIntegrationLinkedNodeEarningsRouteToWallet(t *testing.T) {
+	coord := startMesh(t)
+
+	nodes := getJSON(t, coord+"/nodes")
+	arr, _ := nodes["nodes"].([]any)
+	if len(arr) == 0 {
+		t.Fatal("no registered nodes to link")
+	}
+	first, _ := arr[0].(map[string]any)
+	nodeID, _ := first["node_id"].(string)
+	if nodeID == "" {
+		t.Fatal("could not read node_id from /nodes")
+	}
+
+	accPriv, accPub, err := protocol.GenerateNodeIdentity()
+	if err != nil {
+		t.Fatalf("generate account identity: %v", err)
+	}
+	address := wallet.AddressFromPubKey(accPub)
+	linkMsg := []byte("oim-account-link:" + address + ":" + nodeID)
+	sig, err := protocol.SignPayload(accPriv, linkMsg)
+	if err != nil {
+		t.Fatalf("sign link message: %v", err)
+	}
+	status, resp := postJSON(t, coord+"/account/"+address+"/link-device", map[string]any{
+		"device_node_id":     nodeID,
+		"account_public_key": base64.StdEncoding.EncodeToString(accPub),
+		"signature":          base64.StdEncoding.EncodeToString(sig),
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("link-device status %d: %v", status, resp)
+	}
+
+	// Consumer needs credits, then a real job dispatches to our one node.
+	postJSON(t, coord+"/users/consumer2/startup-grant", map[string]any{}, nil)
+	status, resp = postJSON(t, coord+"/v1/chat/completions", map[string]any{
+		"model":      "llama-3.2-3b",
+		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
+		"max_tokens": 64,
+	}, map[string]string{"X-OIM-User-ID": "consumer2"})
+	if status != http.StatusOK {
+		t.Fatalf("query status %d: %v", status, resp)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	walletBal := balance(t, coord, address)
+	minerBal := balance(t, coord, "miner")
+	if walletBal <= 0 {
+		t.Fatalf("expected the linked wallet address to earn, got balance=%v", walletBal)
+	}
+	if minerBal > 0 {
+		t.Fatalf("expected 'miner' (--user-id, superseded by the real link) to earn NOTHING once linked, got %v", minerBal)
+	}
+	t.Logf("linked wallet earned %.6f; miner (--user-id) correctly earned 0", walletBal)
+}
+
+// TestIntegrationExplicitReachabilityEndpointSkipsAutoPortMap confirms an
+// explicit --reachability-endpoint always wins over the automatic UPnP/
+// NAT-PMP port-mapping attempt (internal/natmap). This is what every other
+// integration test in this file and the entire simulated Docker fleet
+// already rely on (tools/gen-compose passes an explicit endpoint per
+// simulated node) — a regression here would silently break all of them, not
+// just this one test.
+func TestIntegrationExplicitReachabilityEndpointSkipsAutoPortMap(t *testing.T) {
+	exoPort, coordPort, nodePort := freePort(t), freePort(t), freePort(t)
+	exoURL := fmt.Sprintf("http://127.0.0.1:%d", exoPort)
+	coordURL := fmt.Sprintf("http://127.0.0.1:%d", coordPort)
+	nodeReachURL := fmt.Sprintf("http://127.0.0.1:%d", nodePort)
+
+	startProc(t, []string{fmt.Sprintf("STUB_LISTEN=:%d", exoPort)}, bin.stubExo)
+	waitHealthy(t, exoURL+"/state")
+
+	startProc(t, nil, bin.coordinator,
+		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0")
+	waitHealthy(t, coordURL+"/health")
+
+	startProc(t, nil, bin.node, "node", "start",
+		fmt.Sprintf("--coordinator=%s", coordURL),
+		fmt.Sprintf("--listen=:%d", nodePort),
+		fmt.Sprintf("--exo-url=%s", exoURL),
+		fmt.Sprintf("--reachability-endpoint=%s", nodeReachURL),
+		"--region=us", "--user-id=miner")
+	waitHealthy(t, nodeReachURL+"/health")
+
+	detect := getJSON(t, nodeReachURL+"/detect")
+	if got, _ := detect["reachability_endpoint"].(string); got != nodeReachURL {
+		t.Fatalf("expected reachability_endpoint=%q (the explicit override), got %v", nodeReachURL, got)
+	}
+	if got, _ := detect["port_mapping"].(string); got != "manual" {
+		t.Fatalf(`expected port_mapping="manual" when --reachability-endpoint is set explicitly, got %v`, got)
+	}
+}
+
+// TestIntegrationPullModeNodeEarns is THE proof the NAT problem is gone: a real
+// node started with NO --reachability-endpoint runs in pull mode — it long-
+// polls the coordinator for work over its own outbound connection. The
+// coordinator NEVER dials into the node (its inbound job port is bound to
+// loopback only), yet a real /v1/chat/completions is served by it and credited.
+// This is exactly the "point an ASIC at a pool" model: no port forwarding, no
+// reachability endpoint, no inbound connectivity of any kind.
+func TestIntegrationPullModeNodeEarns(t *testing.T) {
+	exoPort, coordPort := freePort(t), freePort(t)
+	exoURL := fmt.Sprintf("http://127.0.0.1:%d", exoPort)
+	coordURL := fmt.Sprintf("http://127.0.0.1:%d", coordPort)
+
+	startProc(t, []string{fmt.Sprintf("STUB_LISTEN=:%d", exoPort)}, bin.stubExo)
+	waitHealthy(t, exoURL+"/state")
+
+	startProc(t, nil, bin.coordinator,
+		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0")
+	waitHealthy(t, coordURL+"/health")
+
+	// Crucially: NO --reachability-endpoint. The node goes pull mode. --listen
+	// is still given so the node has a loopback /detect for its own reporting,
+	// but the coordinator never connects to it.
+	nodePort := freePort(t)
+	startProc(t, nil, bin.node, "node", "start",
+		fmt.Sprintf("--coordinator=%s", coordURL),
+		fmt.Sprintf("--listen=:%d", nodePort),
+		fmt.Sprintf("--exo-url=%s", exoURL),
+		"--region=us", "--user-id=pullminer")
+
+	// Wait for the pull node to register.
+	deadline := time.Now().Add(15 * time.Second)
+	registered := false
+	for time.Now().Before(deadline) {
+		nodes := getJSON(t, coordURL+"/nodes")
+		if arr, ok := nodes["nodes"].([]any); ok && len(arr) >= 1 {
+			registered = true
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !registered {
+		t.Fatal("pull node never registered")
+	}
+
+	// A real consumer job. The coordinator must deliver it to the pull node via
+	// the claim mailbox (it has no way to dial the node), the node runs it and
+	// posts the result back.
+	postJSON(t, coordURL+"/users/consumer3/startup-grant", map[string]any{}, nil)
+	status, resp := postJSON(t, coordURL+"/v1/chat/completions", map[string]any{
+		"model":      "llama-3.2-3b",
+		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
+		"max_tokens": 64,
+	}, map[string]string{"X-OIM-User-ID": "consumer3"})
+	if status != http.StatusOK {
+		t.Fatalf("pull-mode dispatch status %d: %v", status, resp)
+	}
+	if _, ok := resp["choices"]; !ok {
+		t.Fatalf("no choices — pull node did not serve the job: %v", resp)
+	}
+	if servedBy, _ := resp["oim_served_by_node_id"].(string); servedBy == "" {
+		t.Fatal("expected oim_served_by_node_id — the pull node should be credited as the server")
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	if bal := balance(t, coordURL, "pullminer"); bal <= 0 {
+		t.Fatalf("pull node earned nothing — expected a credit for the served job, got %v", bal)
+	}
+	t.Logf("pull-mode node served a real job and earned with ZERO inbound reachability")
 }
