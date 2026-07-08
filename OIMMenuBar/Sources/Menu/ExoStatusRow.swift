@@ -4,6 +4,7 @@ struct ExoStatusRow: View {
     @Bindable var appState: AppState
     @State private var installOutput: [String] = []
     @State private var isInstalling = false
+    @State private var launchError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -26,6 +27,14 @@ struct ExoStatusRow: View {
                 }
                 .frame(height: 60)
                 .background(.quaternary.opacity(0.3))
+            }
+            // launchApp already self-heals a Gatekeeper "damaged" quarantine
+            // error automatically (strip + retry) — this only ever appears
+            // if that retry itself failed, a genuine second problem.
+            if let launchError {
+                Text(launchError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
         }
     }
@@ -63,26 +72,40 @@ struct ExoStatusRow: View {
             EmptyView()
         case .unreachable:
             if ExoDetector.isInstalled() {
-                Button("Launch Exo") { ExoLauncher.launchApp() }
+                Button("Launch Exo") { startLaunch() }
                     .controlSize(.small)
             } else {
                 HStack {
-                    Button("Download Exo") { ExoLauncher.openDownloadPage() }
-                        .controlSize(.small)
-                    Button("Install via Homebrew") { startHomebrewInstall() }
+                    // Seamless path: installs Homebrew (one admin prompt,
+                    // only if not already present) then Exo via the cask —
+                    // no separate "do you have Homebrew?" step for the user.
+                    Button("Install Exo") { startInstall() }
                         .controlSize(.small)
                         .disabled(isInstalling)
+                    // Manual fallback for anyone who'd rather not grant
+                    // administrator access to this app.
+                    Button("Download Exo") { ExoLauncher.openDownloadPage() }
+                        .controlSize(.small)
                 }
             }
         }
     }
 
-    private func startHomebrewInstall() {
+    private func startInstall() {
         isInstalling = true
         installOutput.removeAll()
-        ExoLauncher.installViaHomebrew(
+        launchError = nil
+        ExoLauncher.installHomebrewThenExo(
             onOutput: { chunk in installOutput.append(chunk) },
             onFinish: { _ in isInstalling = false }
+        )
+    }
+
+    private func startLaunch() {
+        launchError = nil
+        ExoLauncher.launchApp(
+            onOutput: { _ in }, // self-heal retry is transparent; only a final failure needs a UI
+            onFailure: { message in launchError = message }
         )
     }
 }
