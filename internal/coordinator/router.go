@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"sort"
 	"strings"
@@ -93,10 +94,36 @@ func effectiveManifest(node NodeWithLoad) protocol.CapabilityManifest {
 	return m
 }
 
+// powerOfTwoWindow bounds how far into the score-sorted list the primary
+// pick's power-of-two sampling reaches. Node capacity in this network varies
+// by an order of magnitude (a 3B-model laptop next to a multi-GPU Mac
+// Studio) — sampling 2 candidates from the ENTIRE eligible pool would
+// sometimes promote a genuinely poor node just because it beat an even
+// worse one, which isn't what "power of two choices" is for. Restricting the
+// sample to the top few already-good candidates keeps the herding fix
+// (multiple decisions no longer always agree on the exact same node) without
+// risking a real quality regression: the worst case is landing on the
+// window's weakest member instead of the single best.
+const powerOfTwoWindow = 3
+
 // rankCandidates scores candidates for job via ScoreForFastLane and returns
 // them sorted best-first, filtering out ineligible nodes (-Inf score). Shared
 // by DispatchFastLane and PickBestNode so "who is eligible and best" is
 // computed identically whether or not a dispatch immediately follows.
+//
+// The PRIMARY pick is chosen by power-of-two-choices among the top
+// powerOfTwoWindow candidates, not a plain greedy argmax: always routing to
+// the single globally-best-scored node means every concurrent request —
+// evaluated against the same registry snapshot — agrees on the same target
+// and piles onto it, before any of their in-flight counts land to
+// deprioritize it for the next decision (herding). Sampling 2 of the
+// top-ranked candidates and promoting the better-scored of the two to the
+// front spreads primary placement across the fleet's best nodes instead of
+// concentrating it on one. The rest of the list keeps its deterministic
+// best-first order as the retry/fallback sequence: a primary DISPATCH
+// FAILURE (not load) is what fallback recovers from, so trying the
+// objectively next-best remaining node there is still correct. With 0 or 1
+// eligible candidates this is a no-op.
 func rankCandidates(candidates []NodeWithLoad, job protocol.JobSpec) []NodeWithLoad {
 	type scored struct {
 		score float64
@@ -110,11 +137,32 @@ func rankCandidates(candidates []NodeWithLoad, job protocol.JobSpec) []NodeWithL
 		}
 	}
 	sort.Slice(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })
+	if window := min(len(ranked), powerOfTwoWindow); window > 1 {
+		i, j := twoRandomDistinctIndices(window)
+		winner := i
+		if ranked[j].score > ranked[i].score {
+			winner = j
+		}
+		if winner != 0 {
+			ranked[0], ranked[winner] = ranked[winner], ranked[0]
+		}
+	}
 	out := make([]NodeWithLoad, len(ranked))
 	for i, r := range ranked {
 		out[i] = r.node
 	}
 	return out
+}
+
+// twoRandomDistinctIndices returns two distinct indices in [0, n), uniformly
+// sampled. Requires n > 1.
+func twoRandomDistinctIndices(n int) (int, int) {
+	i := rand.IntN(n)
+	j := rand.IntN(n - 1)
+	if j >= i {
+		j++
+	}
+	return i, j
 }
 
 // filterPushOnly drops pull-delivery nodes from a ranked candidate list. Used
