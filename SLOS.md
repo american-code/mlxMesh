@@ -40,6 +40,20 @@ set, in priority order:
    memory-constrained and this precedes the OOM failure mode. Never start a
    build in this state.
 5. **TLS cert within 14 days of expiry** (the server already logs at 30) → warn.
+6. **`oim_treasury_balance_x1000` below ~2 days of average daily coordination
+   spend** → warn; the treasury funds `creditPointerHost`'s coordination
+   reward and the availability-reward probe subsidy, and running dry doesn't
+   fail loudly — it just quietly stops paying (the existing floor check was
+   silent about this before `oim_coordination_reward_skipped_total` existed).
+   Compute the threshold from your own deployment's trailing 7-day average of
+   `oim_coordination_reward_skipped_total{reason="treasury_insufficient"}`'s
+   *complement* (i.e. rate of successful `-coord` debits × reward size) — there
+   is no fixed number here since coordination volume is deployment-specific.
+7. **`oim_coordination_reward_skipped_total{reason="treasury_insufficient"}`
+   increasing at all** → warn immediately; this is direct evidence alert 6's
+   threshold was already crossed, not just a prediction. Response: top up the
+   treasury (there's no automated top-up — see TODO.md's admin-panel item for
+   the planned manual-injection UI) or reduce `CoordinationReward`.
 
 ## What is NOT yet in place (honest gaps)
 

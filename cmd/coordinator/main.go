@@ -764,7 +764,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		// the served pointer to it. A stale/unknown ID is simply ignored (the
 		// registry returns false) — attribution never affects routing or the reply.
 		if payloadRef != "" {
-			creditPointerHost(ledger, coordReg, walletMgr, r.Header.Get("X-OIM-Pointer-Host"), jobID)
+			creditPointerHost(ledger, coordReg, walletMgr, mx, r.Header.Get("X-OIM-Pointer-Host"), jobID)
 		}
 
 		job := protocol.JobSpec{
@@ -1618,6 +1618,13 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		mx.SetGauge("oim_ledger_credits_total_x1000", int64(rec.TotalCredits*1000))
 		mx.SetGauge("oim_ledger_debits_total_x1000", int64(rec.TotalDebits*1000))
 		mx.SetGauge("oim_ledger_outstanding_x1000", int64(rec.TotalOutstanding*1000))
+		// Treasury balance (TODO.md "Treasury balance monitoring"): the house
+		// edge funds coordination rewards (creditPointerHost) and the
+		// availability-reward probe subsidy — this is the one number that
+		// says whether that funding is about to run dry. See SLOS.md for the
+		// alert threshold and oim_coordination_reward_skipped_total for the
+		// "it already did" signal.
+		mx.SetGauge("oim_treasury_balance_x1000", int64(ledger.GetBalance(economics.TreasuryAccount).Total*1000))
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		w.Write([]byte(mx.Expose()))
 	})
@@ -2372,7 +2379,7 @@ const readHeaderTimeout = 10 * time.Second
 // — attribution never affects routing or the reply. Extracted from the fast-lane
 // handler (task #21) so the money path is unit-testable and the handler stays
 // readable.
-func creditPointerHost(ledger *settlement.Ledger, coordReg *coordinator.CoordinationRegistry, walletMgr *wallet.Manager, host, jobID string) {
+func creditPointerHost(ledger *settlement.Ledger, coordReg *coordinator.CoordinationRegistry, walletMgr *wallet.Manager, mx *metrics.Registry, host, jobID string) {
 	if host == "" || !coordReg.RecordPointerServed(host) {
 		return
 	}
@@ -2391,8 +2398,16 @@ func creditPointerHost(ledger *settlement.Ledger, coordReg *coordinator.Coordina
 		GrantedOrEarnedAt: time.Now(),
 		SourceReference:   jobID + "-coord",
 	})
+	// The floor check below silently protected the treasury from overdraft,
+	// but gave no signal when it actually started refusing to pay — a
+	// participant would just quietly stop earning with nothing in the metrics
+	// to explain why. oim_coordination_reward_skipped_total is that signal
+	// (TODO.md "Treasury balance monitoring"); see SLOS.md's alert on it.
 	if ledger.GetBalance(economics.TreasuryAccount).Total >= reward {
 		_ = ledger.DebitAccount(economics.TreasuryAccount, reward, jobID+"-coord")
+	} else {
+		mx.Counter(`oim_coordination_reward_skipped_total{reason="treasury_insufficient"}`).Inc()
+		log.Printf("[coordinator] treasury balance below coordination reward (%.4f) — skipping treasury debit for job=%s, participant still credited", reward, jobID)
 	}
 	log.Printf("[coordinator] coordination reward acct=%s host=%s credits=%.4f", acct, host, reward)
 }
