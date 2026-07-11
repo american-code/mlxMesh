@@ -27,12 +27,14 @@ This document tracks internal work items that are not exposed in the public READ
 ## Website & Marketing
 
 **Critical gaps:**
-- **No visible repo** — "GitHub — coming soon" appears twice on a page whose pitch is built on "open source, AGPL-3.0, verify cryptographically." For engineers doing technical diligence, an open-source claim with no visible source is a credibility gap. Either soft-pedal open-source framing until repo is public, or ship a read-only mirror/tag now.
-- **Live dashboard numbers are blank** — Nodes online, Regions, Committed memory, Aggregate tok/s all render as em-dashes. First-time visitor's impression of "a live compute fabric" is an empty dashboard. Seed with simulated fleet stats so it never looks dead.
+- **No visible repo** — "GitHub — coming soon" appears twice on a page whose pitch is built on "open source, AGPL-3.0, verify cryptographically." For engineers doing technical diligence, an open-source claim with no visible source is a credibility gap. Either soft-pedal open-source framing until repo is public, or ship a read-only mirror/tag now. **Not an engineering task** — publishing the repo is a business/timing decision for the operator, not something to implement.
+- ✅ **"Live dashboard numbers are blank" — stale, not a current bug.** Verified live: `directory.mlxmesh.net/topology` returns real, non-zero pod data (2 pods, 60 nodes, ~2TB memory, ~4000 tok/s), CORS is open, and `landing/index.html`'s existing fetch script renders it correctly (confirmed in-browser). This note predates the seed going live. The script's "leave placeholders rather than invent a number" fallback (its own code comment) is a deliberate, correct design choice consistent with the page's "measured, not declared" pitch — seeding fake numbers on fetch failure, as this item originally suggested, would contradict that.
 
-**Highest-leverage additions (priority order):**
-1. **Code snippet above the fold** — Working `curl .../v1/chat/completions` block converts far better than prose describing dual-lane routing
-2. **Hosted-API benchmark comparison** — "Tokens/sec parity with Claude Sonnet and GPT-4.1, on a consumer Mac Studio, for the cost of electricity" is a compelling, concrete claim
-3. **Topology dashboard screenshot/screen-recording** — Live map is most visually distinctive feature; screenshots convert better than descriptions
-4. **Reconsider primary CTA** — "Launch Dashboard" as only CTA asks cold visitor to jump into live operational tool with zero context. Add secondary, softer CTA ("Read the whitepaper" or 90-second demo video)
-5. **Follow-up capture** — With GitHub "coming soon" and pre-launch audience, no way to capture visitors who come back later. Even a plain email field solves this cheaply
+**Highest-leverage additions (priority order):** — attempted this session, mixed outcome:
+1. ~~Code snippet above the fold~~ — added, then removed per design feedback ("does not need to be there, looks bad").
+2. ~~Hosted-API benchmark comparison~~ — added, then removed per design feedback ("not pretty").
+3. ~~Topology dashboard screenshot~~ — added (dashboard.png + iphone.png), then removed per design feedback ("looks horrible, those need to be meticulously described and designed").
+4. ✅ **Reconsider primary CTA** — added a secondary, softer CTA ("Read why this exists ↓", scrolls to `#why`) next to "Launch Dashboard." This one landed fine.
+5. **Follow-up capture** — not attempted. Needs a decision first (what actually receives the email — no backend/service exists today for this site), and given how #1–3 went, this is exactly the kind of visual/UX addition that needs the same dedicated design pass, not another inline attempt.
+
+**Takeaway:** quick inline edits aren't meeting the bar for this page's visual content (screenshots, code blocks, tables) — three of five items got reverted. Content/data-driven fixes (the stats-strip verification) and simple structural additions (the secondary CTA) went fine. Future visual work here should get a real design pass, not ad hoc styling.
