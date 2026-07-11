@@ -106,52 +106,156 @@ func effectiveManifest(node NodeWithLoad) protocol.CapabilityManifest {
 // window's weakest member instead of the single best.
 const powerOfTwoWindow = 3
 
+// affinityPrefixChars bounds how much of the shared-prefix content
+// contributes to promptAffinityKey — enough to fingerprint a real shared
+// system prompt/instruction block, small enough that hashing it is free.
+const affinityPrefixChars = 200
+
+// affinityMaxInFlight caps how busy a prefix's affinity node may already be
+// before affinity is honored — protects against one popular prefix
+// saturating a single node when the rest of the fleet has spare capacity.
+// Past this, rankCandidates falls back to ordinary power-of-two selection
+// for that request, same as if there were no affinity match at all.
+const affinityMaxInFlight = 4
+
+// promptAffinityKey derives a stable cache-locality key for job, so requests
+// sharing the same model + leading prompt content consistently prefer the
+// same node — preserving Exo's warm KV-cache for that prefix instead of
+// forcing a cold recompute on whichever node the load balancer happens to
+// pick next (TODO.md "Prefix/KV-cache-aware routing": a 5.8x speedup on
+// shared prompt prefixes per real MLX prefix-caching benchmarks). Keys on
+// the concatenation of every system-role message (the common real pattern:
+// a fixed instruction block reused across many distinct user turns, e.g. a
+// batch summarization pass), falling back to the first message's content
+// when there is no system message. Empty when there's nothing to key on —
+// callers treat that as "no affinity, use normal ranking."
+//
+// Known limitation (v1 scope): this only fingerprints a LEADING shared
+// block, not arbitrary shared prefixes appearing later in a long
+// conversation history — good enough for the common "reused system prompt"
+// case, not a general longest-common-prefix matcher.
+func promptAffinityKey(job protocol.JobSpec, messages []map[string]any) string {
+	var prefix string
+	for _, m := range messages {
+		if role, _ := m["role"].(string); role == "system" {
+			if content, _ := m["content"].(string); content != "" {
+				prefix += content
+			}
+		}
+	}
+	if prefix == "" && len(messages) > 0 {
+		if content, _ := messages[0]["content"].(string); content != "" {
+			prefix = content
+		}
+	}
+	if prefix == "" {
+		return ""
+	}
+	if len(prefix) > affinityPrefixChars {
+		prefix = prefix[:affinityPrefixChars]
+	}
+	// job.ModelID is part of the key: a cache-warm hit for one model's KV
+	// state is meaningless for a different model, even given identical text.
+	return job.ModelID + "\x00" + prefix
+}
+
 // rankCandidates scores candidates for job via ScoreForFastLane and returns
 // them sorted best-first, filtering out ineligible nodes (-Inf score). Shared
 // by DispatchFastLane and PickBestNode so "who is eligible and best" is
 // computed identically whether or not a dispatch immediately follows.
 //
-// The PRIMARY pick is chosen by power-of-two-choices among the top
-// powerOfTwoWindow candidates, not a plain greedy argmax: always routing to
-// the single globally-best-scored node means every concurrent request —
-// evaluated against the same registry snapshot — agrees on the same target
-// and piles onto it, before any of their in-flight counts land to
-// deprioritize it for the next decision (herding). Sampling 2 of the
-// top-ranked candidates and promoting the better-scored of the two to the
-// front spreads primary placement across the fleet's best nodes instead of
-// concentrating it on one. The rest of the list keeps its deterministic
-// best-first order as the retry/fallback sequence: a primary DISPATCH
-// FAILURE (not load) is what fallback recovers from, so trying the
-// objectively next-best remaining node there is still correct. With 0 or 1
-// eligible candidates this is a no-op.
-func rankCandidates(candidates []NodeWithLoad, job protocol.JobSpec) []NodeWithLoad {
-	type scored struct {
-		score float64
-		node  NodeWithLoad
-	}
-	var ranked []scored
+// The PRIMARY pick is decided in two stages:
+//  1. Prefix/KV-cache affinity: if messages carries a promptAffinityKey and
+//     its consistent-hash-preferred node is both eligible (already in the
+//     scored list) and not already overloaded (affinityMaxInFlight), that
+//     node is promoted to primary outright — deliberately bypassing
+//     power-of-two-choices for this request, since the whole point is
+//     concentrating repeat/similar prompts onto the same warm node, not
+//     spreading them. messages is nil for callers with no real content yet
+//     (PickBestNode, called before a reservation's payload exists) — nil
+//     mesages means no affinity key, and this stage never engages.
+//  2. Otherwise, power-of-two-choices among the top powerOfTwoWindow
+//     candidates: always routing to the single globally-best-scored node
+//     means every concurrent request — evaluated against the same registry
+//     snapshot — agrees on the same target and piles onto it, before any of
+//     their in-flight counts land to deprioritize it for the next decision
+//     (herding). Sampling 2 of the top-ranked candidates and promoting the
+//     better-scored of the two spreads primary placement across the fleet's
+//     best nodes instead of concentrating it on one.
+//
+// Either way, the rest of the list keeps its deterministic best-first order
+// as the retry/fallback sequence: a primary DISPATCH FAILURE (not load or
+// cache locality) is what fallback recovers from, so trying the objectively
+// next-best remaining node there is still correct. With 0 or 1 eligible
+// candidates both stages are a no-op.
+// scoredCandidate pairs a candidate with its ScoreForFastLane result — named
+// (rather than an inline anonymous struct) so promoteAffinityNode can take
+// the already-scored slice directly without re-scoring or exporting it.
+type scoredCandidate struct {
+	score float64
+	node  NodeWithLoad
+}
+
+func rankCandidates(candidates []NodeWithLoad, job protocol.JobSpec, messages []map[string]any) []NodeWithLoad {
+	var ranked []scoredCandidate
 	for _, n := range candidates {
 		s := ScoreForFastLane(effectiveManifest(n), job, n.InFlight, n.EnclaveAttested)
 		if !math.IsInf(s, -1) {
-			ranked = append(ranked, scored{s, n})
+			ranked = append(ranked, scoredCandidate{s, n})
 		}
 	}
 	sort.Slice(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })
-	if window := min(len(ranked), powerOfTwoWindow); window > 1 {
-		i, j := twoRandomDistinctIndices(window)
-		winner := i
-		if ranked[j].score > ranked[i].score {
-			winner = j
-		}
-		if winner != 0 {
-			ranked[0], ranked[winner] = ranked[winner], ranked[0]
+
+	if !promoteAffinityNode(ranked, job, messages) && len(ranked) > 1 {
+		if window := min(len(ranked), powerOfTwoWindow); window > 1 {
+			i, j := twoRandomDistinctIndices(window)
+			winner := i
+			if ranked[j].score > ranked[i].score {
+				winner = j
+			}
+			if winner != 0 {
+				ranked[0], ranked[winner] = ranked[winner], ranked[0]
+			}
 		}
 	}
+
 	out := make([]NodeWithLoad, len(ranked))
 	for i, r := range ranked {
 		out[i] = r.node
 	}
 	return out
+}
+
+// promoteAffinityNode swaps the eligible node preferred by the current
+// prefix's hash ring to the front of ranked, if one exists and isn't
+// already overloaded. Reports whether it did so, so rankCandidates knows to
+// skip the power-of-two stage for this request.
+func promoteAffinityNode(ranked []scoredCandidate, job protocol.JobSpec, messages []map[string]any) bool {
+	key := promptAffinityKey(job, messages)
+	if key == "" || len(ranked) < 2 {
+		return false
+	}
+	members := make([]string, len(ranked))
+	for i, r := range ranked {
+		members[i] = r.node.Manifest.NodeID
+	}
+	preferred, ok := newHashRing(members).get(key)
+	if !ok {
+		return false
+	}
+	for i, r := range ranked {
+		if r.node.Manifest.NodeID != preferred {
+			continue
+		}
+		if r.node.InFlight > affinityMaxInFlight {
+			return false // preferred node is too busy right now — fall back to power-of-two
+		}
+		if i != 0 {
+			ranked[0], ranked[i] = ranked[i], ranked[0]
+		}
+		return true
+	}
+	return false
 }
 
 // twoRandomDistinctIndices returns two distinct indices in [0, n), uniformly
@@ -189,7 +293,9 @@ func PickBestNode(job protocol.JobSpec, registry *NodeRegistry) (NodeWithLoad, e
 	if err != nil {
 		return NodeWithLoad{}, fmt.Errorf("fetch candidates: %w", err)
 	}
-	ranked := rankCandidates(candidates, job)
+	// No real message content exists yet at reservation time — nil disables
+	// prefix affinity for this call (promptAffinityKey returns "" for it).
+	ranked := rankCandidates(candidates, job, nil)
 	if len(ranked) == 0 {
 		return NodeWithLoad{}, fmt.Errorf("no eligible nodes available")
 	}
@@ -211,7 +317,7 @@ func DispatchFastLane(
 	if err != nil {
 		return nil, fmt.Errorf("fetch candidates: %w", err)
 	}
-	ranked := rankCandidates(candidates, job)
+	ranked := rankCandidates(candidates, job, messages)
 
 	attempted := 0
 	for _, node := range ranked {
@@ -454,7 +560,7 @@ func DispatchFastLaneStreaming(
 	if err != nil {
 		return "", 0, false, fmt.Errorf("fetch candidates: %w", err)
 	}
-	ranked := rankCandidates(candidates, job)
+	ranked := rankCandidates(candidates, job, messages)
 	// SSE passthrough requires the coordinator to hold the node's streaming
 	// HTTP response open — impossible over the pull mailbox, which is
 	// request/response only. Pull nodes are therefore skipped for streaming in

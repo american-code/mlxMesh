@@ -1284,3 +1284,80 @@ func TestIntegrationClusterRingDeduplicated(t *testing.T) {
 		}
 	}
 }
+
+// TestIntegrationPrefixAffinityKeepsRepeatedPromptsOnTheSameNode proves
+// prefix/KV-cache-aware routing (TODO.md) through the real HTTP dispatch
+// path, not just the unit-level rankCandidates function: two genuinely
+// independent, equally-eligible real nodes serve the same model, and
+// repeated dispatches carrying an IDENTICAL system-prompt prefix must all
+// land on the SAME node (preserving its warm KV-cache), while dispatches
+// with many DIFFERENT prefixes should spread across both nodes rather than
+// all piling onto one.
+func TestIntegrationPrefixAffinityKeepsRepeatedPromptsOnTheSameNode(t *testing.T) {
+	coordPort := freePort(t)
+	coordURL := fmt.Sprintf("http://127.0.0.1:%d", coordPort)
+
+	startProc(t, nil, bin.coordinator,
+		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0")
+	waitHealthy(t, coordURL+"/health")
+
+	for i, user := range []string{"affinity-miner-1", "affinity-miner-2"} {
+		exoPort, nodePort := freePort(t), freePort(t)
+		exoURL := fmt.Sprintf("http://127.0.0.1:%d", exoPort)
+		startProc(t, []string{fmt.Sprintf("STUB_LISTEN=:%d", exoPort)}, bin.stubExo)
+		waitHealthy(t, exoURL+"/state")
+
+		startProc(t, []string{"HOME=" + t.TempDir()}, bin.node, "node", "start",
+			fmt.Sprintf("--coordinator=%s", coordURL),
+			fmt.Sprintf("--listen=:%d", nodePort),
+			fmt.Sprintf("--exo-url=%s", exoURL),
+			fmt.Sprintf("--reachability-endpoint=http://127.0.0.1:%d", nodePort),
+			"--region=us", fmt.Sprintf("--user-id=%s-%d", user, i))
+	}
+
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		nodes := getJSON(t, coordURL+"/nodes")
+		if arr, ok := nodes["nodes"].([]any); ok && len(arr) == 2 {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	postJSON(t, coordURL+"/users/affinityconsumer/startup-grant", map[string]any{}, nil)
+	dispatch := func(systemPrompt string) string {
+		status, resp := postJSON(t, coordURL+"/v1/chat/completions", map[string]any{
+			"model": "llama-3.2-3b",
+			"messages": []map[string]any{
+				{"role": "system", "content": systemPrompt},
+				{"role": "user", "content": "hi"},
+			},
+			"max_tokens": 64,
+		}, map[string]string{"X-OIM-User-ID": "affinityconsumer"})
+		if status != http.StatusOK {
+			t.Fatalf("dispatch failed: %d: %v", status, resp)
+		}
+		servedBy, _ := resp["oim_served_by_node_id"].(string)
+		return servedBy
+	}
+
+	const fixedPrompt = "You are a helpful assistant. Always answer concisely."
+	first := dispatch(fixedPrompt)
+	if first == "" {
+		t.Fatal("expected a non-empty served-by node ID")
+	}
+	for i := 0; i < 8; i++ {
+		if got := dispatch(fixedPrompt); got != first {
+			t.Fatalf("repeated dispatch %d with an identical system prompt landed on a different node (%s) than the first (%s) — prefix affinity should keep it pinned", i, got, first)
+		}
+	}
+
+	seen := map[string]bool{}
+	for i := 0; i < 12; i++ {
+		seen[dispatch(fmt.Sprintf("distinct system prompt #%d", i))] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("expected 12 distinct prefixes to spread across both nodes, all landed on %+v", seen)
+	}
+}
