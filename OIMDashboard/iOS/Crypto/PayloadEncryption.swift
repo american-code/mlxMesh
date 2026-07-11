@@ -41,7 +41,16 @@ enum PayloadEncryption {
         return EncryptedPayloadBundle(
             ciphertext: combined,
             payloadHash: hash,
-            ephemeralPublicKeyData: ephemeral.publicKey.rawRepresentation,
+            // x963Representation (SEC1 uncompressed, 0x04||X||Y, 65 bytes) —
+            // NOT .rawRepresentation (CryptoKit's compact 64-byte X||Y form,
+            // no prefix). The assigned node is always a Go node, and
+            // internal/payloadcrypto.Decrypt parses this via
+            // crypto/ecdh's NewPublicKey, which requires the 65-byte SEC1
+            // form. Every real encrypted-pointer job silently failed
+            // decryption before this fix — caught via the mlxMesh Swift
+            // SDK's cross-language interop test against the real Go
+            // implementation (swift-sdk/Tests/MeshKitTests/PayloadEncryptionTests.swift).
+            ephemeralPublicKeyData: ephemeral.publicKey.x963Representation,
             fetchURL: "" // filled in by storeLocally
         )
     }
@@ -54,7 +63,7 @@ enum PayloadEncryption {
         ephemeralPublicKeyData: Data,
         recipientPrivateKey: P256.KeyAgreement.PrivateKey
     ) throws -> Data {
-        let ephemeralPub = try P256.KeyAgreement.PublicKey(rawRepresentation: ephemeralPublicKeyData)
+        let ephemeralPub = try P256.KeyAgreement.PublicKey(x963Representation: ephemeralPublicKeyData)
         let shared = try recipientPrivateKey.sharedSecretFromKeyAgreement(with: ephemeralPub)
         let key = shared.hkdfDerivedSymmetricKey(
             using: SHA256.self, salt: Data(), sharedInfo: hkdfInfo, outputByteCount: 32)
