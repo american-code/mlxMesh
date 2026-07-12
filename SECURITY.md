@@ -8,7 +8,7 @@ has the narrative; this is the structured scope.
 
 ## Reporting a vulnerability
 
-Email **jacob@paydirt.solutions** with details and a reproduction. Please do
+Email **jmelton@americancode.org** with details and a reproduction. Please do
 **not** open a public issue for a security bug. Expect an acknowledgement within
 a few business days. There is no bug-bounty program yet; credit is given in the
 release notes unless you prefer otherwise.
