@@ -6,7 +6,6 @@ import type { ActiveRoute, UserLocation } from './components/WorldMap'
 import { NetworkGraph } from './components/NetworkGraph'
 import { GeoNetworkGraph } from './components/GeoNetworkGraph'
 import { NodeDetail } from './components/NodeDetail'
-import { AccountView } from './components/AccountView'
 import { NodeSetupView } from './components/NodeSetupView'
 import { AdminView } from './components/AdminView'
 import { BackpressurePanel } from './components/BackpressurePanel'
@@ -18,7 +17,7 @@ import {
   statusColor, formatTps, formatMem,
 } from './utils'
 
-type Tab = 'network' | 'account' | 'node' | 'admin'
+type Tab = 'network' | 'node' | 'admin'
 type GraphMode = 'hub' | 'geo'
 
 // Marketing-mode deploys (e.g. the public seed's app.mlxmesh.net) show only the
@@ -34,7 +33,7 @@ const MARKETING_MODE = import.meta.env.VITE_MARKETING_MODE === 'true'
 // signature — this only controls whether the TAB is visible to a casual
 // visitor.
 const OPS_OVERRIDE = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('ops')
-const VISIBLE_TABS: Tab[] = (MARKETING_MODE && !OPS_OVERRIDE) ? ['network'] : ['network', 'account', 'node', 'admin']
+const VISIBLE_TABS: Tab[] = (MARKETING_MODE && !OPS_OVERRIDE) ? ['network'] : ['network', 'node', 'admin']
 
 export default function App() {
   const { data: topology, error: topoError, lastUpdated, refresh } = useTopology()
@@ -155,7 +154,7 @@ export default function App() {
                   fontWeight: tab === t ? 600 : 400,
                   transition: 'all 0.15s',
                 }}>
-                  {t === 'network' ? 'Network' : t === 'account' ? 'Account' : t === 'node' ? 'Node Setup' : 'Admin'}
+                  {t === 'network' ? 'Network' : t === 'node' ? 'Node Setup' : 'Admin'}
                 </button>
               ))}
             </div>
@@ -207,10 +206,6 @@ export default function App() {
           )}
         </div>
       </header>
-
-      {tab === 'account' && (
-        <AccountView coordinatorURL={pods[0]?.coordinator_endpoint ?? null} pods={pods} />
-      )}
 
       {tab === 'node' && <NodeSetupView />}
 

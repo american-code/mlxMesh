@@ -760,6 +760,45 @@ release path.
 
 ---
 
+## Responsible use & content policy
+
+mlxMesh is a **coordination and routing protocol** — it connects inference consumers with independently-operated compute nodes, but it does not host models, inspect prompts, or moderate generated content. This section clarifies the project's role and the tradeoffs inherent in its design.
+
+### Infrastructure role, not content host
+
+- The mesh provides routing, credit accounting, and node discovery — similar to how a network router or VPN provider transports data without examining it
+- Actual inference execution happens on nodes running [Exo](https://github.com/exo-explore/exo), which pulls models from sources like Ollama or HuggingFace
+- Those model sources have their own content policies and curation mechanisms; node operators choose which sources and models to host
+- The coordinator cannot inspect job content due to the privacy design (encrypted payload pointers, HIGH sensitivity tier with Secure Enclave attestation)
+
+### Privacy vs. moderation tradeoff
+
+The system is designed for **privacy-first inference**:
+- Encrypted payload pointers mean the coordinator never sees the actual prompt or response
+- HIGH sensitivity jobs require Secure Enclave attestation, ensuring the payload only decrypts on hardware with verified security properties
+- This privacy guarantee is incompatible with coordinator-side content moderation — you cannot have both end-to-end encryption and centralized inspection
+
+### Operator responsibilities
+
+Pod and node operators are responsible for their own deployment's content policies:
+
+- **Model selection** — choose model sources and repositories aligned with your values (Ollama, HuggingFace, or private registries)
+- **Node-side filtering** — implement content filtering at the node level if desired (outside the mesh protocol)
+- **Identity requirements** — require wallet verification or other identity checks for certain sensitivity tiers
+- **Acceptable use policies** — define and enforce your own terms for node participation
+
+### Standard disclaimer
+
+mlxMesh is open-source infrastructure software. The project maintainers:
+- Do not control what content users generate through the network
+- Do not endorse or take responsibility for third-party model sources
+- Provide the coordination protocol as-is; operators deploy it at their own discretion
+- Encourage responsible use and compliance with applicable laws in each jurisdiction
+
+This position is consistent with other infrastructure projects (Tor, VPN providers, network routing software) — the project provides the plumbing, not the water that flows through it.
+
+---
+
 ## Path to release (safe, secure, scalable)
 
 Everything above is a working **testbed** — a full multi-region mesh you can run locally and drive from real Apple hardware. It is **not yet production-safe**. The work below is what stands between the current state and a public release, grouped by the property it protects. Ordered roughly by priority within each group.
@@ -933,6 +972,31 @@ The current ledger architecture does not support a credit marketplace. Building 
 4. **Regulatory compliance** - KYC/AML if real money is involved
 
 The ledger is intentionally centralized and append-only (SQLite), with no transfer capability. A marketplace would be a significant addition beyond the current scope.
+
+---
+
+## Future directions
+
+### Non-Mac hardware support
+
+**Exo on Linux/Windows/Android**
+
+Exo itself is device-agnostic — Linux, Windows, Android, iPhone, and Raspberry Pi are all supported, using tinygrad as the backend when MLX isn't available (MLX and tinygrad interop for sharding). However, a practical caveat matters for homelab deployments: on Linux, Exo currently runs on CPU rather than GPU by default, with GPU acceleration still on the roadmap unless you build with explicit CUDA support (there's a CUDA/cuDNN path for NVIDIA boxes specifically, separate from the default). A Linux node with a beefy NVIDIA GPU sitting idle on CPU-only Exo is a real risk right now — check whether the CUDA build path is stable before counting on it for throughput.
+
+Practically, M1/M2 Max Studios remain the fastest nodes by a wide margin (MLX + unified memory + GPU). A Windows/Linux box added today mostly helps with aggregate memory pool size, not speed, unless it has a strong discrete GPU and you get the CUDA path working.
+
+**llama.cpp/Ollama integration**
+
+Since mlxMesh is its own protocol (Ed25519 identity, dual-lane routing, credit accounting), it's not limited to Exo's node model. A potential path:
+
+- Run llama.cpp or Ollama as a local inference server on the Windows/Linux box, exposing its OpenAI-compatible endpoint
+- Write a thin adapter node in mlxMesh that wraps that endpoint — same node identity/attestation/credit-accounting semantics as MLX nodes, but the "inference backend" field points at the llama.cpp server instead of an MLX runtime
+
+This is more work than plugging into Exo directly, but it fits the existing dispatch logic (power-of-two-choices, KV-cache-aware routing) without depending on Exo's Linux-CPU limitation — you get real GPU speed on non-Mac boxes via CUDA-accelerated llama.cpp instead of Exo's tinygrad/CPU path.
+
+**Is it worth it?**
+
+Worth it if the goal is raw memory pool for very large models (cheap way to add capacity) or heterogeneous demo value for mlxMesh (proving it's not Apple-only). Not worth it yet if the goal is throughput — until Linux GPU support in Exo matures, a non-Mac node bolted onto Exo directly is likely to be the slowest link and could even drag down tensor-parallel jobs. The adapter-node approach into mlxMesh's own protocol sidesteps this, since dispatch weighting is controlled directly.
 
 ---
 
