@@ -25,6 +25,13 @@ idealized one. Pair it with [SLOS.md](SLOS.md) (targets + alerts) and
 - **Secrets:** `/etc/mlxmesh/api-key`, `/etc/mlxmesh/federation-key` (root-owned,
   0600), bind-mounted to `/run/secrets/*`. Per-node TLS certs in
   `~/mlxmesh-node-certs/`.
+- **CORS (`--cors-origin`):** defaults to allow-any-origin (`Access-Control-Allow-Origin: *`)
+  — deliberately dev-friendly, but that means any web page can drive the
+  coordinator's browser-facing endpoints from a signed-in user's browser
+  session on a production deployment. Pass one or more real origins
+  (`--cors-origin app.mlxmesh.net` or comma-separated) once you have a fixed
+  dashboard domain; not set on the live seed today because `app.mlxmesh.net`
+  is the only consumer and it's same-origin with the API through nginx.
 - **Admin panel (BDFL key):** `--bdfl-public-key` is the coordinator's **public**
   half only — generate the keypair once, offline, with `oim admin keygen`;
   paste the printed private key into the dashboard's Admin tab to sign in
