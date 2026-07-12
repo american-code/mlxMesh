@@ -18,6 +18,14 @@ type JobLane string
 const (
 	JobLaneFast       JobLane = "fast"
 	JobLaneBackground JobLane = "background"
+	// JobLaneWarm is a node-local control message, not a billable inference
+	// job: it carries only ModelID and asks the node to create+await an Exo
+	// instance for it. Reuses the exact same claim/execute/submit transport
+	// as real jobs (see internal/agent/pull.go's executePulledJob) rather
+	// than a separate mechanism, since a warm-up request has an identical
+	// shape (coordinator hands the node something, node does work against
+	// Exo, node reports back).
+	JobLaneWarm JobLane = "warm"
 )
 
 // ModelCapability describes one model this node can serve at a specific quantization.
@@ -28,6 +36,40 @@ type ModelCapability struct {
 	MaxContextTokens int         `json:"max_context_tokens"`
 	IsMoE            bool        `json:"is_moe"`
 	ExpertShardIDs   []int       `json:"expert_shard_ids,omitempty"`
+	// Loaded reports whether Exo currently has an active inference instance
+	// for this model — distinct from merely being downloaded to disk (which
+	// is the only thing that gates whether a model appears in this list at
+	// all). A model can be listed with Loaded:false: it's genuinely servable
+	// hardware-wise, just not warm right now. Dispatch eligibility (see
+	// coordinator.ScoreForFastLane) requires Loaded:true; a cold model is
+	// visible but not routable until warmed (see POST /nodes/{id}/warm-model).
+	Loaded bool `json:"loaded,omitempty"`
+	// DraftModelID/NumDraftTokens mirror an operator's configured speculative-
+	// decoding pairing for this model (see nodeconfig.DraftModelConfig) —
+	// informational only. Exo's HTTP API has no speculative-decoding
+	// parameter today (only the underlying mlx-lm CLI's --draft-model/
+	// --num-draft-tokens flags do), so this never changes dispatch behavior;
+	// it just lets the dashboard/coordinator show what a node is configured
+	// to request once Exo's API supports it. Empty DraftModelID means no
+	// draft model is configured for this model_id.
+	DraftModelID   string `json:"draft_model_id,omitempty"`
+	NumDraftTokens int    `json:"num_draft_tokens,omitempty"`
+}
+
+// DraftModelConfig pairs a served model with a smaller "draft" model for
+// speculative decoding — forward-compatible plumbing for TODO.md's
+// "Speculative decoding on node side." exo-explore/exo's /v1/chat/completions
+// and /instance HTTP APIs do not accept a draft-model parameter as of this
+// writing (verified against exo's own docs/api.md); only the underlying
+// mlx-lm CLI (`mlx_lm.generate --draft-model ... --num-draft-tokens ...`)
+// supports this today. Configuring this is inert until Exo's API grows a
+// matching parameter — the field names here match mlx-lm's own flags so
+// this repo is ready to pass them through the moment it does, with zero
+// protocol changes needed on this end (see exoadapter.Client.RunChatCompletion's
+// existing opaque extra-params passthrough).
+type DraftModelConfig struct {
+	DraftModelID   string `json:"draft_model_id"`
+	NumDraftTokens int    `json:"num_draft_tokens,omitempty"` // 0 = let Exo pick its own default
 }
 
 // MeasuredSignature is the output of bench/benchmark.go.
@@ -52,7 +94,17 @@ type CapabilityManifest struct {
 	// "Apple M1") — deliberately excludes hostnames and exact chip variants
 	// (Pro/Max/Ultra) so a cluster's hardware summary doesn't broadcast what
 	// its operator named each machine. Empty for non-cluster nodes.
-	ClusterChipFamilies  []string           `json:"cluster_chip_families,omitempty"`
+	ClusterChipFamilies []string `json:"cluster_chip_families,omitempty"`
+	// ClusterSignature is an opaque hash of this cluster's sorted device-ID
+	// set (empty for non-cluster nodes, and empty even for some cluster
+	// nodes — see capability.DetectClusterNode). Used ONLY by the
+	// coordinator to detect that two independently-registering nodes
+	// describe the same physical Exo ring — every device in a ring runs its
+	// own agent and registers separately, each claiming the ring's full
+	// pooled capacity; this is the signal that collapses them. Never
+	// decodable back to real device IDs. Rides the existing manifest
+	// signature so it can't be forged/stripped in transit.
+	ClusterSignature     string             `json:"cluster_signature,omitempty"`
 	DeclaredMemoryGB     float64            `json:"declared_memory_gb"`
 	DeclaredMemoryCapPct float64            `json:"declared_memory_cap_pct"`
 	GeographicHint       string             `json:"geographic_hint,omitempty"`

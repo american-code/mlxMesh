@@ -26,6 +26,28 @@ type Config struct {
 	// (Mode == "") behaves as ScheduleModeAlways — fully backward compatible
 	// with configs saved before this field existed.
 	Schedule Schedule `json:"schedule"`
+	// DraftModels configures speculative decoding pairings, keyed by served
+	// model_id — see DraftModelConfig. Nil/empty (the default for every
+	// existing config) means no speculative decoding is configured; this is
+	// forward-compatible plumbing only (see that type's doc comment) and
+	// never changes behavior on its own. Mirrors protocol.DraftModelConfig's
+	// shape (duplicated, not imported, to keep this package dependency-light
+	// — same reasoning as validSensitivityCaps below); internal/agent
+	// converts between the two at the boundary where it already imports both.
+	DraftModels map[string]DraftModelConfig `json:"draft_models,omitempty"`
+}
+
+// DraftModelConfig pairs a served model with a smaller "draft" model for
+// speculative decoding — forward-compatible plumbing for TODO.md's
+// "Speculative decoding on node side." exo-explore/exo's /v1/chat/completions
+// and /instance HTTP APIs accept no draft-model parameter as of this writing
+// (only the underlying mlx-lm CLI's --draft-model/--num-draft-tokens flags
+// do), so configuring this is inert until Exo's API grows a matching
+// parameter. Field names match mlx-lm's own flags so this repo is ready to
+// pass them through the moment it does.
+type DraftModelConfig struct {
+	DraftModelID   string `json:"draft_model_id"`
+	NumDraftTokens int    `json:"num_draft_tokens,omitempty"` // 0 = let Exo pick its own default
 }
 
 func Default() Config {

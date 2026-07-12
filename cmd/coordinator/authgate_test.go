@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/open-inference-mesh/oim/internal/adminauth"
 	"github.com/open-inference-mesh/oim/internal/httpmw"
+	"github.com/open-inference-mesh/oim/internal/protocol"
 )
 
 // isSelfAuthenticatingWrite gates whether the outer admin Bearer-token check
@@ -69,7 +72,7 @@ func TestAuthMiddleware_NodeRegistrationNotLockedOut(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := authMiddleware("admin-secret", newAPIKeyStore(), nil, next)
+	handler := authMiddleware("admin-secret", nil, newAPIKeyStore(), nil, next)
 
 	req := httptest.NewRequest(http.MethodPost, "/nodes/register", nil)
 	rec := httptest.NewRecorder()
@@ -104,17 +107,51 @@ func TestAdminAuthorized(t *testing.T) {
 		}
 		return r
 	}
-	if adminAuthorized(req("secret"), "") {
+	if adminAuthorized(req("secret"), "", nil) {
 		t.Error("no admin key configured must fail closed even with a token present")
 	}
-	if adminAuthorized(req(""), "secret") {
+	if adminAuthorized(req(""), "secret", nil) {
 		t.Error("missing token must be rejected")
 	}
-	if adminAuthorized(req("wrong"), "secret") {
+	if adminAuthorized(req("wrong"), "secret", nil) {
 		t.Error("wrong token must be rejected")
 	}
-	if !adminAuthorized(req("secret"), "secret") {
+	if !adminAuthorized(req("secret"), "secret", nil) {
 		t.Error("matching admin key must be accepted")
+	}
+}
+
+// adminAuthorized must also accept a valid BDFL admin session token
+// (additive to the static admin key, not a replacement for it).
+func TestAdminAuthorized_AcceptsBDFLSession(t *testing.T) {
+	req := func(token string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/admin/reconcile", nil)
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		return r
+	}
+	_, pub, err := protocol.GenerateNodeIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminAuth, err := adminauth.NewAuthenticator(hex.EncodeToString(pub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The full challenge -> sign -> authenticate round trip is covered by
+	// internal/adminauth's own tests and the integration test; here we only
+	// check that adminAuthorized correctly delegates to ValidSession and still
+	// honors the static key alongside it.
+	if adminAuthorized(req("oimadmin_nonexistent"), "", adminAuth) {
+		t.Error("an unknown session token must be rejected")
+	}
+	if adminAuthorized(req(""), "", adminAuth) {
+		t.Error("missing token must be rejected even with adminAuth configured")
+	}
+	// Static admin key must still work even when a BDFL authenticator is wired in.
+	if !adminAuthorized(req("static-secret"), "static-secret", adminAuth) {
+		t.Error("static admin key must still be accepted alongside a configured BDFL authenticator")
 	}
 }
 
@@ -174,7 +211,7 @@ func TestAuthMiddleware_PerAccountQuota(t *testing.T) {
 	// Rate 0/sec sustained with burst 2 → third authenticated call is throttled.
 	limiter := httpmw.NewRateLimiter(0.0001, 2)
 	defer limiter.Stop()
-	handler := authMiddleware("admin-secret", keys, limiter, next)
+	handler := authMiddleware("admin-secret", nil, keys, limiter, next)
 
 	call := func(token string) int {
 		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)

@@ -156,6 +156,12 @@ main { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
   border: 1px solid var(--border-strong);
   cursor: not-allowed;
 }
+.btn-secondary {
+  background: transparent;
+  color: var(--text) !important;
+  border: 1px solid var(--border-strong);
+}
+.btn-secondary:hover { text-decoration: none; border-color: var(--blue-strong); color: var(--blue-strong) !important; }
 
 .hero-endpoints {
   display: flex;

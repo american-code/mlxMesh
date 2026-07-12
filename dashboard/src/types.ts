@@ -4,6 +4,11 @@ export interface ModelCapability {
   runtime: string
   max_context_tokens: number
   is_moe: boolean
+  // Whether Exo currently has an active inference instance for this model —
+  // distinct from merely being downloaded to disk (the only thing that gates
+  // whether a model appears in this list at all). Absent/false on older
+  // coordinators that predate this field.
+  loaded?: boolean
 }
 
 export interface NodeSnapshot {
@@ -85,6 +90,32 @@ export interface Balance {
   grant_balance: number
   earned_balance: number
   total: number
+}
+
+export interface LedgerAnomaly {
+  user_id: string
+  kind: 'overdraft' | 'orphan_debit'
+  credit_total: number
+  debit_total: number
+  detail: string
+}
+
+export interface ReconciliationReport {
+  consistent: boolean
+  user_count: number
+  total_grant_credits: number
+  total_earned_credits: number
+  total_credits: number
+  total_debits: number
+  total_outstanding: number
+  anomalies: LedgerAnomaly[] | null
+}
+
+export interface AdminAction {
+  action: string
+  detail: string
+  amount: number
+  performed_at: string
 }
 
 // Schedule controls when this node contributes to the mesh. Mode 'window'

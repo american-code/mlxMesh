@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -61,7 +62,46 @@ Quickstart:
 	root.AddCommand(nodeCmd())
 	root.AddCommand(benchCmd())
 	root.AddCommand(versionCmd())
+	root.AddCommand(adminCmd())
 	return root
+}
+
+// --- admin subcommands ---
+
+func adminCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "admin",
+		Short: "Coordinator admin panel setup commands",
+	}
+	cmd.AddCommand(adminKeygenCmd())
+	return cmd
+}
+
+func adminKeygenCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "keygen",
+		Short: "Generate a BDFL admin keypair for the coordinator's admin panel login",
+		Long: `Generates a fresh Ed25519 keypair for the coordinator admin panel's
+challenge-response login. This is a one-time, offline operator step — the
+coordinator never generates or holds the private key, only the public half
+(see internal/adminauth).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			priv, pub, err := protocol.GenerateNodeIdentity()
+			if err != nil {
+				return fmt.Errorf("generate keypair: %w", err)
+			}
+			fmt.Println("BDFL admin keypair generated. This is the ONLY time the private key is shown.")
+			fmt.Println()
+			fmt.Println("Private key (paste this into the dashboard admin login — never give it to the coordinator):")
+			fmt.Println("  " + hex.EncodeToString(priv))
+			fmt.Println()
+			fmt.Println("Public key (pass this to the coordinator):")
+			fmt.Println("  --bdfl-public-key " + hex.EncodeToString(pub))
+			fmt.Println()
+			fmt.Println("Save the private key somewhere safe (a password manager, not a file on this host).")
+			return nil
+		},
+	}
 }
 
 func versionCmd() *cobra.Command {
@@ -220,8 +260,23 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 			if !cmd.Flags().Changed("coordinator") && savedCfg.PodEndpoint != "" {
 				coordinatorURL = savedCfg.PodEndpoint
 			}
+			// A saved reachability_endpoint is only trusted here when it's
+			// NOT a loopback/unspecified address. Confirmed live: a stale
+			// http://localhost:8765 left in ~/.config/oim/config.json by a
+			// pre-pull-mode run got silently resurrected as this fallback on
+			// every subsequent start, even though the caller (the menu-bar
+			// app) never passed --reachability-endpoint at all — forcing
+			// push mode against a target that could never actually be
+			// reached and killing the node's earnings entirely. An
+			// EXPLICITLY passed --reachability-endpoint (this run's own
+			// flag, Changed()==true) is never filtered here, loopback or
+			// not — that's a deliberate caller choice, not a stale leftover.
 			if !cmd.Flags().Changed("reachability-endpoint") && savedCfg.ReachabilityEndpoint != "" {
-				reachabilityEndpoint = savedCfg.ReachabilityEndpoint
+				if agent.IsLoopbackReachability(savedCfg.ReachabilityEndpoint) {
+					fmt.Printf("Ignoring saved reachability endpoint %q (loopback/unreachable by a remote coordinator) — using pull mode instead\n", savedCfg.ReachabilityEndpoint)
+				} else {
+					reachabilityEndpoint = savedCfg.ReachabilityEndpoint
+				}
 			}
 			if !cmd.Flags().Changed("exo-url") && savedCfg.ExoURL != "" {
 				exoURL = savedCfg.ExoURL
@@ -298,6 +353,7 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 				CapacityPct:               capPct,
 				DeclaredMemoryGB:          declaredMemGB,
 				AllowedModels:             savedCfg.AllowedModels,
+				DraftModels:               savedCfg.DraftModels,
 				UserID:                    userID,
 				GeographicHint:            geoHint,
 				GeoLat:                    geoLat,

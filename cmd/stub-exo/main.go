@@ -15,6 +15,28 @@
 //	                 clamped 1..6). Drives the Node Setup cluster diagram.
 //	STUB_DEVICES     explicit heterogeneous cluster, overrides the even split,
 //	                 e.g. "Mac Studio:32,Mac Studio:32,MacBook Pro:16"
+//	STUB_COLD_MODELS comma-separated subset of STUB_MODELS to report as
+//	                 downloaded-but-not-loaded (GET /ollama/api/ps omits them)
+//	                 until a POST /instance request for that model_id is
+//	                 received, at which point the stub treats it as warmed —
+//	                 simulating a real Exo instance actually coming online, so
+//	                 the same node can be dispatched to once warm-up succeeds.
+//	                 Default: empty (every model in STUB_MODELS is "loaded").
+//	STUB_AWAIT_TIMEOUT_MODELS comma-separated model IDs for which
+//	                 GET /instance/await always reports {"type":"timeout"} —
+//	                 for testing the warm-up failure path. Default: empty.
+//	STUB_RESPONSE_FILLER_WORDS extra filler words appended to the canned
+//	                 chat-completion content (default 0). The canned response
+//	                 is normally ~10 words — too short to cross the
+//	                 coordinator's minThroughputSampleTokens floor for
+//	                 RecordObservedThroughput. Set this to pad completions for
+//	                 tests that need real observed-throughput samples to land.
+//	STUB_TOPOLOGY_NODE_IDS explicit comma-separated device-ID list for
+//	                 topology.nodes (overrides the derived per-stub IDs).
+//	                 Lets two INDEPENDENT stub-exo processes present the
+//	                 identical ring membership — reproducing real Exo, where
+//	                 every device in one ring reports the same topology.nodes
+//	                 set, which is what coordinator cluster-dedup keys on.
 package main
 
 import (
@@ -27,6 +49,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -91,7 +114,7 @@ func parseDevices(spec string) []simDevice {
 // gpu/temp/power are regenerated each call so the dashboard's per-device diagram
 // animates across re-detects. The shape exactly matches what
 // capability.GetDeviceTopology / DetectClusterNode parse.
-func buildTopologyState(nodeName string, totalMemGB float64, deviceCount int, devices []simDevice) map[string]any {
+func buildTopologyState(nodeName string, totalMemGB float64, deviceCount int, devices []simDevice, modelIDs, topologyNodeIDs []string) map[string]any {
 	// Explicit heterogeneous spec wins; else even-split fallback.
 	if len(devices) == 0 {
 		if deviceCount < 1 {
@@ -106,6 +129,17 @@ func buildTopologyState(nodeName string, totalMemGB float64, deviceCount int, de
 			})
 		}
 	}
+	// STUB_TOPOLOGY_NODE_IDS pins the device-ID list itself, so two
+	// INDEPENDENT stub-exo processes can present the identical ring
+	// membership — reproducing real Exo, where every device in one ring
+	// reports the same topology.nodes set. That's what the coordinator's
+	// cluster-dedup keys on (capability.DetectClusterNode's ClusterSignature).
+	if len(topologyNodeIDs) > 0 {
+		for len(devices) < len(topologyNodeIDs) {
+			devices = append(devices, devices[len(devices)-1])
+		}
+		devices = devices[:len(topologyNodeIDs)]
+	}
 	deviceCount = len(devices)
 
 	ids := make([]any, deviceCount)
@@ -115,6 +149,9 @@ func buildTopologyState(nodeName string, totalMemGB float64, deviceCount int, de
 	connections := map[string]any{}
 
 	deviceID := func(i int) string {
+		if len(topologyNodeIDs) > 0 {
+			return topologyNodeIDs[i]
+		}
 		if i == 0 {
 			return nodeName
 		}
@@ -158,6 +195,29 @@ func buildTopologyState(nodeName string, totalMemGB float64, deviceCount int, de
 		}
 	}
 
+	// downloads: a DownloadCompleted entry per configured model, on the
+	// primary device — GetDownloadedModels now requires this positive
+	// evidence (see its doc comment: /models?downloaded=true returns Exo's
+	// entire catalog regardless of real download status, so only an
+	// explicit DownloadCompleted record counts as "actually downloaded").
+	// Every STUB_MODELS entry counts as downloaded here, including ones
+	// listed in STUB_COLD_MODELS — cold means "downloaded but not loaded,"
+	// never "not downloaded at all."
+	downloadEntries := make([]any, 0, len(modelIDs))
+	for _, id := range modelIDs {
+		downloadEntries = append(downloadEntries, map[string]any{
+			"DownloadCompleted": map[string]any{
+				"nodeId": nodeName,
+				"shardMetadata": map[string]any{
+					"PipelineShardMetadata": map[string]any{
+						"modelCard": map[string]any{"modelId": id},
+					},
+				},
+				"total": map[string]any{"inBytes": float64(1 << 30)},
+			},
+		})
+	}
+
 	return map[string]any{
 		"node_id": nodeName,
 		"status":  "healthy",
@@ -169,6 +229,9 @@ func buildTopologyState(nodeName string, totalMemGB float64, deviceCount int, de
 		"nodeMemory":     nodeMemory,
 		"nodeIdentities": nodeIdentities,
 		"nodeSystem":     nodeSystem,
+		"downloads": map[string]any{
+			nodeName: downloadEntries,
+		},
 	}
 }
 
@@ -224,6 +287,32 @@ func main() {
 		modelIDs = []string{"llama-3.2-3b"}
 	}
 
+	coldModelsMu := sync.Mutex{}
+	coldModels := make(map[string]bool)
+	for _, s := range strings.Split(os.Getenv("STUB_COLD_MODELS"), ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			coldModels[s] = true
+		}
+	}
+	awaitTimeoutModels := make(map[string]bool)
+	for _, s := range strings.Split(os.Getenv("STUB_AWAIT_TIMEOUT_MODELS"), ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			awaitTimeoutModels[s] = true
+		}
+	}
+	fillerWords := 0
+	if v := os.Getenv("STUB_RESPONSE_FILLER_WORDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			fillerWords = n
+		}
+	}
+	var topologyNodeIDs []string
+	for _, s := range strings.Split(os.Getenv("STUB_TOPOLOGY_NODE_IDS"), ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			topologyNodeIDs = append(topologyNodeIDs, s)
+		}
+	}
+
 	var reqCount atomic.Int64
 	var instanceCount atomic.Int64
 
@@ -256,7 +345,7 @@ func main() {
 	// topology.nodes + nodeMemory; GetDeviceTopology additionally reads
 	// nodeIdentities/nodeSystem/connections to draw the Node Setup diagram.
 	mux.HandleFunc("GET /state", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, buildTopologyState(nodeName, memGB, deviceCount, simDevices))
+		writeJSON(w, buildTopologyState(nodeName, memGB, deviceCount, simDevices, modelIDs, topologyNodeIDs))
 	})
 
 	// GET /models[?status=downloaded] — capability.buildModelList
@@ -288,10 +377,55 @@ func main() {
 		})
 	})
 
-	// POST /instance — exoadapter.CreateInstance
+	// GET /ollama/api/ps — exoadapter.GetActiveModels. Reports every model in
+	// STUB_MODELS as active EXCEPT those still in the (mutable) cold set —
+	// mirrors real Exo's Ollama-compatibility "list running models" endpoint.
+	mux.HandleFunc("GET /ollama/api/ps", func(w http.ResponseWriter, r *http.Request) {
+		coldModelsMu.Lock()
+		defer coldModelsMu.Unlock()
+		out := make([]map[string]any, 0, len(modelIDs))
+		for _, id := range modelIDs {
+			if coldModels[id] {
+				continue
+			}
+			out = append(out, map[string]any{"model": id, "name": id, "model_id": id})
+		}
+		writeJSON(w, map[string]any{"models": out})
+	})
+
+	// POST /instance — exoadapter.CreateInstance. Simulates the requested
+	// model actually coming online: removes it from the cold set so the next
+	// GET /ollama/api/ps (and thus the next manifest refresh) reports it
+	// loaded, exactly like a real Exo instance genuinely warming up.
 	mux.HandleFunc("POST /instance", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Instance struct {
+				ModelID string `json:"model_id"`
+			} `json:"instance"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Instance.ModelID != "" {
+			coldModelsMu.Lock()
+			delete(coldModels, body.Instance.ModelID)
+			coldModelsMu.Unlock()
+		}
 		id := fmt.Sprintf("stub-inst-%d", instanceCount.Add(1))
 		writeJSON(w, map[string]any{"command_id": id, "id": id})
+	})
+
+	// GET /instance/await?model_id=... — exoadapter.AwaitInstance. Streams a
+	// single terminal SSE event: "timeout" for models listed in
+	// STUB_AWAIT_TIMEOUT_MODELS (negative-path testing), "ready" otherwise —
+	// mirrors Exo's own documented two-terminal-state await contract.
+	mux.HandleFunc("GET /instance/await", func(w http.ResponseWriter, r *http.Request) {
+		modelID := r.URL.Query().Get("model_id")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if awaitTimeoutModels[modelID] {
+			fmt.Fprintf(w, "data: {\"type\":\"timeout\",\"message\":\"no instance found for model %s\"}\n\n", modelID)
+			return
+		}
+		fmt.Fprintf(w, "data: {\"type\":\"ready\",\"instance\":{\"model_id\":%q}}\n\n", modelID)
 	})
 
 	// DELETE /instance/{id} — exoadapter.DeleteInstance
@@ -320,6 +454,9 @@ func main() {
 			modelID = modelIDs[0]
 		}
 		content := fmt.Sprintf("Simulated response #%d from %s (model=%s) via Open Inference Mesh.", n, nodeName, modelID)
+		if fillerWords > 0 {
+			content += " " + strings.TrimSpace(strings.Repeat("filler ", fillerWords))
+		}
 		completionTokens := len(strings.Fields(content))
 
 		stream, _ := req["stream"].(bool)

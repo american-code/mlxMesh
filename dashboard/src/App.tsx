@@ -8,6 +8,7 @@ import { GeoNetworkGraph } from './components/GeoNetworkGraph'
 import { NodeDetail } from './components/NodeDetail'
 import { AccountView } from './components/AccountView'
 import { NodeSetupView } from './components/NodeSetupView'
+import { AdminView } from './components/AdminView'
 import { BackpressurePanel } from './components/BackpressurePanel'
 import { runTestQueryWithAutoAuth } from './api'
 import { getOrCreateUserId } from './identity'
@@ -17,16 +18,16 @@ import {
   statusColor, formatTps, formatMem,
 } from './utils'
 
-type Tab = 'network' | 'account' | 'node'
+type Tab = 'network' | 'account' | 'node' | 'admin'
 type GraphMode = 'hub' | 'geo'
 
 // Marketing-mode deploys (e.g. the public seed's app.mlxmesh.net) show only the
-// Network view — Account/Node Setup are for operators managing their own
-// contribution, not visitors browsing the network. Off by default so the
-// dashboard ships with full functionality everywhere else (local dev,
-// self-hosted operators).
+// Network view — Account/Node Setup/Admin are for operators managing their own
+// contribution (or the mesh itself), not visitors browsing the network. Off by
+// default so the dashboard ships with full functionality everywhere else
+// (local dev, self-hosted operators).
 const MARKETING_MODE = import.meta.env.VITE_MARKETING_MODE === 'true'
-const VISIBLE_TABS: Tab[] = MARKETING_MODE ? ['network'] : ['network', 'account', 'node']
+const VISIBLE_TABS: Tab[] = MARKETING_MODE ? ['network'] : ['network', 'account', 'node', 'admin']
 
 export default function App() {
   const { data: topology, error: topoError, lastUpdated, refresh } = useTopology()
@@ -147,7 +148,7 @@ export default function App() {
                   fontWeight: tab === t ? 600 : 400,
                   transition: 'all 0.15s',
                 }}>
-                  {t === 'network' ? 'Network' : t === 'account' ? 'Account' : 'Node Setup'}
+                  {t === 'network' ? 'Network' : t === 'account' ? 'Account' : t === 'node' ? 'Node Setup' : 'Admin'}
                 </button>
               ))}
             </div>
@@ -206,6 +207,10 @@ export default function App() {
 
       {tab === 'node' && <NodeSetupView />}
 
+      {tab === 'admin' && (
+        <AdminView coordinatorURL={pods[0]?.coordinator_endpoint ?? null} nodes={allNodes} onNodesChanged={refresh} />
+      )}
+
       <main style={{ padding: '20px 24px', maxWidth: 1440, margin: '0 auto', display: tab === 'network' ? 'block' : 'none' }}>
 
         {/* ── World map — projection auto-fits wherever nodes actually are ── */}
@@ -246,6 +251,7 @@ export default function App() {
           )}
           <TryTheMesh
             coordinatorURL={pods[0]?.coordinator_endpoint ?? null}
+            nodes={allNodes}
             onServed={lightUpRoute}
           />
         </section>
@@ -300,7 +306,13 @@ export default function App() {
         </div>
       </main>
 
-      {selected && <NodeDetail node={selected} onClose={() => setSelected(null)} />}
+      {selected && (
+        <NodeDetail
+          node={selected}
+          coordinatorURL={podNodes.find(p => p.nodes.some(n => n.node_id === selected.node_id))?.pod.coordinator_endpoint ?? null}
+          onClose={() => setSelected(null)}
+        />
+      )}
     </div>
   )
 }
@@ -372,10 +384,30 @@ function StatusLegend() {
 // serving node_id + lane straight from the coordinator's response so App can
 // draw the route — nobody else's traffic is ever visible here.
 
+// SIM_FLEET_MODEL is served by every simulated node — a guaranteed-dispatchable
+// fallback distinct from a real node's own (often exclusively-hosted) model.
+const SIM_FLEET_MODEL = 'llama-3.2-3b'
+
+// pickDemoModel prefers a live, real (non-simulated) node's own model over the
+// simulated fleet's shared SIM_FLEET_MODEL — so when an actual contributor
+// machine is online and can serve the request, the demo shows real hardware
+// responding instead of always landing on the sim fleet (which every request
+// is otherwise guaranteed to hit, since SIM_FLEET_MODEL is a sim-only model no
+// real contributor happens to host). Ties (multiple real live nodes) break on
+// declared throughput — the routing layer's own eligibility/scoring still has
+// the final say on which one actually serves it.
+function pickDemoModel(nodes: NodeSnapshot[]): string {
+  const realLive = nodes
+    .filter(n => !n.simulated && n.status === 'live' && n.models.length > 0)
+    .sort((a, b) => b.measured_toks_per_sec - a.measured_toks_per_sec)
+  return realLive[0]?.models[0]?.model_id ?? SIM_FLEET_MODEL
+}
+
 function TryTheMesh({
-  coordinatorURL, onServed,
+  coordinatorURL, nodes, onServed,
 }: {
   coordinatorURL: string | null
+  nodes: NodeSnapshot[]
   onServed: (servedByNodeId: string | null, lane: 'fast' | 'background' | null) => void
 }) {
   const [prompt, setPrompt] = useState('What can this network do?')
@@ -396,10 +428,23 @@ function TryTheMesh({
       // wallet (API key + startup grant) so a first-time visitor doesn't have
       // to visit Account first just to see the mesh respond. Retries once with
       // a freshly minted key if the stored one turns out to be stale.
-      // llama-3.2-3b is the one model every simulated node serves — a reasonable
-      // default so "Try the mesh" works without asking the user to pick a model
-      // they don't yet know is available.
-      const result = await runTestQueryWithAutoAuth(coordinatorURL, prompt.trim(), 'llama-3.2-3b', getOrCreateUserId())
+      // Prefer a live real node's own model over the sim fleet's shared
+      // fallback — see pickDemoModel. A node the topology snapshot reported as
+      // "live" can still turn out to be undispatchable at the exact moment of
+      // the request (stale reachability info, a brief network hiccup) — and
+      // since it may be the ONLY node hosting its own model, that failure has
+      // no fallback candidate for the coordinator to try on its own. Retry
+      // once against the sim fleet's guaranteed-servable model rather than
+      // surfacing a hard "no eligible nodes" error to the user.
+      const preferred = pickDemoModel(nodes)
+      const userId = getOrCreateUserId()
+      let result
+      try {
+        result = await runTestQueryWithAutoAuth(coordinatorURL, prompt.trim(), preferred, userId)
+      } catch (e) {
+        if (preferred === SIM_FLEET_MODEL) throw e
+        result = await runTestQueryWithAutoAuth(coordinatorURL, prompt.trim(), SIM_FLEET_MODEL, userId)
+      }
       setReply(result.content || '(empty response)')
       setStats({ tokensPerSec: result.tokensPerSec, latencyMs: result.latencyMs })
       onServed(result.servedByNodeId, result.lane)

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlxmesh"
+version = "0.1.0"
+description = "Client SDK for mlxMesh — a distributed AI inference network with dual-lane routing, verified earnings, and optional end-to-end encrypted payloads."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "Open Inference Mesh" }]
+dependencies = [
+    "httpx>=0.24",
+    "cryptography>=41",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-asyncio>=0.21"]
+
+[project.urls]
+Homepage = "https://github.com/open-inference-mesh/oim"
+Repository = "https://github.com/open-inference-mesh/oim"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

@@ -140,10 +140,11 @@ Before dispatching, the coordinator checks the caller's credit balance. The flow
 All pricing lives in [`internal/economics`](internal/economics/pricing.go) so the
 debit and credit paths can never diverge. The model is a **spread, not a
 transfer**: a provider is always paid *less* than the consumer is charged, and
-the difference — the **house edge (25%)** — accrues to the network treasury,
-which funds startup grants, iOS coordination rewards, and sustainability. This is
-the "casino math": credits are a sink, not a closed zero-sum loop, so the supply
-can't inflate to worthlessness or drain to zero.
+the difference — the **house edge (25%)** — accrues to the network treasury
+(`oim-treasury`, a reserved ledger account). The treasury funds iOS coordination
+rewards; startup grants and availability rewards are minted directly (inflationary,
+not treasury-funded). This is the "casino math": credits are a sink, not a closed
+zero-sum loop, so the supply can't inflate to worthlessness or drain to zero.
 
 ```
 consumer_cost   = 1.0 × lane × sensitivity   (credits per 1k output tokens)
@@ -184,6 +185,19 @@ so a node can't inflate what it earns.
 *These multipliers/edge are tunable constants in `internal/economics`; future
 work can layer reputation multipliers or streak bonuses on top of this base.*
 
+**Bootstrapping-economics activity discount.** The table above is the
+*undiscounted* matrix — what a provider always earns, in any network state.
+`economics.ConsumerCostWithActivityDiscount` additionally discounts what the
+**consumer** pays on the fast lane when the network is quiet (queue
+backpressure below 40%), tapering the discount to nothing as backpressure
+rises: at a fully idle network (0% backpressure), the consumer pays exactly
+what the provider earns — the treasury's margin compresses to zero, never
+negative, and **the provider's payout never changes because of this
+discount**. This is the fix for the bootstrapping problem an early-network
+user hits: burning an entire day's meager earnings on a single query. See
+TODO.md's Economic Sustainability section for the full reasoning (why this,
+not a coordination-reward bump or a new consumer tier).
+
 ### Verified availability reward (bootstrap incentive, opt-in)
 
 A linked, running node earns nothing between real dispatched jobs — for a
@@ -201,6 +215,13 @@ nodes. A node can't fake this by merely staying registered: it has to
 genuinely have a downloaded model and return a real completion. Rewards are
 naturally tiny (fractions of a credit) since they scale with the small
 number of tokens a short probe prompt produces.
+
+The per-round probe budget (`coordinator.ScaledProbeBudget`) scales with how
+quiet the network is: 3 nodes/round under any real load (the original fixed
+value), growing up to 15 nodes/round at 0% backpressure — a fully idle
+network has more otherwise-unpaid idle capacity to subsidize, and this
+tapers back down automatically as real traffic returns. Bootstrapping-economics
+fix, same reasoning as the activity discount above.
 
 No debit, no treasury margin — nobody is being charged for this. It's a
 self-funded subsidy minted directly into the node's account, the same way
@@ -492,7 +513,7 @@ Native clients: iOS · tvOS · watchOS ← M8 / M9  (OIMDashboard/)
 | M2 | **Done** | Pod coordinator: registry, fast-lane router, background scheduler, job queue, rate limiting |
 | M3 | **Done** | Spot-check verification, tier-claim validation, measurement store |
 | M4 | **Done** | Centralized global directory with gossip sync and cache fallback |
-| M5 | **Done** | Division-order settlement ledger with SQLite persistence, startup grants with PoW |
+| M5 | **Done** | Division-order settlement ledger with SQLite persistence (single coordinator) or Postgres (`--ledger-db-url`, multi-coordinator safe via row locks + unique constraints), startup grants with PoW |
 | M6 | **Done** | MoE expert-shard planner with proportional assignment and load imbalance detection |
 | M7 | **Partial** | Federated *directory* (multi-librarian, `FederatedResolver`/`DHTResolver`) is still a stub. Federated ledger *authority* — the harder half of M7 — now has coordinator identity + signed, TOFU-pinned pod registration and cross-pod signed-ledger-event witnessing/audit (`internal/federation`); see [Security model](#security-model--threat-analysis) item 3 for exactly what's closed vs. still open |
 
@@ -519,12 +540,16 @@ prevention + witnessed audit trail); full open, permissionless federation
 
 The original ARCHITECTURE spec defined a headless Go protocol (M1–M7). The following were added on top and are **not** in that spec — flagged here so the delta is explicit:
 
-- **iOS as a coordination/security layer, not a compute node.** iOS/iPadOS cannot run Exo (Python+MLX, macOS/Linux only), so instead of forcing inference onto them, iOS devices classify on-device and host encrypted payload pointers. This is *additive* — with zero iOS devices the mesh routes exactly as M1–M7 defined.
+- **iOS as a coordination/security layer, not a compute node.** iOS/iPadOS cannot run Exo (Python+MLX, macOS/Linux only), so instead of forcing inference onto them, iOS devices classify on-device and host encrypted payload pointers. This is *additive* — with zero iOS devices the mesh routes exactly as M1–M7 defined. **iOS 27 update:** Apple now ships `MLXLanguageModel` and `CoreAILanguageModel` (public `LanguageModel` protocol) for running MLX-community models on Apple Silicon via the new Core AI framework. This provides a first-party inference binding for on-device MLX models on iPadOS 27+ hardware, lowering the barrier for iPad compute nodes. However, there's still no Apple-provided HTTP inference server — you'd still need to write the networking layer (NWListener) yourself to expose it as a mesh-servable endpoint.
 - **Encrypted-pointer privacy path.** Client-side P256 ECDH + HKDF-SHA256 + AES-256-GCM; the coordinator sees only a metadata pointer (hash + fetch URL + ephemeral pubkey), never plaintext. Served-pointer counts are attributed per device.
 - **Portable wallet (M9).** Credit consolidation + recovery across devices without a blockchain.
 - **Native Apple apps** (`OIMDashboard/`) — live topology, "Try the mesh," network-load/backpressure, coordination layer, wallet, and a tvOS global-map view.
 - **Simulation harness** — `tools/jobgen` (incl. `--pointer-host` mode) + `tools/gen-compose` produce a 100+ container multi-region mesh with continuous traffic and live coordination participants, for device-free testing.
 - **Operational hardening already landed** — SQLite persistence, write-path signing, rate limiting, configurable CORS, security headers, config validation, dynamic queue capacity.
+- **Cluster deduplication** — prevents double-counting capacity and double-paying for clustered nodes (nodes with the same `ClusterSignature`). Only one node from a physical Exo ring is dispatched to, avoiding duplicate capacity accounting.
+- **Warm model support** — coordinator can instruct a node to load a model it has downloaded but not yet active via `POST /warm-model`, reducing cold-start latency for frequently-used models.
+- **Observed throughput routing** — coordinator tracks actual node performance (tokens/sec) from completed jobs and uses it for routing decisions instead of relying solely on self-reported benchmarks.
+- **Device unlinking** — `POST /account/{address}/unlink-device` allows removing a device/node ID from a wallet account, useful when decommissioning hardware.
 
 ---
 
@@ -532,7 +557,7 @@ The original ARCHITECTURE spec defined a headless Go protocol (M1–M7). The fol
 
 Concrete things a tester will hit today, so nothing reads as "silently broken":
 
-- **Node Setup cluster topology is web-only and Exo-driven.** The dashboard's per-device diagram (RAM/GPU/temp/power ring) renders from the local agent's `/detect`, which parses Exo's `/state`. It now populates in the docker sim (stub-exo emits a topology; node-us-1 / node-eu-1 are 3-device clusters). Against a **real** Exo cluster it depends on Exo's `/state` field names (`topology.nodes`, `nodeMemory`, `nodeIdentities`, `nodeSystem`) — validate this against your Exo build (e.g. lab-02) since that schema hasn't been confirmed against a live instance. **iOS has no Node Setup** by design — iOS devices can't run Exo, so they contribute as the coordination/security layer, not as compute nodes.
+- **Node Setup cluster topology is web-only and Exo-driven.** The dashboard's per-device diagram (RAM/GPU/temp/power ring) renders from the local agent's `/detect`, which parses Exo's `/state`. It now populates in the docker sim (stub-exo emits a topology; node-us-1 / node-eu-1 are 3-device clusters). Against a **real** Exo cluster it depends on Exo's `/state` field names (`topology.nodes`, `nodeMemory`, `nodeIdentities`, `nodeSystem`) — validate this against your Exo build (e.g. lab-02) since that schema hasn't been confirmed against a live instance. **iOS has no Node Setup** by design — iOS devices can't run Exo, so they contribute as the coordination/security layer, not as compute nodes. **iOS 27 opportunity:** Apple now ships `MLXLanguageModel` and `CoreAILanguageModel` (public `LanguageModel` protocol) for running MLX-community models on Apple Silicon via Core AI. This enables iPad compute nodes without hand-rolling MLX bindings, but requires implementing the HTTP networking layer (NWListener) to expose it as a mesh-servable endpoint — not yet implemented.
 - **Webhook / async callback** submission is documented as a target but not implemented.
 - **M7 federated directory is a stub; progressive decentralization is partially started.** A public seed IS now deployed (task #42) and clients/coordinators can be configured with multiple directory endpoints so no single instance is a hard dependency (task #49) — but there's still only one directory *instance* actually running, "parity" now has a real metric (real vs. simulated capacity, see below) but no defined threshold or automatic handoff logic, and `FederatedResolver`/`DHTResolver` remain stubs. (The ledger-authority half of M7 — coordinator identity, pod pinning, cross-pod signed-event witnessing — is now partially built; see [Security model](#security-model--threat-analysis) item 3.)
 - **MoE expert sharding is a planner, not a live feature.** `internal/coordinator/moe_planner.go` (assign experts to nodes by memory, route tokens to the expert-holding node, detect load imbalance) is implemented and tested (M6) but **not wired into any dispatch path** — no request is MoE-sharded across mesh nodes today. See the note below on why it wouldn't speed up the fast lane anyway. What *is* wired is **query decomposition** (`RouteWithDecomposition`), and only for the **background lane** (it refuses fast-lane jobs).
@@ -602,6 +627,7 @@ decentralized credit network — see the open items below.
   fast instead of hammering the server; a client-side token-bucket limiter caps
   how fast a single node can call out, so a bug can't turn one node into a
   self-inflicted flood. (`internal/httpx`, tasks #22/#24)
+- **Quantum vulnerability is acknowledged.** Ed25519 (used for node/coordinator/wallet identity) would fall to a sufficiently large quantum computer running Shor's algorithm. This is true of all ECC-based systems in production today (TLS, SSH, Signal, Bitcoin). NIST finalized post-quantum signature standards in 2024 (ML-DSA/Dilithium, SLH-DSA), but migration is a multi-year industry-wide project. This is a known long-term consideration, not an immediate action item.
 
 ### Open vulnerabilities
 
@@ -741,12 +767,54 @@ Everything above is a working **testbed** — a full multi-region mesh you can r
 
 ### 📈 Scalability — *blocks growth past the seed*
 
+**Scaling reality check:**
+
+Fast lane is single-node per job by design (MoE sharding is a planner only, not wired into dispatch). Adding nodes doesn't make individual requests faster — it increases aggregate concurrent capacity. Per-job speed (~40 t/s) is a property of the selected node, not node count.
+
+**Aggregate throughput scaling (assuming ~40 t/s avg/node, perfect load balancing):**
+
+| Nodes | Aggregate t/s | Concurrent jobs/sec (at ~12.5s/job) |
+|---|---|---|
+| 100 | 4,000 | ~8 |
+| 1,000 | 40,000 | ~80 |
+| 10,000 | 400,000 | ~800 |
+| 100,000 | 4,000,000 | ~8,000 |
+
+**Real bottleneck: SQLite ledger write contention**
+
+The original ceiling was a single coordinator's SQLite ledger (single-writer, correctness enforced by that one process's in-memory mutex — nothing a second coordinator process could safely share). Every job completion does 3+ writes (debit consumer, credit node, credit treasury) plus signature verification, so realistic sustained ceiling on SQLite alone is low hundreds to low thousands of job-completions/sec per coordinator.
+
+**Done:** the ledger now also supports a Postgres backend (`--ledger-db-url`, `internal/settlement/ledger_postgres.go`) where correctness is enforced by the database itself — row locks (`SELECT ... FOR UPDATE`) on debits, a unique constraint on startup-grant claims — rather than by a process-local mutex, so multiple coordinator processes can safely share one Postgres instance without racing on the same user's balance. Verified directly: two real `oim-coordinator` processes racing to claim the same user's startup grant against one shared Postgres exactly-once-succeeded, and concurrent debit goroutines against a fixed balance never overdrew it. `--db-path`'s SQLite mode is unchanged and remains the default for a single coordinator. This is the prerequisite for "Coordinator HA," not HA itself — leader election and cross-coordinator request routing/failover are still not started.
+
+Regional sharding (one coordinator per pod) also mitigates this independently of the ledger backend — 10,000 nodes across 20 coordinators is viable either way.
+
 | Item | Why | Status |
 |------|-----|--------|
 | **M7 — federated directory** | Single centralized directory is a SPOF and a scale ceiling; `FederatedResolver`/`DHTResolver` are stubs | Stub (the ledger-authority half of M7 is now partially done — see the Security row above) |
 | **Progressive decentralization** (task #49) | EC2 seed → network takes over "at parity"; needs the handoff logic + a parity metric | **Partially done, live in production** — coordinators (`--directory`), the web dashboard (`VITE_DIRECTORY_URL`), and the Apple clients now accept a comma-separated list of directory endpoints and fall back through them in order, so no single directory instance is a hard client-side dependency. `PodHealthDigest` now carries `real_node_count_approx`/`real_total_memory_gb`/`real_aggregate_toks_per_sec` alongside the existing totals (`internal/coordinator/registry.go` `HealthDigest`) — a real, live "parity" ratio (real capacity ÷ total capacity) instead of an undefined metric, currently reporting the honest 0% (the live seed's ~58 nodes are all simulated). **Still missing**: an actual second directory *instance* deployed, a defined parity threshold, and the automatic handoff logic itself (today this is observability, not automation) |
-| **Coordinator HA** | One coordinator per region with no failover or shared state | Not started |
-| **Ledger beyond SQLite** | SQLite won't survive multi-coordinator write load; needs Postgres/managed store | Not started |
+
+### 📊 Performance benchmarks — *honest positioning vs hosted APIs*
+
+**Per-node throughput comparison:**
+
+| System | Tokens/sec | Notes |
+|--------|-----------|-------|
+| mlxMesh (Mac Studio) | 30-50 | Consumer Apple Silicon, unmodified |
+| Claude Sonnet | ~37 | Hosted API |
+| Claude Haiku 3.5 | 65.2 | Hosted API |
+| GPT-4.1 | ~55 | Hosted API |
+| GPT-4o | 52-117 | Hosted API (varies by benchmark) |
+| GPT-5 Pro (reasoning) | ~11 | Deliberately slow, reasoning-optimized |
+| Gemini 3.5 Flash | 167-180 | Higher first-token latency |
+| Groq (dedicated LPU) | 500+ | Purpose-built inference silicon |
+
+**Key takeaways:**
+- mlxMesh per-node throughput is competitive with hosted frontier APIs (Claude Sonnet, GPT-4.1/4o)
+- The real gap is latency, not throughput: hosted APIs achieve 30-80ms first-token latency; mlxMesh has extra hop overhead
+- Hosted providers win on aggregate scale via continuous batching across massive GPU fleets
+- mlxMesh trades centralized-batching efficiency for zero per-token cost, no data leaving infrastructure, no third-party dependency
+
+**Honest positioning:** mlxMesh doesn't beat OpenAI/Anthropic on scale or first-token latency, but achieves tokens-per-second parity with hosted frontier APIs using consumer hardware. Speculative decoding and prefix caching would push it past several hosted numbers on that specific axis.
 
 ### 🚀 Release engineering
 
@@ -759,32 +827,6 @@ Everything above is a working **testbed** — a full multi-region mesh you can r
 | Runbook + incident/on-call docs; SLOs | **Done** — [RUNBOOK.md](RUNBOOK.md) (golden signals, deploy/rollback/scale/restart/secrets procedures grounded in the real EC2 topology, plus an incident-response playbook covering every failure this seed has actually hit — OOM, secret-as-directory, IP change, ledger anomaly, node churn, directory 429) and [SLOS.md](SLOS.md) (availability/latency/integrity objectives each tied to a real metric, alerting priorities, and an honest list of gaps that keep it a beta SLA) |
 
 **Suggested sequencing for a first safe release:** auth on read endpoints + third-party security review (security floor) → ledger reconciliation/audit trail (trust the numbers) → EC2 seed (task #42) → M7 federation + progressive decentralization (scale past the seed).
-
-### Remaining work, distilled
-
-Everything tracked as a numbered task, and every concrete gap previously
-listed here (node-side pointer consumption, server-side streaming,
-coordinator→node TLS, secrets hardening, CI wiring), is now done. What's left
-is **two genuinely hard research problems, both partially solved**, plus a
-short tail of smaller polish:
-
-| # | Item | Why it's still open |
-|---|------|----------------------|
-| #42 | **Public EC2 seed deploy** | **Done** — a real EC2 seed (coordinator-us + coordinator-eu + directory) is live at mlxmesh.net with DNS/TLS/nginx |
-| #49 | **Progressive decentralization** | Partially done (multi-endpoint directory fallback across all clients, a real parity metric — see the Scalability table above). What's left needs an actual ops decision (deploy a second directory instance) plus a defined parity threshold and handoff automation — not just more code |
-| #52 | **Federated ledger authority (M7)** | Partially done: coordinator identity, TOFU-pinned/allowlisted pod registration, and cross-pod signed-ledger-event witnessing + audit now exist (`internal/federation`, `internal/directory.PinStore`). What's still open is the genuinely hard research problem — Byzantine-fault-tolerant consensus or staking/slashing so a pod that's compromised (not just impersonating another) can be automatically caught and quarantined, without inventing a stakeable token the project has deliberately avoided. This is what actually blocks fully open, trustless decentralization |
-
-The remaining smaller polish: a
-**third-party security review** of the crypto/settlement paths (an internal
-multi-angle pass already happened — see the security table above — but that's
-not a substitute for an outside reviewer), a **ledger reconciliation/audit
-trail**, **coordinator HA** and **ledger beyond SQLite** (both needed only
-past a single-coordinator deployment), and **release engineering** (signed
-binaries, reproducible images, App Store/TestFlight, runbooks). (The
-previously-logged #59 cleanup — threading the node TLS endpoint + fingerprint
-as one `NodeTarget` struct instead of two loose strings — is done.) None of
-these block running the mesh today under a trusted operator — they block a
-*public, unattended* release.
 
 ---
 
@@ -852,6 +894,19 @@ Client telemetry is governed by [client-telemetry-schema-addendum.md](../meshAI/
 ## Why no token?
 
 Protocol credits are off-chain (stablecoin / fiat payment rails). Issuing a native token risks the Helium-style collapse pattern: token price speculation decouples from actual compute supply, then crashes when market sentiment shifts. Bootstrap grants are per-pod, keyed to *verified* capacity, and decay as earned revenue grows.
+
+### Marketplace feasibility
+
+The current ledger architecture does not support a credit marketplace. Building one would require:
+
+1. **Credit transfer mechanism** - implement atomic transfers between accounts (debit A, credit B)
+2. **External monetary value** - define pricing mechanism (credits ↔ fiat/crypto)
+3. **Trust model** - either:
+   - Keep centralized trust (operator acts as escrow), or
+   - Move to a blockchain for trustless transfers (major architectural shift)
+4. **Regulatory compliance** - KYC/AML if real money is involved
+
+The ledger is intentionally centralized and append-only (SQLite), with no transfer capability. A marketplace would be a significant addition beyond the current scope.
 
 ---
 

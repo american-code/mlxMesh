@@ -53,6 +53,18 @@ func Validate(cfg Config) error {
 
 	errs = append(errs, validateSchedule(cfg.Schedule)...)
 
+	for modelID, draft := range cfg.DraftModels {
+		if modelID == "" {
+			errs = append(errs, errors.New("draft_models: empty model_id key is not allowed"))
+		}
+		if draft.DraftModelID == "" {
+			errs = append(errs, fmt.Errorf("draft_models[%q]: draft_model_id is required", modelID))
+		}
+		if draft.NumDraftTokens < 0 {
+			errs = append(errs, fmt.Errorf("draft_models[%q]: num_draft_tokens must be >= 0, got %d", modelID, draft.NumDraftTokens))
+		}
+	}
+
 	return errors.Join(errs...)
 }
 

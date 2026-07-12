@@ -20,6 +20,9 @@ struct NodeSnapshot: Codable, Identifiable, Hashable {
     let clusterChipFamilies: [String]?
     let lastSeenAt: String
     let inFlightJobs: Int
+    // Decorative/seed capacity, not a real operator's hardware — absent/false
+    // for genuine contributor nodes. See pickDemoModel in TryMeshView.swift.
+    let simulated: Bool?
 
     var id: String { nodeId }
 
@@ -33,6 +36,11 @@ struct ModelCapability: Codable, Hashable {
     let runtime: String
     let maxContextTokens: Int
     let isMoe: Bool
+    // Whether Exo currently has an active inference instance for this model —
+    // distinct from merely being downloaded to disk (the only thing that
+    // gates whether a model appears in this list at all). Optional/absent on
+    // older coordinators that predate this field.
+    let loaded: Bool?
 }
 
 struct PodHealthDigest: Codable, Identifiable, Hashable {

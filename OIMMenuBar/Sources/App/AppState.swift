@@ -101,10 +101,38 @@ final class AppState {
             scheduleDays = Set((existing?.schedule?.days ?? []).compactMap(Weekday.init))
         }
 
-        reachabilityEndpoint = defaults.string(forKey: Keys.reachabilityEndpoint)
-            ?? existing?.reachabilityEndpoint ?? ""
+        // Sanitize any prefilled value: a loopback address (e.g.
+        // "http://localhost:8765", which older pre-pull builds auto-derived and
+        // left in ~/.config/oim/config.json) is never a valid direct address —
+        // a remote coordinator can't reach this Mac's loopback. Left in the
+        // field it silently forced the old push path and the node earned
+        // nothing. Blank it so the node uses the default outbound pull mode.
+        reachabilityEndpoint = Self.sanitizedReachability(
+            defaults.string(forKey: Keys.reachabilityEndpoint) ?? existing?.reachabilityEndpoint ?? "")
 
         exoMonitor.startPolling()
+    }
+
+    /// Returns `endpoint` unless it resolves to a loopback/unspecified host
+    /// (localhost, 127.x, ::1, 0.0.0.0) — those are never reachable by a remote
+    /// coordinator, so we drop them to "" and let the node run in default pull
+    /// mode. Mirrors the agent's own `isLoopbackReachability` guard so the UI and
+    /// the node binary agree on what counts as a usable direct address.
+    static func sanitizedReachability(_ endpoint: String) -> String {
+        let trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        // Normalize a scheme first: URLComponents parses a bare "localhost:8765"
+        // as scheme=localhost with no host, so prepend one when it's missing.
+        let withScheme = trimmed.contains("://") ? trimmed : "http://" + trimmed
+        var host = trimmed
+        if let comps = URLComponents(string: withScheme), let h = comps.host {
+            host = h // URLComponents already strips the [] around an IPv6 host
+        }
+        let loopbackHosts: Set<String> = ["localhost", "127.0.0.1", "::1", "0.0.0.0"]
+        if loopbackHosts.contains(host.lowercased()) || host.hasPrefix("127.") {
+            return ""
+        }
+        return trimmed
     }
 
     func persistSettings() {
@@ -130,7 +158,10 @@ final class AppState {
             scheduleStart: scheduleMode == .window ? scheduleStart : nil,
             scheduleEnd: scheduleMode == .window ? scheduleEnd : nil,
             scheduleDays: scheduleMode == .window ? scheduleDays.map(\.rawValue) : nil,
-            reachabilityEndpoint: reachabilityEndpoint.isEmpty ? nil : reachabilityEndpoint
+            reachabilityEndpoint: {
+                let sane = Self.sanitizedReachability(reachabilityEndpoint)
+                return sane.isEmpty ? nil : sane
+            }()
         )
         nodeController.start(options)
     }

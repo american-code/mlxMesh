@@ -34,7 +34,9 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -64,6 +66,11 @@ type Config struct {
 	CapacityPct          float64       // memory contribution cap (0.0–1.0)
 	DeclaredMemoryGB     float64       // when > 0, overrides governor.TotalRAMGB() for simulation
 	AllowedModels        []string      // empty = all downloaded Exo models; non-empty = allowlist
+	// DraftModels configures speculative decoding pairings, keyed by served
+	// model_id — forward-compatible plumbing only (see nodeconfig.DraftModelConfig's
+	// doc comment). Nil/empty = not configured; the common case today, since
+	// Exo's HTTP API has no draft-model parameter to actually use this yet.
+	DraftModels map[string]nodeconfig.DraftModelConfig
 	UserID               string        // when set, earned credits from this node's work go to this user account
 	GeographicHint       string
 	GeoLat               float64 // approximate latitude; 0 = not declared
@@ -129,7 +136,18 @@ func DefaultConfig() Config {
 // priv and pub are the node's Ed25519 keypair loaded via identity.LoadOrCreate().
 func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	exo := exoadapter.New(cfg.ExoURL)
-	runner := jobrunner.New(cfg.ExoURL)
+
+	// Convert nodeconfig's dependency-light DraftModelConfig into protocol's
+	// (see nodeconfig.DraftModelConfig's doc comment) — this is the boundary
+	// package for that conversion since it already imports both.
+	var draftModels map[string]protocol.DraftModelConfig
+	if len(cfg.DraftModels) > 0 {
+		draftModels = make(map[string]protocol.DraftModelConfig, len(cfg.DraftModels))
+		for modelID, d := range cfg.DraftModels {
+			draftModels[modelID] = protocol.DraftModelConfig{DraftModelID: d.DraftModelID, NumDraftTokens: d.NumDraftTokens}
+		}
+	}
+	runner := jobrunner.New(cfg.ExoURL, draftModels)
 
 	listenAddr := cfg.ListenAddr
 	if listenAddr == "" {
@@ -154,8 +172,20 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	// portMappingStatus is mirrored to GET /detect so OIMMenuBar can show the
 	// node's real connectivity: "pull" (outbound, always reachable) vs "manual"
 	// (explicit push endpoint).
-	pullMode := cfg.ReachabilityEndpoint == ""
+	//
+	// Note: cfg.ReachabilityEndpoint is trusted as-is here, loopback or not —
+	// an EXPLICIT --reachability-endpoint (integration tests, Docker-localhost
+	// sims, a genuinely same-machine/LAN push setup) is a deliberate choice
+	// this layer has no business overriding. The stale-config-injection bug
+	// (a pre-pull-mode ~/.config/oim/config.json value silently resurrected as
+	// this flag's default even though the caller never asked for push mode —
+	// confirmed live: a real contributor node stuck on a dead
+	// http://localhost:8765 target, earning nothing) is filtered at the
+	// SOURCE instead — see cmd/oim/main.go's IsLoopbackReachability check on
+	// the saved-config fallback, which only fires when the flag was NOT
+	// explicitly passed on this invocation.
 	reachabilityEndpoint := cfg.ReachabilityEndpoint
+	pullMode := reachabilityEndpoint == ""
 	portMappingStatus := "manual"
 	if pullMode {
 		portMappingStatus = "pull"
@@ -166,6 +196,7 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	opts.MemoryCapPct = cfg.CapacityPct
 	opts.DeclaredMemoryGB = cfg.DeclaredMemoryGB
 	opts.AllowedModels = cfg.AllowedModels
+	opts.DraftModels = draftModels
 	opts.ReachabilityEndpoint = reachabilityEndpoint
 	if cfg.GeographicHint != "" {
 		opts.GeographicHint = cfg.GeographicHint
@@ -578,9 +609,17 @@ func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct flo
 		var result map[string]any
 		var execErr error
 
-		if req.Lane == string(protocol.JobLaneBackground) {
+		switch {
+		case req.Lane == string(protocol.JobLaneWarm):
+			// Node-local control message, not billable inference — see
+			// protocol.JobLaneWarm's doc comment. Push nodes get this the
+			// same way pull nodes do (internal/agent/pull.go's
+			// executePulledJob) since jobrunner/lane-branching, not the
+			// transport, is what's warm-request-aware.
+			result, execErr = runner.WarmModel(r.Context(), spec.ModelID)
+		case req.Lane == string(protocol.JobLaneBackground):
 			result, execErr = runner.ExecuteBackgroundLane(r.Context(), spec, messages, capPct, isContinuation)
-		} else {
+		default:
 			result, execErr = runner.ExecuteFastLane(r.Context(), spec, messages, capPct)
 		}
 
@@ -821,6 +860,40 @@ func reachabilityPort(listenAddr string) (int, error) {
 		return 0, fmt.Errorf("parse listen address %q: %w", listenAddr, err)
 	}
 	return strconv.Atoi(port)
+}
+
+// IsLoopbackReachability reports whether endpoint (a --reachability-endpoint
+// value such as "http://localhost:8765" or "127.0.0.1:8765") points at a
+// loopback or unspecified address — which a remote coordinator can never
+// reach. A value we can't parse is treated as NOT loopback: we leave an
+// operator's explicit, understood choice intact rather than silently
+// overriding something we don't recognize.
+//
+// Exported for cmd/oim/main.go, which uses this to filter a STALE value
+// resurrected from ~/.config/oim/config.json (a pre-pull-mode leftover that
+// silently forced push mode against a dead target — confirmed live) — but
+// only on that saved-config fallback path, never on an explicit
+// --reachability-endpoint the caller actually passed this run. An explicit
+// loopback endpoint (integration tests, Docker-localhost simulation, a
+// genuinely same-machine/LAN push setup, or a future statically-addressed
+// federated/trusted coordinator) is a deliberate choice this package has no
+// business overriding — see agent.Run's reachability-resolution comment.
+func IsLoopbackReachability(endpoint string) bool {
+	host := endpoint
+	if u, err := url.Parse(endpoint); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback() || ip.IsUnspecified()
+	}
+	return false
 }
 
 // resolveReachabilityEndpoint converts a listen address like ":8765" to a full URL

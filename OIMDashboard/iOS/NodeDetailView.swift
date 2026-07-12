@@ -42,8 +42,11 @@ struct NodeDetailView: View {
                     Section("Models") {
                         ForEach(models, id: \.modelId) { model in
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(model.modelId)
-                                    .font(.system(size: 14, weight: .medium))
+                                HStack(spacing: 6) {
+                                    Text(model.modelId)
+                                        .font(.system(size: 14, weight: .medium))
+                                    LoadedBadge(loaded: model.loaded ?? false)
+                                }
                                 HStack(spacing: 8) {
                                     Chip(model.quantization)
                                     Chip(model.runtime)
@@ -209,5 +212,23 @@ struct Chip: View {
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
             .background(.quaternary, in: Capsule())
+    }
+}
+
+/// Distinct from Chip (which is neutral/informational) — this is a status
+/// signal: whether Exo currently has an active inference instance for this
+/// model, not just whether it's downloaded to disk. Green "Loaded" is
+/// dispatchable right now; amber "Cold" is visible but not routable until
+/// warmed (see the "Load" trigger, WarmModel).
+struct LoadedBadge: View {
+    let loaded: Bool
+    var body: some View {
+        Text(loaded ? "Loaded" : "Cold")
+            .font(.system(size: 9, weight: .semibold))
+            .textCase(.uppercase)
+            .foregroundStyle(loaded ? .green : .orange)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background((loaded ? Color.green : Color.orange).opacity(0.15), in: Capsule())
     }
 }

@@ -55,7 +55,7 @@ func registerTestNode(t *testing.T, r *coordinator.NodeRegistry) (priv []byte, n
 		DeclaredMemoryGB:     16.0,
 		DeclaredMemoryCapPct: 0.5,
 		ReachabilityEndpoint: "http://127.0.0.1:0",
-		Models:               []protocol.ModelCapability{{ModelID: "test-model"}},
+		Models:               []protocol.ModelCapability{{ModelID: "test-model", Loaded: true}},
 	}
 	payload, err := manifest.Bytes()
 	if err != nil {
@@ -171,7 +171,7 @@ func TestFastLaneGateIgnoresSelfDeclaredEnclaveClaim(t *testing.T) {
 		NodeID:           "n1",
 		HasSecureEnclave: true, // self-declared — must be ignored for gating
 		Models: []protocol.ModelCapability{
-			{ModelID: "m1"},
+			{ModelID: "m1", Loaded: true},
 		},
 	}
 	score := coordinator.ScoreForFastLane(node, job, 0, false /* not coordinator-attested */)
@@ -191,7 +191,7 @@ func TestFastLaneGateAcceptsVerifiedAttestation(t *testing.T) {
 		NodeID:           "n1",
 		HasSecureEnclave: false, // even if the self-declared field is false/absent
 		Models: []protocol.ModelCapability{
-			{ModelID: "m1"},
+			{ModelID: "m1", Loaded: true},
 		},
 	}
 	score := coordinator.ScoreForFastLane(node, job, 0, true /* coordinator-attested */)

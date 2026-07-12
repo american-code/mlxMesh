@@ -145,6 +145,12 @@ func executePulledJob(ctx context.Context, runner *jobrunner.Runner, ecdhPriv *e
 	if spec.JobID == "" {
 		spec.JobID = pj.JobID
 	}
+	// JobLaneWarm is a node-local control message, not billable inference —
+	// see protocol.JobLaneWarm's doc comment. Checked first since it carries
+	// no messages/payload and needs none of the fast/background handling.
+	if spec.Lane == protocol.JobLaneWarm {
+		return runner.WarmModel(ctx, spec.ModelID)
+	}
 	if spec.Lane == protocol.JobLaneBackground {
 		return runner.ExecuteBackgroundLane(ctx, spec, messages, capPct, false)
 	}

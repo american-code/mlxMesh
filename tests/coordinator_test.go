@@ -28,7 +28,7 @@ func makeTestNode(t *testing.T, modelID, quantization string, tps float64, hasEn
 		ReachabilityEndpoint: "http://localhost:9999",
 		HasSecureEnclave:     hasEnclave,
 		Models: []protocol.ModelCapability{
-			{ModelID: modelID, Quantization: quantization, Runtime: protocol.RuntimeExoMLX, MaxContextTokens: 4096},
+			{ModelID: modelID, Quantization: quantization, Runtime: protocol.RuntimeExoMLX, MaxContextTokens: 4096, Loaded: true},
 		},
 		PricePerUnit: map[string]float64{"compute_cycles": 0.001},
 	}
@@ -143,13 +143,13 @@ func TestFastLaneScoring(t *testing.T) {
 	// Measured node should score higher than unmeasured.
 	measured := protocol.CapabilityManifest{
 		NodeID:            "aaa",
-		Models:            []protocol.ModelCapability{{ModelID: "llama-3.2-3b", Quantization: ""}},
+		Models:            []protocol.ModelCapability{{ModelID: "llama-3.2-3b", Quantization: "", Loaded: true}},
 		MeasuredSignature: &protocol.MeasuredSignature{TokensPerSecDecode: 80.0},
 		HasSecureEnclave:  false,
 	}
 	unmeasured := protocol.CapabilityManifest{
 		NodeID:           "bbb",
-		Models:           []protocol.ModelCapability{{ModelID: "llama-3.2-3b", Quantization: ""}},
+		Models:           []protocol.ModelCapability{{ModelID: "llama-3.2-3b", Quantization: "", Loaded: true}},
 		HasSecureEnclave: false,
 	}
 
@@ -174,12 +174,12 @@ func TestFastLaneScoringEnclaveGate(t *testing.T) {
 
 	withEnclave := protocol.CapabilityManifest{
 		NodeID:            "aaa",
-		Models:            []protocol.ModelCapability{{ModelID: "llama-3.2-3b"}},
+		Models:            []protocol.ModelCapability{{ModelID: "llama-3.2-3b", Loaded: true}},
 		MeasuredSignature: &protocol.MeasuredSignature{TokensPerSecDecode: 50.0},
 	}
 	withoutEnclave := protocol.CapabilityManifest{
 		NodeID:            "bbb",
-		Models:            []protocol.ModelCapability{{ModelID: "llama-3.2-3b"}},
+		Models:            []protocol.ModelCapability{{ModelID: "llama-3.2-3b", Loaded: true}},
 		MeasuredSignature: &protocol.MeasuredSignature{TokensPerSecDecode: 200.0},
 	}
 
@@ -415,7 +415,7 @@ func makeTestNodeAtEndpoint(t *testing.T, modelID string, tps float64, endpoint 
 		DeclaredMemoryCapPct: 0.5,
 		ReachabilityEndpoint: endpoint,
 		Models: []protocol.ModelCapability{
-			{ModelID: modelID, Runtime: protocol.RuntimeExoMLX, MaxContextTokens: 4096},
+			{ModelID: modelID, Runtime: protocol.RuntimeExoMLX, MaxContextTokens: 4096, Loaded: true},
 		},
 		MeasuredSignature: &protocol.MeasuredSignature{TokensPerSecDecode: tps, SampleCount: 3, BenchmarkPromptID: "medium", MeasuredAt: "2026-01-01T00:00:00Z"},
 	}

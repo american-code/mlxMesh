@@ -1,8 +1,11 @@
+import { useState } from 'react'
 import type { NodeSnapshot } from '../types'
 import {
   computeNodeStatus, statusColor, STATUS_LABELS,
   formatTps, formatMem, formatTime, nodeLabel,
 } from '../utils'
+import { warmModel } from '../api'
+import { getOrCreateUserId } from '../identity'
 
 // Summarizes cluster_chip_families into counted groups, e.g.
 // ["Apple M1", "Apple M1", "Apple M1 Pro"] -> "2× Apple M1, 1× Apple M1 Pro".
@@ -27,13 +30,38 @@ function secureEnclaveMetaRow(node: NodeSnapshot): { value: string; valueColor?:
 
 interface Props {
   node: NodeSnapshot
+  coordinatorURL: string | null
   onClose: () => void
 }
 
-export function NodeDetail({ node, onClose }: Props) {
+export function NodeDetail({ node, coordinatorURL, onClose }: Props) {
   const status = computeNodeStatus(node)
   const color = statusColor(status)
   const chipSummary = summarizeChipFamilies(node.cluster_chip_families)
+
+  // Client-side only — no new server state needed. The next node-list refresh
+  // (SSE/poll, already running) naturally flips a model's badge once Exo
+  // actually reports it loaded; this just covers the "request is in flight"
+  // moment (see plan: "Deliberately out of scope — a dedicated loading state").
+  const [warmingModelIds, setWarmingModelIds] = useState<Set<string>>(new Set())
+  const [warmError, setWarmError] = useState<string | null>(null)
+
+  async function handleLoadModel(modelId: string) {
+    if (!coordinatorURL || warmingModelIds.has(modelId)) return
+    setWarmError(null)
+    setWarmingModelIds(prev => new Set(prev).add(modelId))
+    try {
+      await warmModel(coordinatorURL, node.node_id, modelId, getOrCreateUserId())
+    } catch (e) {
+      setWarmError((e as Error).message)
+    } finally {
+      setWarmingModelIds(prev => {
+        const next = new Set(prev)
+        next.delete(modelId)
+        return next
+      })
+    }
+  }
 
   return (
     <div style={{
@@ -94,13 +122,44 @@ export function NodeDetail({ node, onClose }: Props) {
               background: '#1c2128', border: '1px solid #30363d',
               borderRadius: 6, padding: '9px 12px', marginBottom: 6,
             }}>
-              <div style={{ color: '#e6edf3', fontSize: 13, fontWeight: 500 }}>{m.model_id}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ color: '#e6edf3', fontSize: 13, fontWeight: 500 }}>{m.model_id}</div>
+                <span style={{
+                  fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em',
+                  padding: '2px 6px', borderRadius: 4,
+                  color: m.loaded ? '#3fb950' : '#d29922',
+                  background: m.loaded ? '#3fb95022' : '#d2992222',
+                  border: `1px solid ${m.loaded ? '#3fb95055' : '#d2992255'}`,
+                }}>
+                  {m.loaded ? 'Loaded' : 'Cold'}
+                </span>
+                {!m.loaded && (
+                  <button
+                    onClick={() => handleLoadModel(m.model_id)}
+                    disabled={!coordinatorURL || warmingModelIds.has(m.model_id)}
+                    style={{
+                      marginLeft: 'auto', fontSize: 10, fontWeight: 600,
+                      padding: '2px 8px', borderRadius: 4,
+                      background: '#1f6feb22', border: '1px solid #1f6feb55', color: '#58a6ff',
+                      cursor: warmingModelIds.has(m.model_id) ? 'default' : 'pointer',
+                      opacity: warmingModelIds.has(m.model_id) ? 0.6 : 1,
+                    }}
+                  >
+                    {warmingModelIds.has(m.model_id) ? 'Loading…' : 'Load'}
+                  </button>
+                )}
+              </div>
               <div style={{ color: '#7d8590', fontSize: 11, marginTop: 3 }}>
                 {m.quantization} · {m.runtime} · {m.max_context_tokens.toLocaleString()} ctx
                 {m.is_moe && ' · MoE'}
               </div>
             </div>
           ))}
+          {warmError && (
+            <div style={{ color: '#f85149', fontSize: 11, marginTop: 4 }}>
+              Load failed: {warmError}
+            </div>
+          )}
         </div>
       )}
 

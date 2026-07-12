@@ -35,6 +35,14 @@ type CreditOrigin string
 const (
 	CreditOriginStartupGrant  CreditOrigin = "startup_grant"
 	CreditOriginEarnedContrib CreditOrigin = "earned"
+	// CreditOriginAdminAdjustment marks a manual treasury credit injected by
+	// an authenticated admin action (see internal/adminauth, cmd/coordinator
+	// POST /admin/treasury/credit) — real, operator-authorized value, so it
+	// tallies into the "earned" bucket everywhere below (GetBalance,
+	// DebitAccount, Reconcile), never the Sybil-resistant per-user startup
+	// grant bucket, which specifically means "one free grant a new real user
+	// claimed," not an operator top-up.
+	CreditOriginAdminAdjustment CreditOrigin = "admin_adjustment"
 	// CreditOriginEarnedReferral is reserved — do NOT implement until a dedicated
 	// growth-incentive design pass is done (Helium-shaped risk, proposal §11).
 )
@@ -64,6 +72,56 @@ type ledgerDebit struct {
 	WrittenAt time.Time
 }
 
+// ledgerBackend discriminates how a Ledger enforces correctness. Memory and
+// SQLite share the exact same code path below (a single in-process mutex
+// guards both) — only Postgres dispatches to a different implementation,
+// in ledger_postgres.go, where correctness is enforced by the database
+// itself (transactions, row locks, unique constraints) so that N coordinator
+// processes can safely share one Postgres instance.
+type ledgerBackend int
+
+const (
+	backendMemory ledgerBackend = iota
+	backendSQLite
+	backendPostgres
+)
+
+// balanceFromTotals applies the grant-first debit ordering shared by every
+// backend: grant credits are always spent before earned credits.
+func balanceFromTotals(grantTotal, earnedTotal, totalDebited float64) Balance {
+	grantUsed := min(totalDebited, grantTotal)
+	earnedUsed := max(0.0, totalDebited-grantTotal)
+	grantBal := max(0.0, grantTotal-grantUsed)
+	earnedBal := max(0.0, earnedTotal-earnedUsed)
+	return Balance{
+		GrantBalance:  grantBal,
+		EarnedBalance: earnedBal,
+		Total:         grantBal + earnedBal,
+	}
+}
+
+// outstandingGrantLiability is one user's unspent startup-grant balance,
+// grant-first debit ordering applied — shared by every backend.
+func outstandingGrantLiability(grantTotal, totalDebited float64) float64 {
+	grantUsed := min(totalDebited, grantTotal)
+	return max(0.0, grantTotal-grantUsed)
+}
+
+// AdminAction is one entry in the admin audit trail — a record of the
+// administrative act itself (who did what, when, why), distinct from and
+// in addition to whatever ledger effect it had. A treasury credit
+// injection writes BOTH a CreditEntry (the ledger effect, via
+// CreditAccount) and an AdminAction (the audit record, via
+// RecordAdminAction) — the former alone would leave no queryable trail of
+// "an admin did this, with this stated reason," since credit_entries has
+// no actor/reason concept.
+type AdminAction struct {
+	Action      string    `json:"action"`
+	Detail      string    `json:"detail"` // free-text reason, e.g. the "reason field" TODO.md asks for
+	Amount      float64   `json:"amount"`
+	PerformedAt time.Time `json:"performed_at"`
+}
+
 // Ledger is a thread-safe, append-only credit ledger split by origin.
 // Credits are written via CreditAccount; debits are recorded separately
 // so the credit history is never mutated.
@@ -74,11 +132,13 @@ type ledgerDebit struct {
 // before the in-memory slices are updated, so balances and grant history
 // survive a coordinator restart instead of silently resetting to zero.
 type Ledger struct {
-	mu       sync.RWMutex
-	entries  []CreditEntry
-	debits   []ledgerDebit
-	db       *sql.DB
-	onCredit func(CreditEntry) // optional; see SetOnCredit
+	mu           sync.RWMutex
+	entries      []CreditEntry
+	debits       []ledgerDebit
+	adminActions []AdminAction
+	db           *sql.DB
+	backend      ledgerBackend
+	onCredit     func(CreditEntry) // optional; see SetOnCredit
 }
 
 // SetOnCredit registers a callback fired (outside the ledger's lock) after
@@ -117,7 +177,7 @@ func NewPersistentLedger(dbPath string) (*Ledger, error) {
 		db.Close()
 		return nil, err
 	}
-	l := &Ledger{db: db}
+	l := &Ledger{db: db, backend: backendSQLite}
 	if err := l.loadFromDB(); err != nil {
 		db.Close()
 		return nil, err
@@ -141,6 +201,13 @@ func migrateLedgerSchema(db *sql.DB) error {
 			amount REAL NOT NULL,
 			job_id TEXT NOT NULL,
 			written_at TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS admin_actions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			action TEXT NOT NULL,
+			detail TEXT NOT NULL,
+			amount REAL NOT NULL,
+			performed_at TEXT NOT NULL
 		);
 		CREATE INDEX IF NOT EXISTS idx_credit_entries_user ON credit_entries(user_id);
 		CREATE INDEX IF NOT EXISTS idx_ledger_debits_user ON ledger_debits(user_id);
@@ -187,7 +254,25 @@ func (l *Ledger) loadFromDB() error {
 		d.WrittenAt, _ = time.Parse(time.RFC3339Nano, written)
 		l.debits = append(l.debits, d)
 	}
-	return debitRows.Err()
+	if err := debitRows.Err(); err != nil {
+		return fmt.Errorf("iterate debits: %w", err)
+	}
+
+	actionRows, err := l.db.Query(`SELECT action, detail, amount, performed_at FROM admin_actions ORDER BY id`)
+	if err != nil {
+		return fmt.Errorf("load admin actions: %w", err)
+	}
+	defer actionRows.Close()
+	for actionRows.Next() {
+		var a AdminAction
+		var performed string
+		if err := actionRows.Scan(&a.Action, &a.Detail, &a.Amount, &performed); err != nil {
+			return fmt.Errorf("scan admin action: %w", err)
+		}
+		a.PerformedAt, _ = time.Parse(time.RFC3339Nano, performed)
+		l.adminActions = append(l.adminActions, a)
+	}
+	return actionRows.Err()
 }
 
 // CreditAccount appends an earned or grant credit.
@@ -195,6 +280,13 @@ func (l *Ledger) loadFromDB() error {
 // When backed by SQLite, the row is committed to disk before this returns —
 // callers can treat a nil error as "durably recorded," not just "in memory."
 func (l *Ledger) CreditAccount(entry CreditEntry) error {
+	if l.backend == backendPostgres {
+		err := l.creditAccountPG(entry)
+		if err == nil {
+			l.notifyCredit(entry)
+		}
+		return err
+	}
 	err := func() error {
 		l.mu.Lock()
 		defer l.mu.Unlock()
@@ -237,6 +329,13 @@ func (l *Ledger) creditLocked(entry CreditEntry) error {
 // acquisition prevents two concurrent claims for the same user from both
 // succeeding (proposal §9.4).
 func (l *Ledger) ClaimStartupGrantOnce(entry CreditEntry) (claimed bool, err error) {
+	if l.backend == backendPostgres {
+		claimed, err = l.claimStartupGrantOncePG(entry)
+		if claimed {
+			l.notifyCredit(entry)
+		}
+		return claimed, err
+	}
 	claimed, err = func() (bool, error) {
 		l.mu.Lock()
 		defer l.mu.Unlock()
@@ -259,6 +358,10 @@ func (l *Ledger) ClaimStartupGrantOnce(entry CreditEntry) (claimed bool, err err
 // GetBalance returns the user's credit split by origin.
 // Grant balance is consumed before earned balance during debits.
 func (l *Ledger) GetBalance(userID string) Balance {
+	if l.backend == backendPostgres {
+		return l.getBalancePG(userID)
+	}
+
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
@@ -270,7 +373,7 @@ func (l *Ledger) GetBalance(userID string) Balance {
 		switch e.Origin {
 		case CreditOriginStartupGrant:
 			grantTotal += e.Amount
-		case CreditOriginEarnedContrib:
+		case CreditOriginEarnedContrib, CreditOriginAdminAdjustment:
 			earnedTotal += e.Amount
 		}
 	}
@@ -280,22 +383,17 @@ func (l *Ledger) GetBalance(userID string) Balance {
 		}
 	}
 
-	// Grant is debited first; the remainder rolls into earned.
-	grantUsed := min(totalDebited, grantTotal)
-	earnedUsed := max(0.0, totalDebited-grantTotal)
-	grantBal := max(0.0, grantTotal-grantUsed)
-	earnedBal := max(0.0, earnedTotal-earnedUsed)
-	return Balance{
-		GrantBalance:  grantBal,
-		EarnedBalance: earnedBal,
-		Total:         grantBal + earnedBal,
-	}
+	return balanceFromTotals(grantTotal, earnedTotal, totalDebited)
 }
 
 // DebitAccount spends credits against a submitted job.
 // Debits grant_balance before earned_balance.
 // Returns false on insufficient balance — callers must reject the job, not queue it.
 func (l *Ledger) DebitAccount(userID string, amount float64, jobID string) bool {
+	if l.backend == backendPostgres {
+		return l.debitAccountPG(userID, amount, jobID)
+	}
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -307,7 +405,7 @@ func (l *Ledger) DebitAccount(userID string, amount float64, jobID string) bool 
 		switch e.Origin {
 		case CreditOriginStartupGrant:
 			grantTotal += e.Amount
-		case CreditOriginEarnedContrib:
+		case CreditOriginEarnedContrib, CreditOriginAdminAdjustment:
 			earnedTotal += e.Amount
 		}
 	}
@@ -346,6 +444,10 @@ func (l *Ledger) DebitAccount(userID string, amount float64, jobID string) bool 
 // across all users. This is the network's current subsidy exposure — should decrease
 // as verified capacity grows and grants decay (proposal §9.4).
 func (l *Ledger) TotalOutstandingGrantLiability() float64 {
+	if l.backend == backendPostgres {
+		return l.totalOutstandingGrantLiabilityPG()
+	}
+
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
@@ -372,8 +474,61 @@ func (l *Ledger) TotalOutstandingGrantLiability() float64 {
 
 	var liability float64
 	for _, s := range users {
-		grantUsed := min(s.totalDebited, s.grantTotal)
-		liability += max(0.0, s.grantTotal-grantUsed)
+		liability += outstandingGrantLiability(s.grantTotal, s.totalDebited)
 	}
 	return liability
+}
+
+// RecordAdminAction appends an audit-trail entry for an administrative act
+// (e.g. a manual treasury credit injection) — separate from and in addition
+// to whatever CreditEntry/debit that act produced, since neither of those
+// carry an actor/reason concept. Append-only, same durability contract as
+// CreditAccount: when backed by SQLite, the row is committed before this
+// returns.
+func (l *Ledger) RecordAdminAction(action, detail string, amount float64, performedAt time.Time) error {
+	if l.backend == backendPostgres {
+		// No in-memory mirror here: RecentAdminActions reads straight from
+		// Postgres for this backend, since a local slice would only ever
+		// reflect this process's own writes, not the other coordinators
+		// sharing the same database.
+		return l.recordAdminActionPG(action, detail, amount, performedAt)
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.db != nil {
+		_, err := l.db.Exec(
+			`INSERT INTO admin_actions (action, detail, amount, performed_at) VALUES (?, ?, ?, ?)`,
+			action, detail, amount, performedAt.Format(time.RFC3339Nano),
+		)
+		if err != nil {
+			return fmt.Errorf("persist admin action: %w", err)
+		}
+	}
+	l.adminActions = append(l.adminActions, AdminAction{
+		Action:      action,
+		Detail:      detail,
+		Amount:      amount,
+		PerformedAt: performedAt,
+	})
+	return nil
+}
+
+// RecentAdminActions returns up to limit most-recent admin actions, newest
+// first.
+func (l *Ledger) RecentAdminActions(limit int) []AdminAction {
+	if l.backend == backendPostgres {
+		return l.recentAdminActionsPG(limit)
+	}
+
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if limit <= 0 || limit > len(l.adminActions) {
+		limit = len(l.adminActions)
+	}
+	out := make([]AdminAction, limit)
+	for i := 0; i < limit; i++ {
+		out[i] = l.adminActions[len(l.adminActions)-1-i]
+	}
+	return out
 }

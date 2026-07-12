@@ -71,6 +71,74 @@ func TestCoordinationReward(t *testing.T) {
 	}
 }
 
+// ActivityDiscount bounds and monotonicity — the bootstrapping-economics fix
+// (TODO.md, Economic Sustainability).
+func TestActivityDiscount_BoundsAndMonotonicity(t *testing.T) {
+	if d := ActivityDiscount(0); !approx(d, ActivityDiscountFloor) {
+		t.Errorf("at 0%% backpressure want floor %.4f, got %.4f", ActivityDiscountFloor, d)
+	}
+	if d := ActivityDiscount(-5); !approx(d, ActivityDiscountFloor) {
+		t.Errorf("negative backpressure should clamp to floor, got %.4f", d)
+	}
+	if d := ActivityDiscount(ActivityCeilingBackpressurePct); !approx(d, 1.0) {
+		t.Errorf("at the ceiling want no discount (1.0), got %.4f", d)
+	}
+	if d := ActivityDiscount(ActivityCeilingBackpressurePct + 50); !approx(d, 1.0) {
+		t.Errorf("above the ceiling want no discount (1.0), got %.4f", d)
+	}
+	// Monotonic non-decreasing as backpressure rises.
+	prev := ActivityDiscount(0)
+	for bp := 1.0; bp <= 100; bp++ {
+		d := ActivityDiscount(bp)
+		if d < prev-1e-9 {
+			t.Fatalf("ActivityDiscount not monotonic at bp=%.0f: %.6f < prev %.6f", bp, d, prev)
+		}
+		prev = d
+	}
+}
+
+// ConsumerCostWithActivityDiscount must never let the treasury pay out more
+// than it collects — the same solvency invariant TestRewardAlwaysLessThanCost
+// guards for the undiscounted path, swept across backpressure levels too.
+func TestConsumerCostWithActivityDiscount_NeverUndercutsProviderReward(t *testing.T) {
+	lanes := []Lane{LaneFast, LaneBackground}
+	tiers := []string{"low", "moderate", "high_requires_attestation", "unknown"}
+	for _, l := range lanes {
+		for _, s := range tiers {
+			reward := ProviderReward(l, s, 1000)
+			for bp := 0.0; bp <= 100; bp += 5 {
+				discounted := ConsumerCostWithActivityDiscount(l, s, 1000, bp)
+				if discounted < reward-1e-9 {
+					t.Errorf("%s/%s bp=%.0f: discounted cost %.4f < provider reward %.4f", l, s, bp, discounted, reward)
+				}
+			}
+		}
+	}
+}
+
+// At a fully idle network, the discount should compress the treasury's
+// margin all the way to zero (discounted cost == provider reward) — the
+// specific anchor the bootstrapping fix is built around.
+func TestConsumerCostWithActivityDiscount_ZeroMarginAtFullyIdle(t *testing.T) {
+	reward := ProviderReward(LaneFast, "moderate", 1000)
+	discounted := ConsumerCostWithActivityDiscount(LaneFast, "moderate", 1000, 0)
+	if !approx(discounted, reward) {
+		t.Errorf("at 0%% backpressure want discounted cost == provider reward (%.4f), got %.4f", reward, discounted)
+	}
+}
+
+// The provider's payout must never move because of this consumer-side
+// discount — that's the whole point: node economics stay stable regardless
+// of network activity, only the treasury's cut compresses.
+func TestConsumerCostWithActivityDiscount_ProviderRewardUnaffected(t *testing.T) {
+	for bp := 0.0; bp <= 100; bp += 10 {
+		_ = ConsumerCostWithActivityDiscount(LaneFast, "moderate", 1000, bp)
+		if r := ProviderReward(LaneFast, "moderate", 1000); !approx(r, 0.75) {
+			t.Errorf("bp=%.0f: ProviderReward drifted to %.4f, want 0.75 (must be independent of the discount)", bp, r)
+		}
+	}
+}
+
 func approx(a, b float64) bool {
 	d := a - b
 	if d < 0 {

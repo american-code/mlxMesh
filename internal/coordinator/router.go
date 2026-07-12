@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"sort"
 	"strings"
@@ -49,6 +50,15 @@ func ScoreForFastLane(node protocol.CapabilityManifest, job protocol.JobSpec, in
 	if !hasModel(node, job.ModelID, job.QuantizationRequired) {
 		return math.Inf(-1)
 	}
+	// A model that's downloaded but not actively loaded in Exo can't actually
+	// serve a request right now — confirmed live: dispatching to one fails
+	// outright instead of a clean, understandable ineligibility. Gate real
+	// dispatch on Loaded so "no eligible nodes" means what it says. The
+	// warm-model path (WarmModel/JobLaneWarm) deliberately targets a node
+	// directly rather than through this scoring function, so it's unaffected.
+	if !modelIsLoaded(node, job.ModelID, job.QuantizationRequired) {
+		return math.Inf(-1)
+	}
 	if job.MaxPricePerUnit > 0 {
 		if price, ok := node.PricePerUnit["compute_cycles"]; ok && price > job.MaxPricePerUnit {
 			return math.Inf(-1)
@@ -63,28 +73,200 @@ func ScoreForFastLane(node protocol.CapabilityManifest, job protocol.JobSpec, in
 	return base / (1.0 + float64(inFlight)*0.5)
 }
 
+// effectiveManifest overrides a node's self-declared decode throughput with
+// the coordinator's own observed measurement (NodeWithLoad.ObservedTPS) once
+// at least one real job has been observed — never the reverse. Used only for
+// ranking/scoring: VerifyTierClaim and VerifiedCapacityScore read
+// node.Manifest.MeasuredSignature directly and must keep comparing the
+// claimed value against a submitted benchmark, so they are deliberately NOT
+// routed through this function.
+func effectiveManifest(node NodeWithLoad) protocol.CapabilityManifest {
+	if node.ObservedTPS == nil {
+		return node.Manifest
+	}
+	m := node.Manifest
+	sig := protocol.MeasuredSignature{}
+	if m.MeasuredSignature != nil {
+		sig = *m.MeasuredSignature
+	}
+	sig.TokensPerSecDecode = *node.ObservedTPS
+	m.MeasuredSignature = &sig
+	return m
+}
+
+// powerOfTwoWindow bounds how far into the score-sorted list the primary
+// pick's power-of-two sampling reaches. Node capacity in this network varies
+// by an order of magnitude (a 3B-model laptop next to a multi-GPU Mac
+// Studio) — sampling 2 candidates from the ENTIRE eligible pool would
+// sometimes promote a genuinely poor node just because it beat an even
+// worse one, which isn't what "power of two choices" is for. Restricting the
+// sample to the top few already-good candidates keeps the herding fix
+// (multiple decisions no longer always agree on the exact same node) without
+// risking a real quality regression: the worst case is landing on the
+// window's weakest member instead of the single best.
+const powerOfTwoWindow = 3
+
+// affinityPrefixChars bounds how much of the shared-prefix content
+// contributes to promptAffinityKey — enough to fingerprint a real shared
+// system prompt/instruction block, small enough that hashing it is free.
+const affinityPrefixChars = 200
+
+// affinityMaxInFlight caps how busy a prefix's affinity node may already be
+// before affinity is honored — protects against one popular prefix
+// saturating a single node when the rest of the fleet has spare capacity.
+// Past this, rankCandidates falls back to ordinary power-of-two selection
+// for that request, same as if there were no affinity match at all.
+const affinityMaxInFlight = 4
+
+// promptAffinityKey derives a stable cache-locality key for job, so requests
+// sharing the same model + leading prompt content consistently prefer the
+// same node — preserving Exo's warm KV-cache for that prefix instead of
+// forcing a cold recompute on whichever node the load balancer happens to
+// pick next (TODO.md "Prefix/KV-cache-aware routing": a 5.8x speedup on
+// shared prompt prefixes per real MLX prefix-caching benchmarks). Keys on
+// the concatenation of every system-role message (the common real pattern:
+// a fixed instruction block reused across many distinct user turns, e.g. a
+// batch summarization pass), falling back to the first message's content
+// when there is no system message. Empty when there's nothing to key on —
+// callers treat that as "no affinity, use normal ranking."
+//
+// Known limitation (v1 scope): this only fingerprints a LEADING shared
+// block, not arbitrary shared prefixes appearing later in a long
+// conversation history — good enough for the common "reused system prompt"
+// case, not a general longest-common-prefix matcher.
+func promptAffinityKey(job protocol.JobSpec, messages []map[string]any) string {
+	var prefix string
+	for _, m := range messages {
+		if role, _ := m["role"].(string); role == "system" {
+			if content, _ := m["content"].(string); content != "" {
+				prefix += content
+			}
+		}
+	}
+	if prefix == "" && len(messages) > 0 {
+		if content, _ := messages[0]["content"].(string); content != "" {
+			prefix = content
+		}
+	}
+	if prefix == "" {
+		return ""
+	}
+	if len(prefix) > affinityPrefixChars {
+		prefix = prefix[:affinityPrefixChars]
+	}
+	// job.ModelID is part of the key: a cache-warm hit for one model's KV
+	// state is meaningless for a different model, even given identical text.
+	return job.ModelID + "\x00" + prefix
+}
+
 // rankCandidates scores candidates for job via ScoreForFastLane and returns
 // them sorted best-first, filtering out ineligible nodes (-Inf score). Shared
 // by DispatchFastLane and PickBestNode so "who is eligible and best" is
 // computed identically whether or not a dispatch immediately follows.
-func rankCandidates(candidates []NodeWithLoad, job protocol.JobSpec) []NodeWithLoad {
-	type scored struct {
-		score float64
-		node  NodeWithLoad
-	}
-	var ranked []scored
+//
+// The PRIMARY pick is decided in two stages:
+//  1. Prefix/KV-cache affinity: if messages carries a promptAffinityKey and
+//     its consistent-hash-preferred node is both eligible (already in the
+//     scored list) and not already overloaded (affinityMaxInFlight), that
+//     node is promoted to primary outright — deliberately bypassing
+//     power-of-two-choices for this request, since the whole point is
+//     concentrating repeat/similar prompts onto the same warm node, not
+//     spreading them. messages is nil for callers with no real content yet
+//     (PickBestNode, called before a reservation's payload exists) — nil
+//     mesages means no affinity key, and this stage never engages.
+//  2. Otherwise, power-of-two-choices among the top powerOfTwoWindow
+//     candidates: always routing to the single globally-best-scored node
+//     means every concurrent request — evaluated against the same registry
+//     snapshot — agrees on the same target and piles onto it, before any of
+//     their in-flight counts land to deprioritize it for the next decision
+//     (herding). Sampling 2 of the top-ranked candidates and promoting the
+//     better-scored of the two spreads primary placement across the fleet's
+//     best nodes instead of concentrating it on one.
+//
+// Either way, the rest of the list keeps its deterministic best-first order
+// as the retry/fallback sequence: a primary DISPATCH FAILURE (not load or
+// cache locality) is what fallback recovers from, so trying the objectively
+// next-best remaining node there is still correct. With 0 or 1 eligible
+// candidates both stages are a no-op.
+// scoredCandidate pairs a candidate with its ScoreForFastLane result — named
+// (rather than an inline anonymous struct) so promoteAffinityNode can take
+// the already-scored slice directly without re-scoring or exporting it.
+type scoredCandidate struct {
+	score float64
+	node  NodeWithLoad
+}
+
+func rankCandidates(candidates []NodeWithLoad, job protocol.JobSpec, messages []map[string]any) []NodeWithLoad {
+	var ranked []scoredCandidate
 	for _, n := range candidates {
-		s := ScoreForFastLane(n.Manifest, job, n.InFlight, n.EnclaveAttested)
+		s := ScoreForFastLane(effectiveManifest(n), job, n.InFlight, n.EnclaveAttested)
 		if !math.IsInf(s, -1) {
-			ranked = append(ranked, scored{s, n})
+			ranked = append(ranked, scoredCandidate{s, n})
 		}
 	}
 	sort.Slice(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })
+
+	if !promoteAffinityNode(ranked, job, messages) && len(ranked) > 1 {
+		if window := min(len(ranked), powerOfTwoWindow); window > 1 {
+			i, j := twoRandomDistinctIndices(window)
+			winner := i
+			if ranked[j].score > ranked[i].score {
+				winner = j
+			}
+			if winner != 0 {
+				ranked[0], ranked[winner] = ranked[winner], ranked[0]
+			}
+		}
+	}
+
 	out := make([]NodeWithLoad, len(ranked))
 	for i, r := range ranked {
 		out[i] = r.node
 	}
 	return out
+}
+
+// promoteAffinityNode swaps the eligible node preferred by the current
+// prefix's hash ring to the front of ranked, if one exists and isn't
+// already overloaded. Reports whether it did so, so rankCandidates knows to
+// skip the power-of-two stage for this request.
+func promoteAffinityNode(ranked []scoredCandidate, job protocol.JobSpec, messages []map[string]any) bool {
+	key := promptAffinityKey(job, messages)
+	if key == "" || len(ranked) < 2 {
+		return false
+	}
+	members := make([]string, len(ranked))
+	for i, r := range ranked {
+		members[i] = r.node.Manifest.NodeID
+	}
+	preferred, ok := newHashRing(members).get(key)
+	if !ok {
+		return false
+	}
+	for i, r := range ranked {
+		if r.node.Manifest.NodeID != preferred {
+			continue
+		}
+		if r.node.InFlight > affinityMaxInFlight {
+			return false // preferred node is too busy right now — fall back to power-of-two
+		}
+		if i != 0 {
+			ranked[0], ranked[i] = ranked[i], ranked[0]
+		}
+		return true
+	}
+	return false
+}
+
+// twoRandomDistinctIndices returns two distinct indices in [0, n), uniformly
+// sampled. Requires n > 1.
+func twoRandomDistinctIndices(n int) (int, int) {
+	i := rand.IntN(n)
+	j := rand.IntN(n - 1)
+	if j >= i {
+		j++
+	}
+	return i, j
 }
 
 // filterPushOnly drops pull-delivery nodes from a ranked candidate list. Used
@@ -111,7 +293,9 @@ func PickBestNode(job protocol.JobSpec, registry *NodeRegistry) (NodeWithLoad, e
 	if err != nil {
 		return NodeWithLoad{}, fmt.Errorf("fetch candidates: %w", err)
 	}
-	ranked := rankCandidates(candidates, job)
+	// No real message content exists yet at reservation time — nil disables
+	// prefix affinity for this call (promptAffinityKey returns "" for it).
+	ranked := rankCandidates(candidates, job, nil)
 	if len(ranked) == 0 {
 		return NodeWithLoad{}, fmt.Errorf("no eligible nodes available")
 	}
@@ -133,7 +317,7 @@ func DispatchFastLane(
 	if err != nil {
 		return nil, fmt.Errorf("fetch candidates: %w", err)
 	}
-	ranked := rankCandidates(candidates, job)
+	ranked := rankCandidates(candidates, job, messages)
 
 	attempted := 0
 	for _, node := range ranked {
@@ -162,7 +346,15 @@ func DispatchFastLane(
 			// tokens — never the node's self-declared/benchmarked signature — so
 			// "Try the mesh" can show a real, this-request tok/s figure.
 			if tokens := completionTokensFromResult(result); tokens > 0 && elapsed > 0 {
-				result["oim_tokens_per_sec"] = math.Round(float64(tokens)/elapsed.Seconds()*100) / 100
+				tps := math.Round(float64(tokens)/elapsed.Seconds()*100) / 100
+				result["oim_tokens_per_sec"] = tps
+				// Feed this same real, coordinator-measured sample into the
+				// node's rolling average — see RecordObservedThroughput's
+				// doc comment for why this (not self-reported benchmark) is
+				// what routing/health should trust going forward.
+				if tokens >= minThroughputSampleTokens {
+					registry.RecordObservedThroughput(node.Manifest.NodeID, tps)
+				}
 			}
 		}
 		return result, nil
@@ -195,7 +387,7 @@ func AssignBackgroundJob(job protocol.JobSpec, registry *NodeRegistry) (*Backgro
 	}
 	var ranked []scored
 	for _, n := range candidates {
-		s := ScoreForFastLane(n.Manifest, job, n.InFlight, n.EnclaveAttested)
+		s := ScoreForFastLane(effectiveManifest(n), job, n.InFlight, n.EnclaveAttested)
 		if !math.IsInf(s, -1) {
 			ranked = append(ranked, scored{s, n})
 		}
@@ -269,14 +461,62 @@ func (s *AssignmentStore) Get(jobID string) (*BackgroundAssignment, bool) {
 // the pin can never be paired with a different node's endpoint.
 func DispatchToResolvedNode(ctx context.Context, job protocol.JobSpec, messages []map[string]any, registry *NodeRegistry, target NodeTarget) (map[string]any, error) {
 	registry.IncrInFlight(target.NodeID)
+	dispatchStart := time.Now()
 	result, err := registry.deliverJob(ctx, target.NodeID, registry.IsPullNode(target.NodeID), target, job, messages)
+	elapsed := time.Since(dispatchStart)
 	registry.DecrInFlight(target.NodeID)
 	if err != nil {
 		registry.MarkUnreachable(target.NodeID)
 		return nil, err
 	}
+	// Same real, coordinator-measured sample as DispatchFastLane feeds into
+	// the node's rolling average. A JobLaneWarm result has no usage field
+	// (tokens==0), so warm-up calls naturally never contribute a sample —
+	// no special-casing needed here.
+	if tokens := completionTokensFromResult(result); tokens >= minThroughputSampleTokens && elapsed > 0 {
+		tps := math.Round(float64(tokens)/elapsed.Seconds()*100) / 100
+		registry.RecordObservedThroughput(target.NodeID, tps)
+	}
 	return result, nil
 }
+
+// WarmModel asks a SPECIFIC node (chosen by the caller — a dashboard/app
+// "Load model" action, not routing) to create+await an Exo instance for
+// modelID, via a JobLaneWarm control message routed through the exact same
+// mailbox real jobs use (see protocol.JobLaneWarm's doc comment for why this
+// reuses that transport rather than a new subsystem). The caller supplies
+// ctx's deadline — this is a deliberate, possibly multi-minute warm-up call,
+// not a latency-sensitive one, so it should be set generously (minutes, not
+// the ~25s a real dispatch attempt gets).
+//
+// Reuses DispatchToResolvedNode as-is, including its MarkUnreachable-on-error
+// behavior: a slow-but-legitimate warm-up that outruns ctx will transiently
+// flag the node unreachable, but this self-corrects on the node's very next
+// heartbeat (a pull node's next claim poll is usually under a second away;
+// a push node's next manifest refresh) — not worth a special case for what a
+// slow warm-up call already earned honestly (the node genuinely wasn't
+// responsive to real requests during that heartbeat gap either).
+func WarmModel(ctx context.Context, nodeID, modelID string, registry *NodeRegistry) (map[string]any, error) {
+	manifest, ok := registry.Manifest(nodeID)
+	if !ok {
+		return nil, fmt.Errorf("unknown node %s", nodeID)
+	}
+	if !hasModel(manifest, modelID, "") {
+		return nil, fmt.Errorf("node %s has no model %s downloaded", nodeID, modelID)
+	}
+	job := protocol.JobSpec{
+		JobID:   fmt.Sprintf("warm-%s-%d", nodeID, time.Now().UnixNano()),
+		ModelID: modelID,
+		Lane:    protocol.JobLaneWarm,
+	}
+	return DispatchToResolvedNode(ctx, job, nil, registry, TargetFromManifest(manifest))
+}
+
+// minThroughputSampleTokens is the floor below which a completion is too
+// short to trust for RecordObservedThroughput — a handful of output tokens
+// produces a noisy, TTFT-dominated tok/s figure that shouldn't move a node's
+// rolling average.
+const minThroughputSampleTokens = 16
 
 // completionTokensFromResult reads usage.completion_tokens from an OpenAI-shaped
 // chat-completion response, returning 0 when absent rather than guessing.
@@ -320,7 +560,7 @@ func DispatchFastLaneStreaming(
 	if err != nil {
 		return "", 0, false, fmt.Errorf("fetch candidates: %w", err)
 	}
-	ranked := rankCandidates(candidates, job)
+	ranked := rankCandidates(candidates, job, messages)
 	// SSE passthrough requires the coordinator to hold the node's streaming
 	// HTTP response open — impossible over the pull mailbox, which is
 	// request/response only. Pull nodes are therefore skipped for streaming in
@@ -336,7 +576,9 @@ func DispatchFastLaneStreaming(
 		}
 		attempted++
 		registry.IncrInFlight(node.Manifest.NodeID)
+		dispatchStart := time.Now()
 		started, tok, dispatchErr := dispatchToNodeStreaming(ctx, job, messages, TargetFromManifest(node.Manifest), clientW)
+		elapsed := time.Since(dispatchStart)
 		registry.DecrInFlight(node.Manifest.NodeID)
 		if dispatchErr != nil {
 			if started {
@@ -344,6 +586,15 @@ func DispatchFastLaneStreaming(
 			}
 			registry.MarkUnreachable(node.Manifest.NodeID)
 			continue
+		}
+		// Same real, coordinator-measured sample as the buffered path feeds
+		// into the node's rolling average. Streaming's elapsed includes SSE
+		// relay time to the client, a slightly more pessimistic figure than
+		// pure decode time — an accepted approximation, consistent with this
+		// path's own "measured from this request's own wall-clock time" rule.
+		if tok >= minThroughputSampleTokens && elapsed > 0 {
+			tps := math.Round(float64(tok)/elapsed.Seconds()*100) / 100
+			registry.RecordObservedThroughput(node.Manifest.NodeID, tps)
 		}
 		return node.Manifest.NodeID, tok, true, nil
 	}
@@ -466,6 +717,12 @@ func dispatchToNode(
 		"model":    job.ModelID,
 		"messages": messages,
 		"stream":   false,
+		// The agent's inbound handler branches on this (oim_lane) to pick
+		// ExecuteFastLane/ExecuteBackgroundLane/WarmModel — never forwarding
+		// it meant every push-mode job silently ran fast-lane regardless of
+		// job.Lane, confirmed live via JobLaneWarm always executing as a
+		// normal chat completion instead of a warm-up.
+		"oim_lane": string(job.Lane),
 	}
 	// Encrypted-pointer path (M8): forward the pointer so the assigned node can
 	// fetch + decrypt it. Previously dropped silently here — the coordinator
