@@ -56,6 +56,7 @@ deploy plan before committing to a live host.`,
 	cmd.AddCommand(deployRollbackCmd())
 	cmd.AddCommand(deployStatusCmd())
 	cmd.AddCommand(deployHistoryCmd())
+	cmd.AddCommand(deployUICmd())
 	return cmd
 }
 

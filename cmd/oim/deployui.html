@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mlxMesh Deploy</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2128;
+    --border: #30363d; --text: #e6edf3; --muted: #8b949e;
+    --blue: #58a6ff; --green: #3fb950; --red: #f85149; --yellow: #e3b341;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* ── header ── */
+  header {
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 10px 18px; display: flex; align-items: center; gap: 14px; flex-shrink: 0;
+  }
+  header h1 { font-size: 14px; font-weight: 700; letter-spacing: -.2px; }
+  .meta { font-size: 11px; color: var(--muted); font-family: monospace; }
+  .badge {
+    margin-left: auto; font-size: 11px; font-weight: 600;
+    padding: 3px 10px; border-radius: 20px; letter-spacing: .3px;
+  }
+  .badge-idle    { background: #21262d; color: var(--muted); }
+  .badge-running { background: #1a3352; color: var(--blue);  }
+  .badge-success { background: #1a3a2a; color: var(--green); }
+  .badge-failed  { background: #3a1818; color: var(--red);   }
+
+  /* ── layout ── */
+  main { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── sidebar ── */
+  aside {
+    width: 260px; min-width: 260px; background: var(--panel);
+    border-right: 1px solid var(--border); display: flex; flex-direction: column;
+    padding: 14px 14px 10px; gap: 10px; overflow-y: auto;
+  }
+  .section-label {
+    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .9px; color: var(--muted); margin-bottom: 2px;
+  }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  label { font-size: 12px; color: var(--muted); }
+  input[type=text], input[type=number], textarea {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    padding: 6px 9px; border-radius: 6px; font-size: 12px; font-family: monospace;
+    width: 100%; transition: border-color .15s;
+  }
+  input:focus, textarea:focus { outline: none; border-color: var(--blue); }
+  textarea { resize: vertical; line-height: 1.5; }
+
+  .check-row { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+  .check-row input[type=checkbox] { width: auto; accent-color: var(--blue); cursor: pointer; }
+  .check-row span { font-size: 12px; color: var(--muted); user-select: none; }
+
+  /* buttons */
+  .btn {
+    border: none; border-radius: 6px; font-size: 12px; font-weight: 600;
+    padding: 8px 12px; cursor: pointer; transition: opacity .15s, filter .15s;
+    width: 100%;
+  }
+  .btn:hover:not(:disabled) { filter: brightness(1.12); }
+  .btn:disabled { opacity: .38; cursor: default; }
+  .btn-blue   { background: var(--blue);   color: #0d1117; }
+  .btn-green  { background: var(--green);  color: #0d1117; }
+  .btn-red    { background: var(--red);    color: #fff; }
+  .btn-ghost  { background: #21262d; color: var(--text); border: 1px solid var(--border); }
+  .btn-row    { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .btn-save   { font-size: 11px; padding: 5px 10px; }
+
+  .divider { border-top: 1px solid var(--border); margin: 2px 0; }
+
+  /* ── terminal area ── */
+  .term-wrap { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .term-bar {
+    background: var(--panel2); border-bottom: 1px solid var(--border);
+    padding: 7px 14px; display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+  }
+  .term-bar span { font-size: 11px; color: var(--muted); }
+  .term-bar .btn { width: auto; padding: 4px 10px; font-size: 11px; }
+  #terminal {
+    flex: 1; overflow-y: auto; padding: 14px 16px;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 12px; line-height: 1.65; background: var(--bg);
+    white-space: pre-wrap; word-break: break-all;
+  }
+  .l-ok   { color: var(--green); }
+  .l-err  { color: var(--red); }
+  .l-warn { color: var(--yellow); }
+  .l-cmd  { color: var(--muted); }
+  .l-head { color: var(--blue); font-weight: bold; }
+  .l-dim  { color: #484f58; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⚡ mlxMesh Deploy</h1>
+  <span class="meta" id="meta">loading…</span>
+  <span class="badge badge-idle" id="badge">Idle</span>
+</header>
+
+<main>
+  <aside>
+    <div class="section-label">Connection</div>
+
+    <div class="field">
+      <label>EC2 Host</label>
+      <input type="text" id="host" placeholder="ec2-user@54.197.150.242" value="ec2-user@54.197.150.242">
+    </div>
+    <div class="field">
+      <label>SSH Key Path</label>
+      <input type="text" id="ssh_key" placeholder="~/Downloads/key.pem">
+    </div>
+    <div class="field">
+      <label>Source Dir</label>
+      <input type="text" id="source" value="." placeholder=".">
+    </div>
+
+    <div class="divider"></div>
+    <div class="section-label">Health Check</div>
+
+    <div class="field">
+      <label>Endpoints (one per line)</label>
+      <textarea id="health_endpoints" rows="3">https://us.mlxmesh.net/health
+https://eu.mlxmesh.net/health
+https://directory.mlxmesh.net/health</textarea>
+    </div>
+    <div class="field">
+      <label>Expected Containers</label>
+      <input type="number" id="expected_containers" value="119" min="0">
+    </div>
+
+    <div class="divider"></div>
+
+    <label class="check-row">
+      <input type="checkbox" id="dry_run">
+      <span>Dry run — preview only</span>
+    </label>
+
+    <button class="btn btn-ghost btn-save" onclick="saveConfig()">Save Settings</button>
+
+    <div class="divider"></div>
+    <div class="section-label">Actions</div>
+
+    <button class="btn btn-blue" id="btn-push" onclick="run('push')">🚀 Deploy</button>
+    <div class="btn-row">
+      <button class="btn btn-ghost" id="btn-status"  onclick="run('status')">Status</button>
+      <button class="btn btn-ghost" id="btn-history" onclick="run('history')">History</button>
+    </div>
+    <button class="btn btn-red" id="btn-rollback" onclick="confirmRollback()">↩ Rollback</button>
+  </aside>
+
+  <div class="term-wrap">
+    <div class="term-bar">
+      <span>Output</span>
+      <button class="btn btn-ghost" onclick="clearTerm()" style="margin-left:auto">Clear</button>
+    </div>
+    <div id="terminal"><span class="l-cmd">Ready. Configure connection and click Deploy.
+</span></div>
+  </div>
+</main>
+
+<script>
+const CFG_KEY = 'oim-deploy-cfg-v1';
+const BTNS = ['btn-push','btn-status','btn-history','btn-rollback'];
+
+/* ── config persistence ── */
+function saveConfig() {
+  localStorage.setItem(CFG_KEY, JSON.stringify({
+    host: $('host').value,
+    ssh_key: $('ssh_key').value,
+    source: $('source').value,
+    health_endpoints: $('health_endpoints').value,
+    expected_containers: $('expected_containers').value,
+  }));
+  appendLine('⚙ Settings saved.', 'l-cmd');
+}
+
+function loadConfig() {
+  try {
+    const c = JSON.parse(localStorage.getItem(CFG_KEY) || '{}');
+    if (c.host)                $('host').value = c.host;
+    if (c.ssh_key)             $('ssh_key').value = c.ssh_key;
+    if (c.source)              $('source').value = c.source;
+    if (c.health_endpoints)    $('health_endpoints').value = c.health_endpoints;
+    if (c.expected_containers) $('expected_containers').value = c.expected_containers;
+  } catch(_) {}
+}
+
+/* ── meta (sha + cwd) ── */
+fetch('/meta').then(r => r.json()).then(m => {
+  const parts = [];
+  if (m.sha) parts.push('commit ' + m.sha);
+  if (m.cwd) parts.push(m.cwd);
+  $('meta').textContent = parts.join('  ·  ');
+}).catch(() => { $('meta').textContent = ''; });
+
+/* ── terminal helpers ── */
+function $(id) { return document.getElementById(id); }
+const term = () => $('terminal');
+
+function clearTerm() { term().innerHTML = ''; }
+
+function appendLine(text, cls) {
+  const s = document.createElement('span');
+  if (cls) s.className = cls;
+  s.textContent = text + '\n';
+  term().appendChild(s);
+  term().scrollTop = term().scrollHeight;
+}
+
+function classifyLine(line) {
+  const l = line.toLowerCase();
+  if (!line.trim()) return 'l-dim';
+  if (/^\[dry-run\]/.test(line))           return 'l-warn';
+  if (/warning|warn\b/.test(l))            return 'l-warn';
+  if (/✓|all checks healthy|done$/.test(l)) return 'l-ok';
+  if (/ok\b|200|healthy|success/.test(l))  return 'l-ok';
+  if (/✗|error|failed|denied|exit/.test(l)) return 'l-err';
+  if (/deploying commit|image tag|component=/.test(l)) return 'l-head';
+  if (/^-+$|^\+[-+]+\+$|^\|/.test(line))  return 'l-dim'; // table borders
+  return '';
+}
+
+/* ── status badge ── */
+function setBadge(state) {
+  const el = $('badge');
+  el.className = 'badge badge-' + state;
+  el.textContent = { idle:'Idle', running:'Running…', success:'✓ Success', failed:'✗ Failed' }[state] || state;
+}
+
+function setButtons(disabled) {
+  BTNS.forEach(id => { const b = $(id); if (b) b.disabled = disabled; });
+}
+
+/* ── SSE runner ── */
+let currentES = null;
+
+function run(action) {
+  if (currentES) { currentES.close(); currentES = null; }
+
+  const host   = $('host').value.trim();
+  const sshKey = $('ssh_key').value.trim();
+  const source = $('source').value.trim() || '.';
+  const eps    = $('health_endpoints').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const exp    = $('expected_containers').value;
+  const dry    = $('dry_run').checked;
+
+  clearTerm();
+  const dryLabel = dry ? ' --dry-run' : '';
+  appendLine(`$ oim deploy ${action}${dryLabel}`, 'l-cmd');
+  appendLine('', '');
+
+  setBadge('running');
+  setButtons(true);
+
+  const p = new URLSearchParams({ action, host, ssh_key: sshKey, source, expected_containers: exp, dry_run: dry });
+  eps.forEach(ep => p.append('health_endpoint', ep));
+
+  const es = new EventSource('/run?' + p.toString());
+  currentES = es;
+
+  es.onmessage = e => {
+    const line = e.data;
+    appendLine(line, classifyLine(line));
+  };
+
+  es.addEventListener('done', e => {
+    es.close();
+    currentES = null;
+    const ok = e.data === 'success';
+    appendLine('', '');
+    appendLine(ok ? '✓ Finished successfully.' : '✗ Finished with errors.', ok ? 'l-ok' : 'l-err');
+    setBadge(ok ? 'success' : 'failed');
+    setButtons(false);
+  });
+
+  es.onerror = () => {
+    if (currentES) {
+      appendLine('Connection lost.', 'l-err');
+      es.close();
+      currentES = null;
+      setBadge('failed');
+      setButtons(false);
+    }
+  };
+}
+
+function confirmRollback() {
+  const host = $('host').value.trim();
+  const dry  = $('dry_run').checked;
+  if (!dry && !confirm(`Roll back ${host}?\n\nThis will re-tag the previous healthy image and restart the coordinator. Use Dry Run first to preview the target.`)) return;
+  run('rollback');
+}
+
+/* ── init ── */
+loadConfig();
+</script>
+</body>
+</html>
