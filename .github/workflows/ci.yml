@@ -24,7 +24,7 @@ jobs:
       - name: Lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          version: v2
 
       - name: Unit tests
         run: go test ./...
@@ -52,7 +52,7 @@ jobs:
 
   swift:
     name: Apple apps build (iOS/tvOS/watchOS)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
