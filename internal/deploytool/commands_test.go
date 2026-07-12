@@ -48,7 +48,10 @@ func TestRemoteBuildCommand_TagsBothImageTagAndFloatingLatest(t *testing.T) {
 		t.Errorf("build command missing the addressable tag: %q", cmd)
 	}
 	if !strings.Contains(cmd, "docker tag mlxmesh:mlxmesh-abc123-20260101-000000 mlxmesh:latest-deploy") {
-		t.Errorf("build command missing the floating-tag update: %q", cmd)
+		t.Errorf("build command missing the latest-deploy floating tag: %q", cmd)
+	}
+	if !strings.Contains(cmd, "docker tag mlxmesh:mlxmesh-abc123-20260101-000000 mlxmesh:latest") {
+		t.Errorf("build command missing the mlxmesh:latest tag (needed by redeploy-infra.sh): %q", cmd)
 	}
 }
 

@@ -54,8 +54,8 @@ func RsyncPushArgs(sourceDir, sshHost, remoteDir, sshKey string) []string {
 // unmodified.
 func RemoteBuildCommand(remoteDir, imageTag string) string {
 	return fmt.Sprintf(
-		"cd %s && docker build -t mlxmesh:%s . && docker tag mlxmesh:%s mlxmesh:latest-deploy",
-		remoteDir, imageTag, imageTag,
+		"cd %s && docker build -t mlxmesh:%s . && docker tag mlxmesh:%s mlxmesh:latest-deploy && docker tag mlxmesh:%s mlxmesh:latest",
+		remoteDir, imageTag, imageTag, imageTag,
 	)
 }
 
