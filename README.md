@@ -557,7 +557,7 @@ The original ARCHITECTURE spec defined a headless Go protocol (M1–M7). The fol
 
 Concrete things a tester will hit today, so nothing reads as "silently broken":
 
-- **Node Setup cluster topology is web-only and Exo-driven.** The dashboard's per-device diagram (RAM/GPU/temp/power ring) renders from the local agent's `/detect`, which parses Exo's `/state`. It now populates in the docker sim (stub-exo emits a topology; node-us-1 / node-eu-1 are 3-device clusters). Against a **real** Exo cluster it depends on Exo's `/state` field names (`topology.nodes`, `nodeMemory`, `nodeIdentities`, `nodeSystem`) — validate this against your Exo build (e.g. lab-02) since that schema hasn't been confirmed against a live instance. **iOS has no Node Setup** by design — iOS devices can't run Exo, so they contribute as the coordination/security layer, not as compute nodes. **iOS 27 opportunity:** Apple now ships `MLXLanguageModel` and `CoreAILanguageModel` (public `LanguageModel` protocol) for running MLX-community models on Apple Silicon via Core AI. This enables iPad compute nodes without hand-rolling MLX bindings, but requires implementing the HTTP networking layer (NWListener) to expose it as a mesh-servable endpoint — not yet implemented.
+- **Node Setup cluster topology is web-only and Exo-driven.** The dashboard's per-device diagram (RAM/GPU/temp/power ring) renders from the local agent's `/detect`, which parses Exo's `/state`. It now populates in the docker sim (stub-exo emits a topology; node-us-1 / node-eu-1 are 3-device clusters). Against a **real** Exo cluster it reads the field names (`topology.nodes`, `nodeMemory`, `nodeIdentities`, `nodeSystem`) — verified end-to-end on a live Mac Studio instance. **iOS has no Node Setup** by design — iOS devices can't run Exo, so they contribute as the coordination/security layer, not as compute nodes. **iOS 27 opportunity:** Apple now ships `MLXLanguageModel` and `CoreAILanguageModel` (public `LanguageModel` protocol) for running MLX-community models on Apple Silicon via Core AI. This enables iPad compute nodes without hand-rolling MLX bindings, but requires implementing the HTTP networking layer (NWListener) to expose it as a mesh-servable endpoint — not yet implemented.
 - **Webhook / async callback** submission is documented as a target but not implemented.
 - **M7 federated directory is a stub; progressive decentralization is partially started.** A public seed IS now deployed (task #42) and clients/coordinators can be configured with multiple directory endpoints so no single instance is a hard dependency (task #49) — but there's still only one directory *instance* actually running, "parity" now has a real metric (real vs. simulated capacity, see below) but no defined threshold or automatic handoff logic, and `FederatedResolver`/`DHTResolver` remain stubs. (The ledger-authority half of M7 — coordinator identity, pod pinning, cross-pod signed-event witnessing — is now partially built; see [Security model](#security-model--threat-analysis) item 3.)
 - **MoE expert sharding is a planner, not a live feature.** `internal/coordinator/moe_planner.go` (assign experts to nodes by memory, route tokens to the expert-holding node, detect load imbalance) is implemented and tested (M6) but **not wired into any dispatch path** — no request is MoE-sharded across mesh nodes today. See the note below on why it wouldn't speed up the fast lane anyway. What *is* wired is **query decomposition** (`RouteWithDecomposition`), and only for the **background lane** (it refuses fast-lane jobs).
@@ -1014,7 +1014,7 @@ This project is licensed under the **GNU Affero General Public License v3.0 (AGP
 
 ### Commercial Use
 
-Commercial use of this software requires a separate commercial license. To obtain a commercial license, please contact us.
+Commercial use of this software requires a separate commercial license. Contact jmelton@americancode.org to obtain one.
 
 **What this means:**
 - **Open source use**: Free to use, modify, and distribute under AGPL-3.0
@@ -1023,7 +1023,7 @@ Commercial use of this software requires a separate commercial license. To obtai
   - Integration into commercial products without releasing source code
   - Use in enterprise environments without AGPL compliance
 
-For commercial licensing inquiries, please contact: [licensing contact information]
+For commercial licensing inquiries, please contact: jmelton@americancode.org
 
 ### AGPL Summary
 
