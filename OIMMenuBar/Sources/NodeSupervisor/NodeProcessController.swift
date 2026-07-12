@@ -44,6 +44,17 @@ final class NodeProcessController {
         // is exactly what was happening for a node with no override set,
         // against the real production seed).
         var reachabilityEndpoint: String?
+        // Seconds between the node agent re-benchmarking every downloaded
+        // model against Exo and submitting a signed result (--bench-interval,
+        // internal/agent/agent.go). nil/0 = disabled. This is a SIGNED report
+        // (the Go node process holds the real Ed25519 identity key, which
+        // this Swift app never does), so it's the only channel that can
+        // update the coordinator's near-real-time per-node metrics — the
+        // separate local ModelWarmKeeper only talks to Exo directly and
+        // never reports anything upstream. As a side effect, each
+        // re-benchmark is a real inference call, so this also re-warms
+        // whatever model Exo evicted while idle.
+        var benchIntervalSec: Int?
     }
 
     private(set) var state: State = .stopped
@@ -74,6 +85,9 @@ final class NodeProcessController {
         }
         if let endpoint = options.reachabilityEndpoint, !endpoint.isEmpty {
             args += ["--reachability-endpoint", endpoint]
+        }
+        if let benchSec = options.benchIntervalSec, benchSec > 0 {
+            args += ["--bench-interval", String(benchSec)]
         }
         // Exo-down is intentionally non-fatal here (verified empirically
         // against internal/capability.AssembleManifest: a node with Exo

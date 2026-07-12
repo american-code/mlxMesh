@@ -28,6 +28,41 @@ struct NodeSnapshot: Codable, Identifiable, Hashable {
 
     func hash(into hasher: inout Hasher) { hasher.combine(nodeId) }
     static func == (lhs: NodeSnapshot, rhs: NodeSnapshot) -> Bool { lhs.nodeId == rhs.nodeId }
+
+    // Custom decoding: geoLat/geoLng follow the coordinator's own "0 = not
+    // declared" contract (internal/coordinator/registry.go's GeoLat/GeoLng
+    // both have `json:"...,omitempty"` — the KEY IS OMITTED, not sent as 0,
+    // whenever a node never got a geo coordinate, e.g. its `oim node start`
+    // process's IP auto-geolocation failed at startup and it wasn't given
+    // explicit --lat/--lng). A plain non-optional Double here throws on that
+    // missing key — and because Codable's array decoding aborts the WHOLE
+    // array on one bad element, a SINGLE node without a declared location
+    // silently took down every other node in its pod's /nodes response too.
+    // This is what caused "only EU online" in practice: exactly one real US
+    // node's geo-detect failed, and its missing keys broke decoding for the
+    // entire pod-us node list while pod-eu (no undeclared-geo nodes) decoded
+    // fine — nothing was actually down.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        nodeId = try c.decode(String.self, forKey: .nodeId)
+        status = try c.decode(String.self, forKey: .status)
+        geographicHint = try c.decode(String.self, forKey: .geographicHint)
+        geoLat = try c.decodeIfPresent(Double.self, forKey: .geoLat) ?? 0
+        geoLng = try c.decodeIfPresent(Double.self, forKey: .geoLng) ?? 0
+        reachabilityEndpoint = try c.decode(String.self, forKey: .reachabilityEndpoint)
+        declaredMemoryGb = try c.decode(Double.self, forKey: .declaredMemoryGb)
+        committedMemoryGb = try c.decode(Double.self, forKey: .committedMemoryGb)
+        models = try c.decodeIfPresent([ModelCapability].self, forKey: .models)
+        measuredToksPerSec = try c.decode(Double.self, forKey: .measuredToksPerSec)
+        hasSecureEnclave = try c.decode(Bool.self, forKey: .hasSecureEnclave)
+        enclaveAttested = try c.decode(Bool.self, forKey: .enclaveAttested)
+        isCluster = try c.decode(Bool.self, forKey: .isCluster)
+        clusterDeviceCount = try c.decodeIfPresent(Int.self, forKey: .clusterDeviceCount)
+        clusterChipFamilies = try c.decodeIfPresent([String].self, forKey: .clusterChipFamilies)
+        lastSeenAt = try c.decode(String.self, forKey: .lastSeenAt)
+        inFlightJobs = try c.decode(Int.self, forKey: .inFlightJobs)
+        simulated = try c.decodeIfPresent(Bool.self, forKey: .simulated)
+    }
 }
 
 struct ModelCapability: Codable, Hashable {

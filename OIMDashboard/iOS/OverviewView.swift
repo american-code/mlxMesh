@@ -113,6 +113,8 @@ struct BackpressurePill: View {
                 .font(.system(size: 20, weight: .bold, design: .rounded))
                 .foregroundStyle(color)
                 .monospacedDigit()
+                .contentTransition(.numericText(value: pct))
+                .animation(.snappy(duration: 0.5), value: pct)
             Text(label)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -130,10 +132,15 @@ struct StatPill: View {
 
     var body: some View {
         VStack(spacing: 2) {
+            // Rolling-odometer transition: when a refresh changes the value, the
+            // digits roll to the new number instead of hard-cutting. .numericText
+            // handles the mixed "4093 t/s"/"12"/"2.1 TB" strings the pills carry.
             Text(value)
                 .font(.system(size: 20, weight: .bold, design: .rounded))
                 .foregroundStyle(color)
                 .monospacedDigit()
+                .contentTransition(.numericText())
+                .animation(.snappy(duration: 0.5), value: value)
             Text(label)
                 .font(.caption2)
                 .foregroundStyle(.secondary)

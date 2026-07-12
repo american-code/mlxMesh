@@ -1,5 +1,5 @@
 import type { NodeSnapshot } from '../types'
-import { computeNodeStatus, statusColor, nodeLabel, isExoNode } from '../utils'
+import { computeNodeStatus, statusColor, nodeLabel, isExoNode, worseStatus, worstStatus, groupMarkers } from '../utils'
 
 const W = 360, H = 260, PAD = 28
 
@@ -39,6 +39,10 @@ function buildKnnEdges(nodes: NodeSnapshot[], k = 3): KnnEdge[] {
   return edges
 }
 
+// Cluster marker grouping, worstStatus, and STATUS_ORDER now live in
+// utils.ts (groupMarkers/worstStatus) — shared by WorldMap and this view so
+// a future fix to cluster-grouping semantics only needs to land once.
+
 // ── Linear lat/lng → SVG projection ─────────────────────────────────────────
 
 function project(nodes: NodeSnapshot[]): Map<string, { x: number; y: number }> {
@@ -64,9 +68,11 @@ function project(nodes: NodeSnapshot[]): Map<string, { x: number; y: number }> {
 
 export function GeoNetworkGraph({ nodes, selected, onNodeClick }: Props) {
   const geo = nodes.filter(n => n.geo_lat !== 0 || n.geo_lng !== 0)
-  const positions = project(geo)
-  const edges = buildKnnEdges(geo, 3)
-  const byId = new Map(geo.map(n => [n.node_id, n]))
+  const markerGroups = groupMarkers(geo)
+  const deduped = markerGroups.map(g => g.nodes[0])
+  const positions = project(deduped)
+  const edges = buildKnnEdges(deduped, 3)
+  const byId = new Map(deduped.map(n => [n.node_id, n]))
 
   return (
     <svg
@@ -84,9 +90,7 @@ export function GeoNetworkGraph({ nodes, selected, onNodeClick }: Props) {
         if (!a || !b) return null
         const pa = positions.get(aId), pb = positions.get(bId)
         if (!pa || !pb) return null
-        const ord: Record<string, number> = { live: 0, degraded: 1, stale: 2, unreachable: 3 }
-        const sa = computeNodeStatus(a), sb = computeNodeStatus(b)
-        const color = statusColor(ord[sa] >= ord[sb] ? sa : sb)
+        const color = statusColor(worseStatus(computeNodeStatus(a), computeNodeStatus(b)))
         return (
           <line
             key={`${aId}|${bId}`}
@@ -97,19 +101,23 @@ export function GeoNetworkGraph({ nodes, selected, onNodeClick }: Props) {
         )
       })}
 
-      {/* Node circles / diamonds */}
-      {geo.map(node => {
+      {/* Node circles / diamonds — grouped so a multi-device cluster (every
+          device registers its own node entry at the SAME location) draws one
+          marker with a device-count badge instead of overlapping circles. */}
+      {markerGroups.map(group => {
+        const node = group.nodes[0]
         const pos = positions.get(node.node_id)
         if (!pos) return null
-        const status = computeNodeStatus(node)
+        const status = worstStatus(group.nodes)
         const color  = statusColor(status)
-        const isSel  = selected?.node_id === node.node_id
+        const isSel  = group.nodes.some(n => selected?.node_id === n.node_id)
         const isExo  = isExoNode(node)
         const s      = isExo ? 7 : 5
+        const count  = node.is_cluster ? (node.cluster_device_count ?? group.nodes.length) : 1
 
         return (
           <g
-            key={node.node_id}
+            key={group.key}
             transform={`translate(${pos.x},${pos.y})`}
             style={{ cursor: 'pointer' }}
             onClick={() => onNodeClick(node)}
@@ -150,7 +158,8 @@ export function GeoNetworkGraph({ nodes, selected, onNodeClick }: Props) {
                 strokeWidth={1.2}
               />
             )}
-            {/* label */}
+            {/* label — includes a device-count suffix when this marker
+                represents more than one merged cluster-member registration. */}
             <text
               y={-(s + 4)}
               textAnchor="middle"
@@ -158,7 +167,7 @@ export function GeoNetworkGraph({ nodes, selected, onNodeClick }: Props) {
               fill="#7d8590"
               style={{ pointerEvents: 'none', userSelect: 'none' }}
             >
-              {nodeLabel(node)}
+              {nodeLabel(node)}{count > 1 ? ` ×${count}` : ''}
             </text>
           </g>
         )

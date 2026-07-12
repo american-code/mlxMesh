@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { NodeSnapshot, Balance, ReconciliationReport, AdminAction } from '../types'
+import type { NodeSnapshot, Balance, ReconciliationReport, AdminAction, DeploymentRecord } from '../types'
 import {
   requestAdminChallenge, authenticateAdmin, fetchTreasuryBalance,
   fetchReconcileReport, fetchAuditLog, postTreasuryCredit, deregisterNode,
+  fetchDeploymentHistory,
 } from '../api'
 import { signChallenge, getAdminSessionToken, setAdminSessionToken, clearAdminSessionToken } from '../adminAuth'
 
@@ -63,6 +64,7 @@ export function AdminView({ coordinatorURL, nodes, onNodesChanged }: AdminViewPr
       />
       <ReconcilePanel coordinatorURL={coordinatorURL} sessionToken={sessionToken} onAuthExpired={signOut} dataVersion={dataVersion} />
       <AuditLogPanel coordinatorURL={coordinatorURL} sessionToken={sessionToken} onAuthExpired={signOut} dataVersion={dataVersion} />
+      <DeploymentsPanel coordinatorURL={coordinatorURL} sessionToken={sessionToken} onAuthExpired={signOut} />
       <NodeManagementPanel
         coordinatorURL={coordinatorURL}
         sessionToken={sessionToken}
@@ -348,6 +350,105 @@ function AuditLogPanel({
                 <span style={{ color: '#3fb950', fontVariantNumeric: 'tabular-nums' }}>+{a.amount}</span>
                 <span style={{ color: '#7d8590', fontVariantNumeric: 'tabular-nums' }}>
                   {new Date(a.performed_at).toLocaleString()}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Panel>
+  )
+}
+
+// ── Deployments ──────────────────────────────────────────────────────────
+//
+// Read-only view of GET /admin/deployments — what `oim deploy` (see
+// internal/deploytool) has recorded on this coordinator's own host.
+// Deliberately no action buttons here: triggering a deploy/rollback stays an
+// operator-run CLI action over their own SSH credentials, never a button in a
+// browser tab (see internal/deploytool's package doc comment). This panel
+// exists purely so "what's live, and did it come up healthy" is visible
+// without shelling in.
+
+function DeploymentsPanel({
+  coordinatorURL, sessionToken, onAuthExpired,
+}: { coordinatorURL: string; sessionToken: string; onAuthExpired: () => void }) {
+  const [records, setRecords] = useState<DeploymentRecord[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      setRecords(await fetchDeploymentHistory(coordinatorURL, sessionToken))
+    } catch (e) {
+      if (isAuthError(e)) { onAuthExpired(); return }
+      setError((e as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }, [coordinatorURL, sessionToken, onAuthExpired])
+
+  // No dataVersion dependency (unlike Reconcile/AuditLog above) — `oim
+  // deploy` runs entirely out of band from this dashboard, so there's no
+  // in-app action that should trigger a refetch; a manual refresh button
+  // is the honest affordance instead.
+  useEffect(() => { load() }, [load])
+
+  const healthBadge = (healthy: boolean | undefined) => {
+    if (healthy === undefined) return <span style={{ color: '#7d8590' }}>unknown</span>
+    return healthy
+      ? <span style={{ color: '#3fb950' }}>healthy</span>
+      : <span style={{ color: '#f85149' }}>unhealthy</span>
+  }
+
+  return (
+    <Panel title="Deployments">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <span style={{ color: '#7d8590', fontSize: 12 }}>
+          From <code>oim deploy</code> on this coordinator's own host — read-only.
+        </span>
+        <button
+          onClick={load}
+          disabled={loading}
+          style={{
+            background: '#1c2128', border: '1px solid #30363d', color: '#7d8590',
+            borderRadius: 6, padding: '4px 12px', cursor: loading ? 'not-allowed' : 'pointer', fontSize: 11,
+          }}
+        >
+          {loading ? 'Refreshing…' : 'Refresh'}
+        </button>
+      </div>
+      {error && <div style={{ color: '#f85149', fontSize: 12, marginBottom: 10 }}>{error}</div>}
+      {!records || records.length === 0 ? (
+        <div style={{ color: '#7d8590', fontSize: 12 }}>
+          No deployment history — either this coordinator wasn't started with
+          --deployment-history-path, or nothing has been deployed via `oim deploy` yet.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {[...records].reverse().map((r, i) => (
+            <div key={i} style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              background: '#0d1117', border: '1px solid #21262d', borderRadius: 6,
+              padding: '8px 12px', fontSize: 12, gap: 12,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                <span style={{
+                  color: r.action === 'rollback' ? '#d29922' : '#e6edf3',
+                  fontWeight: 600, textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.04em',
+                }}>
+                  {r.action}
+                </span>
+                <span style={{ fontFamily: 'monospace', color: '#e6edf3' }}>{r.image_tag}</span>
+                <span style={{ color: '#7d8590' }}>{r.component}</span>
+              </div>
+              <div style={{ display: 'flex', gap: 14, alignItems: 'center', whiteSpace: 'nowrap' }}>
+                {healthBadge(r.healthy_after)}
+                <span style={{ color: '#7d8590' }}>{r.deployed_by}</span>
+                <span style={{ color: '#7d8590', fontVariantNumeric: 'tabular-nums' }}>
+                  {new Date(r.timestamp).toLocaleString()}
                 </span>
               </div>
             </div>

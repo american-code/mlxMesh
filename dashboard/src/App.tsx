@@ -27,7 +27,14 @@ type GraphMode = 'hub' | 'geo'
 // default so the dashboard ships with full functionality everywhere else
 // (local dev, self-hosted operators).
 const MARKETING_MODE = import.meta.env.VITE_MARKETING_MODE === 'true'
-const VISIBLE_TABS: Tab[] = MARKETING_MODE ? ['network'] : ['network', 'account', 'node', 'admin']
+// Runtime (not build-time) escape hatch for the operator: appending ?ops to
+// the URL reveals the hidden tabs on an otherwise marketing-mode build,
+// without needing a separate rebuild/deploy every time. Not a security
+// boundary by itself — Admin still requires the real BDFL challenge/response
+// signature — this only controls whether the TAB is visible to a casual
+// visitor.
+const OPS_OVERRIDE = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('ops')
+const VISIBLE_TABS: Tab[] = (MARKETING_MODE && !OPS_OVERRIDE) ? ['network'] : ['network', 'account', 'node', 'admin']
 
 export default function App() {
   const { data: topology, error: topoError, lastUpdated, refresh } = useTopology()

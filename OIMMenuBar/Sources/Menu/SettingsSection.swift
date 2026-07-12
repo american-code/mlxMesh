@@ -89,6 +89,48 @@ struct SettingsSection: View {
                     set: { enabled in try? appState.launchAtLogin.setEnabled(enabled) }
                 ))
                 .font(.caption)
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Toggle("Keep models warm", isOn: $appState.warmKeeperEnabled)
+                        .font(.caption)
+                        .onChange(of: appState.warmKeeperEnabled) { _, _ in
+                            appState.persistSettings()
+                            appState.restartWarmKeeperIfNeeded()
+                        }
+                    if appState.warmKeeperEnabled {
+                        Stepper(
+                            "Every \(Int(appState.warmKeeperIntervalMinutes)) min",
+                            value: $appState.warmKeeperIntervalMinutes, in: 1...60, step: 1
+                        )
+                        .font(.caption)
+                        .onChange(of: appState.warmKeeperIntervalMinutes) { _, _ in
+                            appState.persistSettings()
+                            appState.restartWarmKeeperIfNeeded()
+                        }
+                    }
+                    Text("Periodically pings Exo to keep your downloaded models loaded in memory. Exo can evict an idle model even though it still shows as ready — without this, the next real request pays a slow cold reload. Free: this never spends or earns credits.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Toggle("Report metrics to coordinator", isOn: $appState.benchIntervalEnabled)
+                        .font(.caption)
+                        .onChange(of: appState.benchIntervalEnabled) { _, _ in appState.persistSettings() }
+                    if appState.benchIntervalEnabled {
+                        Stepper(
+                            "Every \(Int(appState.benchIntervalMinutes)) min",
+                            value: $appState.benchIntervalMinutes, in: 1...60, step: 1
+                        )
+                        .font(.caption)
+                        .onChange(of: appState.benchIntervalMinutes) { _, _ in appState.persistSettings() }
+                    }
+                    Text("Signed re-benchmark of every downloaded model, submitted to the coordinator so its throughput numbers for this node stay near-real-time (separate from the local Exo pings above, which never report anything). Also re-warms models as a side effect. Takes effect the next time you start the node.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
             .padding(.top, 4)
         }

@@ -35,6 +35,29 @@ final class WalletStore {
     /// authoritative binding lives in the coordinator's wallet Manager.
     private(set) var linkedDevices: [String] = []
 
+    /// Set when a Keychain read/write fails for a reason other than "no item
+    /// yet" (errSecItemNotFound) — most often errSecMissingEntitlement, which
+    /// means THIS build's signing team doesn't actually hold the
+    /// `keychainAccessGroup` entitlement it's asking for (see that constant's
+    /// doc comment). Previously these failures were silently swallowed —
+    /// SecItemAdd's status was never checked — which looked exactly like "the
+    /// wallet reset" on every launch: the write silently failed, so the next
+    /// launch's read found nothing and createWallet() minted a fresh one.
+    /// Cleared once usingLocalFallback is true — at that point the wallet IS
+    /// persisting (see fallback storage below), just not via Keychain, so
+    /// this stops being an active error and becomes informational.
+    private(set) var keychainError: String?
+
+    /// True once the seed has been persisted via the local-file fallback
+    /// (fallbackFileURL) rather than Keychain — meaning the wallet DOES
+    /// survive an app relaunch on THIS device, but is NOT syncing to other
+    /// Apple devices via iCloud Keychain the way a real Keychain-backed
+    /// wallet would. This is a deliberate degraded-but-working mode for when
+    /// Keychain access is denied (see keychainError) rather than leaving the
+    /// wallet unpersisted — the seed/recovery key themselves are never the
+    /// problem in that case, only where this device is allowed to store them.
+    private(set) var usingLocalFallback = false
+
     var hasWallet: Bool { address != nil }
     var isAuthenticated: Bool { sessionKey != nil }
 
@@ -87,26 +110,69 @@ final class WalletStore {
     }
 
     /// Forgets the wallet on THIS device only (removes the local + synced
-    /// Keychain item). The account still exists; re-import to regain it.
+    /// Keychain item, and the local fallback file if one exists). The
+    /// account still exists; re-import to regain it.
     func forget() {
         deleteFromKeychain()
+        deleteFallbackFile()
         seed = nil
         address = nil
         sessionKey = nil
         authError = nil
+        keychainError = nil
+        usingLocalFallback = false
     }
 
     private func persist(seed newSeed: Data) {
-        saveToKeychain(newSeed)
+        saveSeed(newSeed)
         seed = newSeed
         address = Self.deriveAddress(fromSeed: newSeed)
         sessionKey = nil
     }
 
     private func load() {
-        guard let raw = loadFromKeychain(), raw.count == 32 else { return }
+        guard let raw = loadSeed(), raw.count == 32 else { return }
         seed = raw
         address = Self.deriveAddress(fromSeed: raw)
+    }
+
+    // MARK: - Combined storage (Keychain, falling back to a local file)
+
+    /// Tries Keychain first (the real, intended path — gives iCloud sync
+    /// across the user's other Apple devices). On any Keychain failure,
+    /// falls back to a plain file in this app's own sandboxed Application
+    /// Support directory — no special entitlement needed for that at all,
+    /// since it's just the app writing to its own private container. The
+    /// wallet/seed itself is never the problem in that failure mode; only
+    /// where this device is permitted to store it is. See usingLocalFallback.
+    private func saveSeed(_ data: Data) {
+        saveToKeychain(data)
+        if keychainError == nil {
+            usingLocalFallback = false
+            deleteFallbackFile() // Keychain now authoritative; don't leave a stale duplicate on disk
+            return
+        }
+        do {
+            try saveToFallbackFile(data)
+            usingLocalFallback = true
+            keychainError = nil // fallback succeeded — wallet IS persisting, just not via Keychain; see usingLocalFallback
+        } catch {
+            usingLocalFallback = false
+            keychainError = (keychainError ?? "") + " (local fallback also failed: \(error.localizedDescription))"
+        }
+    }
+
+    private func loadSeed() -> Data? {
+        if let raw = loadFromKeychain() {
+            usingLocalFallback = false
+            return raw
+        }
+        if let raw = loadFromFallbackFile() {
+            usingLocalFallback = true
+            keychainError = nil // loaded fine from fallback — not an active error, see usingLocalFallback
+            return raw
+        }
+        return nil
     }
 
     // MARK: - Coordinator auth / linking
@@ -229,7 +295,18 @@ final class WalletStore {
         var q = baseQuery()
         q[kSecValueData as String] = data
         q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(q as CFDictionary, nil)
+        let status = SecItemAdd(q as CFDictionary, nil)
+        if status == errSecSuccess {
+            keychainError = nil
+        } else {
+            // Previously ignored entirely — a failed write here means the seed
+            // ONLY lives in this in-memory session and silently vanishes on next
+            // launch, which looks exactly like "the wallet keeps resetting."
+            // errSecMissingEntitlement specifically means this build's signing
+            // team doesn't hold the `keychainAccessGroup` entitlement it's
+            // asking for — see that constant's doc comment.
+            keychainError = Self.describeKeychainStatus(status)
+        }
     }
 
     private func loadFromKeychain() -> Data? {
@@ -237,12 +314,60 @@ final class WalletStore {
         q[kSecReturnData as String] = kCFBooleanTrue!
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         var out: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess else { return nil }
+        let status = SecItemCopyMatching(q as CFDictionary, &out)
+        if status == errSecItemNotFound {
+            keychainError = nil // genuinely no wallet yet — not an error
+            return nil
+        }
+        guard status == errSecSuccess else {
+            keychainError = Self.describeKeychainStatus(status)
+            return nil
+        }
+        keychainError = nil
         return out as? Data
+    }
+
+    private static func describeKeychainStatus(_ status: OSStatus) -> String {
+        let msg = (SecCopyErrorMessageString(status, nil) as String?) ?? "unknown error"
+        if status == errSecMissingEntitlement {
+            return "Keychain write denied (errSecMissingEntitlement) — this build's signing team doesn't match the keychain-access-groups entitlement (WXDFFW3882.com.openinferencemesh.shared-wallet). Check Signing & Capabilities in Xcode. \(msg)"
+        }
+        return "Keychain error \(status): \(msg)"
     }
 
     private func deleteFromKeychain() {
         SecItemDelete(baseQuery() as CFDictionary)
+    }
+
+    // MARK: - Local file fallback (device-local only, no iCloud sync)
+
+    // Same directory/naming convention as the Mac/CLI side's FileWalletStorage
+    // (swift-sdk/Sources/MeshKit/Wallet.swift) — Application Support, app-scoped
+    // subfolder — but this app's sandbox container makes that already private to
+    // this app, so there's no cross-app collision risk to name around.
+    private var fallbackFileURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("mlxmesh", isDirectory: true)
+            .appendingPathComponent("wallet-seed-fallback.bin")
+    }
+
+    private func saveToFallbackFile(_ data: Data) throws {
+        let dir = fallbackFileURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // .completeFileUnlessOpen: unreadable while the device is locked (unlike
+        // the default class), but still writable by a background refresh with
+        // the file already open — the meaningful protection level on iOS, where
+        // Data Protection classes do the real work POSIX chmod bits did on macOS.
+        try data.write(to: fallbackFileURL, options: [.atomic, .completeFileProtectionUnlessOpen])
+    }
+
+    private func loadFromFallbackFile() -> Data? {
+        try? Data(contentsOf: fallbackFileURL)
+    }
+
+    private func deleteFallbackFile() {
+        try? FileManager.default.removeItem(at: fallbackFileURL)
     }
 
     // MARK: - Crockford Base32 (no I/L/O/U — unambiguous when written by hand)

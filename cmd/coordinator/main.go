@@ -46,6 +46,7 @@ import (
 
 	"github.com/open-inference-mesh/oim/internal/adminauth"
 	"github.com/open-inference-mesh/oim/internal/coordinator"
+	"github.com/open-inference-mesh/oim/internal/deploytool"
 	"github.com/open-inference-mesh/oim/internal/directory"
 	"github.com/open-inference-mesh/oim/internal/economics"
 	"github.com/open-inference-mesh/oim/internal/federation"
@@ -212,6 +213,7 @@ func rootCmd() *cobra.Command {
 	var federationPollIntervalSec int
 	var bdflPublicKey string
 	var adminTreasuryRateLimitPerMin float64
+	var deploymentHistoryPath string
 
 	cmd := &cobra.Command{
 		Use:   "oim-coordinator",
@@ -228,7 +230,7 @@ Optionally report aggregate health to a directory with --directory.`,
 				corsOrigins, grantPoWBits, grantRateLimitPerHour, tlsCert, tlsKey,
 				identityPath, federationKey, federationDBPath, time.Duration(federationPollIntervalSec)*time.Second,
 				protectUserReads, userQuotaPerHour, trustedProxies, availabilityRewardEnabled,
-				bdflPublicKey, adminTreasuryRateLimitPerMin)
+				bdflPublicKey, adminTreasuryRateLimitPerMin, deploymentHistoryPath)
 		},
 	}
 	cmd.Flags().StringVar(&listenAddr, "listen", ":9000", "Address to listen on")
@@ -258,6 +260,7 @@ Optionally report aggregate health to a directory with --directory.`,
 	cmd.Flags().BoolVar(&availabilityRewardEnabled, "availability-reward", false, "Enable periodic verified-availability probes: the coordinator occasionally dispatches one small real inference request to an idle, non-simulated node and pays a tiny reward through the same measured-throughput pricing path as real traffic (never a flat/heartbeat-based reward). Throttled by queue backpressure, not a treasury cap — credits have no external monetary value in this system, so minting a small bootstrap incentive isn't deflationary the way it would be for a real currency. Off by default")
 	cmd.Flags().StringVar(&bdflPublicKey, "bdfl-public-key", "", "Hex-encoded Ed25519 public key for the admin panel's challenge-response login (see `oim admin keygen`). The coordinator never holds the matching private key. Empty = admin panel login disabled; the existing static --api-key admin workflows are unaffected either way")
 	cmd.Flags().Float64Var(&adminTreasuryRateLimitPerMin, "admin-treasury-rate-limit-per-min", 1.0, "Manual treasury credit injections (POST /admin/treasury/credit) allowed per minute, independent of the general write-path rate limit")
+	cmd.Flags().StringVar(&deploymentHistoryPath, "deployment-history-path", "", "Path to the deployment history JSON file `oim deploy` writes on this host (see internal/deploytool) — exposes it read-only at GET /admin/deployments for the dashboard's admin panel. Empty = disabled (404). Only meaningful when the coordinator runs on the same host `oim deploy push`/`rollback` target")
 	return cmd
 }
 
@@ -284,7 +287,7 @@ func (s *settlementRecordStore) store(r map[string]any) {
 	s.records = append(s.records, r)
 }
 
-func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string, publicURL, apiKey, dbPath, ledgerDBURL string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64, tlsCert, tlsKey, identityPath, federationKey, federationDBPath string, federationPollInterval time.Duration, protectUserReads bool, userQuotaPerHour float64, trustedProxies []string, availabilityRewardEnabled bool, bdflPublicKey string, adminTreasuryRateLimitPerMin float64) error {
+func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string, publicURL, apiKey, dbPath, ledgerDBURL string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64, tlsCert, tlsKey, identityPath, federationKey, federationDBPath string, federationPollInterval time.Duration, protectUserReads bool, userQuotaPerHour float64, trustedProxies []string, availabilityRewardEnabled bool, bdflPublicKey string, adminTreasuryRateLimitPerMin float64, deploymentHistoryPath string) error {
 	log.Printf("[coordinator] oim-coordinator %s", version.String())
 	proxyNets, err := httpmw.ParseTrustedProxies(trustedProxies)
 	if err != nil {
@@ -1188,11 +1191,28 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 	// POST /settlement/records — receive a signed settlement record from a node.
 	// Stores the record regardless of verification_result OR signature validity —
 	// failed-verification and even forged records are evidence for dispute
-	// resolution, not noise to be silently dropped (proposal §10). But crediting
-	// only happens when the record's signature verifies against the claimed node's
-	// registered public key — otherwise anyone could POST a record with
-	// verification_result:true and mint credits for any node_id (Fable security
-	// review #1).
+	// resolution, not noise to be silently dropped (proposal §10).
+	//
+	// This endpoint DOES NOT credit the ledger. Publishing a settlement record is
+	// evidence, not a mint — exactly the "the protocol never custodies funds —
+	// publishing a record is not the same as moving money" contract stated in
+	// internal/settlement.PublishSettlementRecord. Crediting here was unsafe on
+	// two independent counts, neither closed by the signature check that used to
+	// gate it (that check only proves WHICH node authored the record, not that any
+	// work happened):
+	//   1. Self-minting — a node holds its own private key, so it can sign a
+	//      division_order naming itself with an arbitrary total_value and
+	//      verification_result:true; the signature verifies against its own
+	//      registered key and the coordinator would credit whatever it claimed,
+	//      with no cross-check against a job the coordinator actually dispatched
+	//      and verified.
+	//   2. Replay — there is no record_id dedup or signed_at freshness bound, so a
+	//      single valid record re-POSTed N times credits N times.
+	// The ONLY authoritative earning path is creditNodeEarning (called from the
+	// fast/background-lane handlers after the coordinator itself dispatched and
+	// verified the work), where reward + treasury margin are derived from what the
+	// consumer was actually charged. CreateSettlementRecord/PublishSettlementRecord
+	// have no live callers, so no honest node flow depends on crediting here.
 	mux.HandleFunc("POST /settlement/records", func(w http.ResponseWriter, r *http.Request) {
 		var record map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&record); err != nil {
@@ -1200,30 +1220,6 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 			return
 		}
 		settlementRecords.store(record)
-
-		if verified, _ := record["verification_result"].(bool); verified {
-			if do, ok := record["division_order"].(map[string]any); ok {
-				nodeID, _ := do["node_id"].(string)
-				totalValue, _ := do["total_value"].(float64)
-				recordID, _ := record["record_id"].(string)
-
-				pubKey, known := registry.PublicKey(nodeID)
-				if !known {
-					log.Printf("[coordinator] settlement record %s: node %s not registered, refusing credit", recordID, nodeID)
-				} else if err := settlement.VerifySettlementRecord(record, pubKey); err != nil {
-					log.Printf("[coordinator] settlement record %s: signature invalid, refusing credit: %v", recordID, err)
-				} else if nodeID != "" && totalValue > 0 {
-					_ = ledger.CreditAccount(settlement.CreditEntry{
-						UserID:            nodeID,
-						Origin:            settlement.CreditOriginEarnedContrib,
-						Amount:            totalValue,
-						GrantedOrEarnedAt: time.Now(),
-						SourceReference:   recordID,
-					})
-					log.Printf("[coordinator] credited node=%s amount=%.4f record=%s", nodeID, totalValue, recordID)
-				}
-			}
-		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "stored"})
 	})
 
@@ -1286,11 +1282,26 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		writeJSON(w, http.StatusOK, ledger.GetBalance(userID))
 	})
 
-	// POST /users/{id}/api-key — generate (or replace) a per-user API key.
+	// POST /users/{id}/api-key — generate (or ROTATE) a per-user API key.
 	// The key is returned ONCE here and never retrievable again; store it client-side.
 	// The key can be used in "Authorization: Bearer oim_xxx" instead of X-OIM-User-ID.
+	//
+	// Trust-on-first-use: the FIRST mint for a never-seen user_id is open (this is
+	// the anonymous-account bootstrap — a brand-new client has no credential yet,
+	// and user_id is a client-chosen high-entropy UUID, not a secret the server
+	// issues). But ROTATING an account that already has a key requires proving
+	// control of it — the current oim_ key or an admin credential — otherwise
+	// anyone who merely learns a user_id (it travels in the X-OIM-User-ID header,
+	// audit-log URLs, etc.) could POST here to overwrite the victim's key and take
+	// over the account, including its earned balance. INSERT-OR-REPLACE without
+	// this gate is silent account takeover.
 	mux.HandleFunc("POST /users/{id}/api-key", func(w http.ResponseWriter, r *http.Request) {
 		userID := r.PathValue("id")
+		if apiKeys.exists(userID) && !callerControlsAccount(r, userID, apiKey, adminAuth, apiKeys) {
+			writeErr(w, http.StatusForbidden,
+				"forbidden: this account already has an API key; rotating it requires the account's current key or the admin key")
+			return
+		}
 		key, err := apiKeys.generate(userID)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "generate key: "+err.Error())
@@ -1318,8 +1329,18 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 	})
 
 	// DELETE /users/{id}/api-key — revoke the current key. A new one can be generated.
+	// Ownership-gated (same check as key rotation): authMiddleware only proves the
+	// caller holds SOME valid key, not that it's this account's — without this
+	// gate, any authenticated user could revoke anyone else's key, and revoking a
+	// victim's key resets apiKeys.exists(victim) to false, which reopens the
+	// first-mint path and hands over the account. See callerControlsAccount.
 	mux.HandleFunc("DELETE /users/{id}/api-key", func(w http.ResponseWriter, r *http.Request) {
 		userID := r.PathValue("id")
+		if !callerControlsAccount(r, userID, apiKey, adminAuth, apiKeys) {
+			writeErr(w, http.StatusForbidden,
+				"forbidden: revoking this account's API key requires the account's current key or the admin key")
+			return
+		}
 		apiKeys.revoke(userID)
 		log.Printf("[coordinator] api-key revoked user=%s", userID)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
@@ -1824,6 +1845,40 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		writeJSON(w, http.StatusOK, map[string]any{"actions": ledger.RecentAdminActions(limit)})
 	})
 
+	// GET /admin/deployments — read-only view of the deployment history `oim
+	// deploy` writes on this host (internal/deploytool.History). Same admin
+	// gate as every other /admin/* read. Disabled (404) unless
+	// --deployment-history-path is set — this is deliberately read-only: no
+	// endpoint here can TRIGGER a deploy/rollback (that stays an
+	// operator-run CLI action over their own SSH credentials — see
+	// internal/deploytool's package doc comment on why remote-triggered
+	// binary swaps are a materially different risk than a status view).
+	mux.HandleFunc("GET /admin/deployments", func(w http.ResponseWriter, r *http.Request) {
+		if !adminAuthorized(r, apiKey, adminAuth) {
+			writeErr(w, http.StatusUnauthorized, "admin credential required")
+			return
+		}
+		if deploymentHistoryPath == "" {
+			writeErr(w, http.StatusNotFound, "deployment history not configured on this coordinator (--deployment-history-path)")
+			return
+		}
+		data, err := os.ReadFile(deploymentHistoryPath)
+		if os.IsNotExist(err) {
+			writeJSON(w, http.StatusOK, map[string]any{"records": []any{}})
+			return
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "read deployment history: "+err.Error())
+			return
+		}
+		var hist deploytool.History
+		if err := json.Unmarshal(data, &hist); err != nil {
+			writeErr(w, http.StatusInternalServerError, "parse deployment history: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, hist)
+	})
+
 	// GET / — index for browsers and health checkers hitting the root.
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		digest := registry.HealthDigest(podID, regionHint, publicURL)
@@ -1851,6 +1906,7 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 				"GET  /admin/treasury  (requires --api-key or admin session)",
 				"POST /admin/treasury/credit  (requires --api-key or admin session)",
 				"GET  /admin/audit-log  (requires --api-key or admin session)",
+				"GET  /admin/deployments  (requires --api-key or admin session; 404 unless --deployment-history-path set)",
 			},
 		})
 	})
@@ -2056,6 +2112,20 @@ func adminAuthorized(r *http.Request, adminKey string, adminAuth *adminauth.Auth
 		return adminAuth.ValidSession(auth, time.Now())
 	}
 	return false
+}
+
+// callerControlsAccount reports whether the request is allowed to MUTATE the
+// credential of account `id`: either an admin (static key or BDFL session) or
+// the account proving control with its own current oim_ key. This is the single
+// gate for BOTH rotating a key (POST /users/{id}/api-key when one already
+// exists) and revoking one (DELETE /users/{id}/api-key) — they have to share
+// one check, because gating only rotation is useless: an attacker who could
+// revoke someone else's key first makes apiKeys.exists(victim) false, then walks
+// through the open first-mint path to take the account over. authMiddleware only
+// proves the caller holds SOME valid key, never that it's THIS account's — so
+// the ownership check has to live here in the handler.
+func callerControlsAccount(r *http.Request, id, adminKey string, adminAuth *adminauth.Authenticator, keys *apiKeyStore) bool {
+	return adminAuthorized(r, adminKey, adminAuth) || authorizeUserRead(r, id, true, adminKey, keys)
 }
 
 // boolGauge maps a bool to the 1/0 convention Prometheus gauges use.
@@ -2331,11 +2401,11 @@ func pollFederationPeers(done <-chan struct{}, directoryURLs []string, federatio
 // Bearer token would be redundant at best and a hard lockout at worst: no
 // node has any way to send that token, and a brand-new user/wallet can't
 // reach the ONE endpoint that would mint their first credential.
-// /settlement/records is included even though it can't verify a signature at
-// the HTTP layer (the caller hasn't been resolved to a node yet) — an
-// unsigned or forged record is inert (settlement.VerifySettlementRecord runs
-// inside the handler and only credits on success), so gating it here would
-// only block legitimate nodes, not attackers.
+// /settlement/records is included because it no longer touches the ledger at
+// all: the handler now only stores a record as inert dispute evidence and
+// credits nothing (the self-mint/replay hole that used to make crediting-here
+// dangerous was removed — see that handler's comment), so leaving it open
+// exposes no credit path, only an append to the in-memory evidence store.
 func isSelfAuthenticatingWrite(method, path string) bool {
 	if method != http.MethodPost {
 		return false // DELETE (deregister node, revoke api-key) stays admin-gated

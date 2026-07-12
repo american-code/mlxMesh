@@ -603,6 +603,18 @@ type NodeSnapshot struct {
 	// operator transparency (e.g. "benchmark: 40 t/s vs. observed: 61 t/s").
 	ObservedToksPerSec  *float64 `json:"observed_toks_per_sec,omitempty"`
 	ObservedSampleCount int      `json:"observed_sample_count,omitempty"`
+	// ClusterSignature is an opaque, order-independent fingerprint of this
+	// cluster's sorted device-ID set (see protocol.CapabilityManifest's own
+	// doc comment — no hostnames/IPs, just a hash) — the SAME identity the
+	// coordinator already uses internally to dedup a clustered ring's
+	// duplicate registrations (clusterStandbyNodeIDs). Exposed here so
+	// dashboard map views can group markers by ACTUAL shared cluster
+	// membership instead of by raw lat/lng: two unrelated operators whose
+	// clusters happen to IP-geolocate to the same city previously merged into
+	// one marker (same coordinate key, no other distinguishing field on the
+	// wire) — a different signature now keeps them visually separate even at
+	// identical coordinates. Empty for non-cluster (solo) nodes.
+	ClusterSignature string `json:"cluster_signature,omitempty"`
 }
 
 // Snapshot returns a point-in-time view of all registered nodes (live and recently stale).
@@ -655,6 +667,7 @@ func (r *NodeRegistry) Snapshot() []NodeSnapshot {
 			ClusterStandby:       standby[id],
 			ObservedToksPerSec:   e.observedTPS,
 			ObservedSampleCount:  e.observedSamples,
+			ClusterSignature:     e.manifest.ClusterSignature,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
