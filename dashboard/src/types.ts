@@ -92,6 +92,32 @@ export interface Balance {
   total: number
 }
 
+export interface LedgerAnomaly {
+  user_id: string
+  kind: 'overdraft' | 'orphan_debit'
+  credit_total: number
+  debit_total: number
+  detail: string
+}
+
+export interface ReconciliationReport {
+  consistent: boolean
+  user_count: number
+  total_grant_credits: number
+  total_earned_credits: number
+  total_credits: number
+  total_debits: number
+  total_outstanding: number
+  anomalies: LedgerAnomaly[] | null
+}
+
+export interface AdminAction {
+  action: string
+  detail: string
+  amount: number
+  performed_at: string
+}
+
 // Schedule controls when this node contributes to the mesh. Mode 'window'
 // restricts sharing to a daily HH:MM-HH:MM local-time range (end < start
 // means it crosses midnight, e.g. "22:00"-"07:00" = overnight only),

@@ -1,4 +1,7 @@
-import type { TopologyResponse, NodesResponse, Balance, NodeDetection, NodeConfig, PodHealthDigest } from './types'
+import type {
+  TopologyResponse, NodesResponse, Balance, NodeDetection, NodeConfig, PodHealthDigest,
+  ReconciliationReport, AdminAction,
+} from './types'
 import { mineProofOfWork, DEFAULT_GRANT_POW_BITS } from './pow'
 import { getStoredApiKey, setStoredApiKey } from './identity'
 
@@ -263,4 +266,83 @@ export async function submitTestQuery(
     tokensPerSec: data?.oim_tokens_per_sec ?? null,
     latencyMs: data?.oim_latency_ms ?? null,
   }
+}
+
+// ── Admin panel (task #96) ──────────────────────────────────────────────
+// Every call below (besides the challenge/authenticate pair, which
+// self-verify a signature) sends the BDFL session token as a Bearer token —
+// the coordinator accepts it interchangeably with the static --api-key.
+
+export async function requestAdminChallenge(coordinatorURL: string): Promise<{ nonce: string; expires_at: string }> {
+  const res = await fetch(`${coordinatorURL}/admin/challenge`, { method: 'POST' })
+  if (!res.ok) throw new Error(`Admin challenge returned ${res.status}`)
+  return res.json()
+}
+
+export async function authenticateAdmin(
+  coordinatorURL: string,
+  nonce: string,
+  signature: string,
+): Promise<{ session_token: string; expires_at: string }> {
+  const res = await fetch(`${coordinatorURL}/admin/authenticate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nonce, signature }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body?.error || `Admin authenticate returned ${res.status}`)
+  }
+  return res.json()
+}
+
+function adminHeaders(sessionToken: string): Record<string, string> {
+  return { Authorization: `Bearer ${sessionToken}` }
+}
+
+export async function fetchTreasuryBalance(coordinatorURL: string, sessionToken: string): Promise<Balance> {
+  const res = await fetch(`${coordinatorURL}/admin/treasury`, { headers: adminHeaders(sessionToken) })
+  if (!res.ok) throw new Error(`Treasury fetch returned ${res.status}`)
+  const data = await res.json()
+  return data.balance
+}
+
+export async function fetchReconcileReport(coordinatorURL: string, sessionToken: string): Promise<ReconciliationReport> {
+  const res = await fetch(`${coordinatorURL}/admin/reconcile`, { headers: adminHeaders(sessionToken) })
+  if (!res.ok) throw new Error(`Reconcile fetch returned ${res.status}`)
+  return res.json()
+}
+
+export async function fetchAuditLog(coordinatorURL: string, sessionToken: string, limit = 50): Promise<AdminAction[]> {
+  const res = await fetch(`${coordinatorURL}/admin/audit-log?limit=${limit}`, { headers: adminHeaders(sessionToken) })
+  if (!res.ok) throw new Error(`Audit log fetch returned ${res.status}`)
+  const data = await res.json()
+  return data.actions ?? []
+}
+
+export async function postTreasuryCredit(
+  coordinatorURL: string,
+  sessionToken: string,
+  amount: number,
+  reason: string,
+): Promise<Balance> {
+  const res = await fetch(`${coordinatorURL}/admin/treasury/credit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...adminHeaders(sessionToken) },
+    body: JSON.stringify({ amount, reason }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body?.error || `Treasury credit returned ${res.status}`)
+  }
+  const data = await res.json()
+  return data.balance
+}
+
+export async function deregisterNode(coordinatorURL: string, sessionToken: string, nodeId: string): Promise<void> {
+  const res = await fetch(`${coordinatorURL}/nodes/${nodeId}`, {
+    method: 'DELETE',
+    headers: adminHeaders(sessionToken),
+  })
+  if (!res.ok) throw new Error(`Deregister returned ${res.status}`)
 }

@@ -10,7 +10,20 @@ import (
 // ring — spreads a member's share of the keyspace across many positions so
 // one member joining/leaving the candidate set only remaps roughly the
 // fraction of keyspace it owned, not the whole ring.
-const hashRingReplicas = 32
+//
+// 32 was the original value but proved too low for SMALL fleets specifically:
+// with only 2-3 candidates, 32 replicas/member still leaves real per-instantiation
+// skew (simulation: a random 2-member ring is >70/30-skewed roughly 20% of the
+// time, occasionally much worse), which showed up as flakiness in
+// TestIntegrationPrefixAffinityKeepsRepeatedPromptsOnTheSameNode — a handful of
+// distinct prompts could all land on one node purely from bad luck in the ring's
+// random point placement, not a routing bug. 512 was chosen empirically
+// (simulation: 0/5000 trials still fully skewed toward one member of a 2-member
+// ring after 200 distinct probes, vs 2/5000 at 256) — diminishing returns past
+// this. Ring construction cost scales linearly with members*replicas and is
+// still microseconds even at fleet sizes in the hundreds, so there's no real
+// cost to raising this — it only reduces variance.
+const hashRingReplicas = 512
 
 // hashRing is a minimal consistent-hash ring: the same key always maps to
 // the same member as long as that member is present in the ring, and

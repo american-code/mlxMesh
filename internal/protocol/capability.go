@@ -44,6 +44,32 @@ type ModelCapability struct {
 	// coordinator.ScoreForFastLane) requires Loaded:true; a cold model is
 	// visible but not routable until warmed (see POST /nodes/{id}/warm-model).
 	Loaded bool `json:"loaded,omitempty"`
+	// DraftModelID/NumDraftTokens mirror an operator's configured speculative-
+	// decoding pairing for this model (see nodeconfig.DraftModelConfig) —
+	// informational only. Exo's HTTP API has no speculative-decoding
+	// parameter today (only the underlying mlx-lm CLI's --draft-model/
+	// --num-draft-tokens flags do), so this never changes dispatch behavior;
+	// it just lets the dashboard/coordinator show what a node is configured
+	// to request once Exo's API supports it. Empty DraftModelID means no
+	// draft model is configured for this model_id.
+	DraftModelID   string `json:"draft_model_id,omitempty"`
+	NumDraftTokens int    `json:"num_draft_tokens,omitempty"`
+}
+
+// DraftModelConfig pairs a served model with a smaller "draft" model for
+// speculative decoding — forward-compatible plumbing for TODO.md's
+// "Speculative decoding on node side." exo-explore/exo's /v1/chat/completions
+// and /instance HTTP APIs do not accept a draft-model parameter as of this
+// writing (verified against exo's own docs/api.md); only the underlying
+// mlx-lm CLI (`mlx_lm.generate --draft-model ... --num-draft-tokens ...`)
+// supports this today. Configuring this is inert until Exo's API grows a
+// matching parameter — the field names here match mlx-lm's own flags so
+// this repo is ready to pass them through the moment it does, with zero
+// protocol changes needed on this end (see exoadapter.Client.RunChatCompletion's
+// existing opaque extra-params passthrough).
+type DraftModelConfig struct {
+	DraftModelID   string `json:"draft_model_id"`
+	NumDraftTokens int    `json:"num_draft_tokens,omitempty"` // 0 = let Exo pick its own default
 }
 
 // MeasuredSignature is the output of bench/benchmark.go.

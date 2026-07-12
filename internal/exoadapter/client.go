@@ -311,13 +311,18 @@ var streamClient = &http.Client{}
 // stream_options.include_usage:true (so the trailing SSE frame carries
 // completion_tokens), returning the raw HTTP response for the caller to read
 // as text/event-stream — the streaming counterpart to RunChatCompletion, fast
-// lane only. The caller owns closing resp.Body.
-func (c *Client) StreamChatCompletion(ctx context.Context, modelID string, messages []map[string]any) (*http.Response, error) {
+// lane only. The caller owns closing resp.Body. extra mirrors
+// RunChatCompletion's opaque passthrough (merged flat into the JSON body) —
+// may be nil.
+func (c *Client) StreamChatCompletion(ctx context.Context, modelID string, messages []map[string]any, extra map[string]any) (*http.Response, error) {
 	payload := map[string]any{
 		"model":          modelID,
 		"messages":       messages,
 		"stream":         true,
 		"stream_options": map[string]any{"include_usage": true},
+	}
+	for k, v := range extra {
+		payload[k] = v
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {

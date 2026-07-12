@@ -75,6 +75,10 @@ type reconcileState struct {
 // mutates state. Runs under the read lock, so it is safe to call concurrently
 // with live credits/debits — the report reflects a consistent snapshot.
 func (l *Ledger) Reconcile() ReconciliationReport {
+	if l.backend == backendPostgres {
+		return l.reconcilePG()
+	}
+
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
@@ -95,7 +99,7 @@ func (l *Ledger) Reconcile() ReconciliationReport {
 		case CreditOriginStartupGrant:
 			s.grant += e.Amount
 			report.TotalGrantCredits += e.Amount
-		case CreditOriginEarnedContrib:
+		case CreditOriginEarnedContrib, CreditOriginAdminAdjustment:
 			s.earned += e.Amount
 			report.TotalEarnedCredits += e.Amount
 		}

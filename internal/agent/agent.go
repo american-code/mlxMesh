@@ -66,6 +66,11 @@ type Config struct {
 	CapacityPct          float64       // memory contribution cap (0.0–1.0)
 	DeclaredMemoryGB     float64       // when > 0, overrides governor.TotalRAMGB() for simulation
 	AllowedModels        []string      // empty = all downloaded Exo models; non-empty = allowlist
+	// DraftModels configures speculative decoding pairings, keyed by served
+	// model_id — forward-compatible plumbing only (see nodeconfig.DraftModelConfig's
+	// doc comment). Nil/empty = not configured; the common case today, since
+	// Exo's HTTP API has no draft-model parameter to actually use this yet.
+	DraftModels map[string]nodeconfig.DraftModelConfig
 	UserID               string        // when set, earned credits from this node's work go to this user account
 	GeographicHint       string
 	GeoLat               float64 // approximate latitude; 0 = not declared
@@ -131,7 +136,18 @@ func DefaultConfig() Config {
 // priv and pub are the node's Ed25519 keypair loaded via identity.LoadOrCreate().
 func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	exo := exoadapter.New(cfg.ExoURL)
-	runner := jobrunner.New(cfg.ExoURL)
+
+	// Convert nodeconfig's dependency-light DraftModelConfig into protocol's
+	// (see nodeconfig.DraftModelConfig's doc comment) — this is the boundary
+	// package for that conversion since it already imports both.
+	var draftModels map[string]protocol.DraftModelConfig
+	if len(cfg.DraftModels) > 0 {
+		draftModels = make(map[string]protocol.DraftModelConfig, len(cfg.DraftModels))
+		for modelID, d := range cfg.DraftModels {
+			draftModels[modelID] = protocol.DraftModelConfig{DraftModelID: d.DraftModelID, NumDraftTokens: d.NumDraftTokens}
+		}
+	}
+	runner := jobrunner.New(cfg.ExoURL, draftModels)
 
 	listenAddr := cfg.ListenAddr
 	if listenAddr == "" {
@@ -180,6 +196,7 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 	opts.MemoryCapPct = cfg.CapacityPct
 	opts.DeclaredMemoryGB = cfg.DeclaredMemoryGB
 	opts.AllowedModels = cfg.AllowedModels
+	opts.DraftModels = draftModels
 	opts.ReachabilityEndpoint = reachabilityEndpoint
 	if cfg.GeographicHint != "" {
 		opts.GeographicHint = cfg.GeographicHint

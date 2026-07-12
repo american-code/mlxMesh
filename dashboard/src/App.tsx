@@ -8,6 +8,7 @@ import { GeoNetworkGraph } from './components/GeoNetworkGraph'
 import { NodeDetail } from './components/NodeDetail'
 import { AccountView } from './components/AccountView'
 import { NodeSetupView } from './components/NodeSetupView'
+import { AdminView } from './components/AdminView'
 import { BackpressurePanel } from './components/BackpressurePanel'
 import { runTestQueryWithAutoAuth } from './api'
 import { getOrCreateUserId } from './identity'
@@ -17,16 +18,16 @@ import {
   statusColor, formatTps, formatMem,
 } from './utils'
 
-type Tab = 'network' | 'account' | 'node'
+type Tab = 'network' | 'account' | 'node' | 'admin'
 type GraphMode = 'hub' | 'geo'
 
 // Marketing-mode deploys (e.g. the public seed's app.mlxmesh.net) show only the
-// Network view — Account/Node Setup are for operators managing their own
-// contribution, not visitors browsing the network. Off by default so the
-// dashboard ships with full functionality everywhere else (local dev,
-// self-hosted operators).
+// Network view — Account/Node Setup/Admin are for operators managing their own
+// contribution (or the mesh itself), not visitors browsing the network. Off by
+// default so the dashboard ships with full functionality everywhere else
+// (local dev, self-hosted operators).
 const MARKETING_MODE = import.meta.env.VITE_MARKETING_MODE === 'true'
-const VISIBLE_TABS: Tab[] = MARKETING_MODE ? ['network'] : ['network', 'account', 'node']
+const VISIBLE_TABS: Tab[] = MARKETING_MODE ? ['network'] : ['network', 'account', 'node', 'admin']
 
 export default function App() {
   const { data: topology, error: topoError, lastUpdated, refresh } = useTopology()
@@ -147,7 +148,7 @@ export default function App() {
                   fontWeight: tab === t ? 600 : 400,
                   transition: 'all 0.15s',
                 }}>
-                  {t === 'network' ? 'Network' : t === 'account' ? 'Account' : 'Node Setup'}
+                  {t === 'network' ? 'Network' : t === 'account' ? 'Account' : t === 'node' ? 'Node Setup' : 'Admin'}
                 </button>
               ))}
             </div>
@@ -205,6 +206,10 @@ export default function App() {
       )}
 
       {tab === 'node' && <NodeSetupView />}
+
+      {tab === 'admin' && (
+        <AdminView coordinatorURL={pods[0]?.coordinator_endpoint ?? null} nodes={allNodes} onNodesChanged={refresh} />
+      )}
 
       <main style={{ padding: '20px 24px', maxWidth: 1440, margin: '0 auto', display: tab === 'network' ? 'block' : 'none' }}>
 

@@ -65,3 +65,28 @@ func BuildProbeJob(jobID, modelID, quantization string) (protocol.JobSpec, []map
 	}
 	return job, messages
 }
+
+// ScaledProbeBudget grows how many idle nodes get probed per round as
+// backpressurePct falls, from floor (the busy-network cap, reached at or
+// above backpressureCeiling) up to ceiling (reached only at 0% — a fully
+// idle network) — the bootstrapping-economics fix (TODO.md, Economic
+// Sustainability): the quieter the network, the more otherwise-unpaid idle
+// capacity there is to subsidize via this same mint-from-nothing mechanism,
+// tapering back to today's conservative default as real traffic returns.
+// Pure and fully parameterized, like SelectProbeTarget/BuildProbeJob above —
+// the caller owns the actual constants (cmd/coordinator). Degenerate params
+// (a non-positive backpressureCeiling, or ceiling <= floor) fall back to
+// floor rather than producing a nonsensical budget.
+func ScaledProbeBudget(backpressurePct, backpressureCeiling float64, floor, ceiling int) int {
+	if backpressureCeiling <= 0 || ceiling <= floor {
+		return floor
+	}
+	if backpressurePct <= 0 {
+		return ceiling
+	}
+	if backpressurePct >= backpressureCeiling {
+		return floor
+	}
+	frac := 1 - backpressurePct/backpressureCeiling
+	return floor + int(frac*float64(ceiling-floor))
+}

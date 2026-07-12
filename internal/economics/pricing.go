@@ -52,6 +52,23 @@ const (
 	// coordination is a lightweight security service, not compute — but nonzero
 	// so hosting pointers is rewarded, not merely altruistic.
 	CoordinationRewardPerPointer = 0.02
+
+	// ActivityCeilingBackpressurePct: at/above this queue backpressure
+	// (coordinator.JobQueue.BackpressurePct — 0-100), real consumer demand is
+	// already present, so ActivityDiscount applies no discount at all. Not
+	// imported from cmd/coordinator (this package stays dependency-light, the
+	// same convention internal/nodeconfig already uses to avoid importing
+	// internal/protocol) — kept equal in value to cmd/coordinator's
+	// availabilityProbeBackpressureCeiling so "what counts as a busy network"
+	// means the same thing everywhere it's checked.
+	ActivityCeilingBackpressurePct = 40.0
+
+	// ActivityDiscountFloor is the minimum ConsumerCost multiplier,
+	// reached at a fully idle network (0% backpressure). Deliberately
+	// 1 - HouseEdge: at the floor, ConsumerCostWithActivityDiscount equals
+	// ProviderReward exactly, so the treasury's margin bottoms out at zero —
+	// never negative — without a second constant to keep in sync by hand.
+	ActivityDiscountFloor = 1 - HouseEdge
 )
 
 // laneMultiplier scales cost by lane. Fast is the premium (interactive,
@@ -99,6 +116,39 @@ func ProviderReward(lane Lane, sensitivity string, tokenCount int) float64 {
 // NetworkMargin is the treasury's cut: consumer cost minus provider reward.
 func NetworkMargin(lane Lane, sensitivity string, tokenCount int) float64 {
 	return round4(ConsumerCost(lane, sensitivity, tokenCount) - ProviderReward(lane, sensitivity, tokenCount))
+}
+
+// ActivityDiscount returns the ConsumerCost multiplier for a given queue
+// backpressure percentage: 1.0 (no discount) at/above
+// ActivityCeilingBackpressurePct — real consumer demand is already using the
+// network, so there's no bootstrap gap left to subsidize — tapering linearly
+// down to ActivityDiscountFloor as backpressure approaches 0 (a fully idle
+// network). This is the bootstrapping-economics fix (TODO.md, Economic
+// Sustainability): a quiet network is exactly when there's spare, otherwise
+// unpaid capacity to subsidize consumption out of the treasury's own margin,
+// the same "minting/discounting idle capacity isn't deflationary" reasoning
+// already used for the verified-availability reward.
+func ActivityDiscount(backpressurePct float64) float64 {
+	switch {
+	case backpressurePct >= ActivityCeilingBackpressurePct:
+		return 1.0
+	case backpressurePct <= 0:
+		return ActivityDiscountFloor
+	default:
+		frac := backpressurePct / ActivityCeilingBackpressurePct
+		return ActivityDiscountFloor + frac*(1.0-ActivityDiscountFloor)
+	}
+}
+
+// ConsumerCostWithActivityDiscount is ConsumerCost scaled by ActivityDiscount,
+// floored at ProviderReward so the treasury's margin can shrink to zero
+// during a quiet network but is never negative. The provider's own payout —
+// computed separately, from the undiscounted ConsumerCost via ProviderReward
+// — never changes because of this discount; only the treasury's cut
+// compresses.
+func ConsumerCostWithActivityDiscount(lane Lane, sensitivity string, tokenCount int, backpressurePct float64) float64 {
+	discounted := round4(ConsumerCost(lane, sensitivity, tokenCount) * ActivityDiscount(backpressurePct))
+	return math.Max(discounted, ProviderReward(lane, sensitivity, tokenCount))
 }
 
 // CoordinationReward is what an iOS coordination device earns for serving

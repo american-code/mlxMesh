@@ -44,6 +44,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/open-inference-mesh/oim/internal/adminauth"
 	"github.com/open-inference-mesh/oim/internal/coordinator"
 	"github.com/open-inference-mesh/oim/internal/directory"
 	"github.com/open-inference-mesh/oim/internal/economics"
@@ -200,7 +201,7 @@ func main() {
 }
 
 func rootCmd() *cobra.Command {
-	var listenAddr, podID, regionHint, publicURL, apiKey, dbPath string
+	var listenAddr, podID, regionHint, publicURL, apiKey, dbPath, ledgerDBURL string
 	var directoryURLs []string
 	var maxDispatchAttempts, directoryIntervalSec, grantPoWBits int
 	var rateLimitRPS, rateLimitBurst, grantRateLimitPerHour, userQuotaPerHour float64
@@ -209,6 +210,8 @@ func rootCmd() *cobra.Command {
 	var tlsCert, tlsKey string
 	var identityPath, federationKey, federationDBPath string
 	var federationPollIntervalSec int
+	var bdflPublicKey string
+	var adminTreasuryRateLimitPerMin float64
 
 	cmd := &cobra.Command{
 		Use:   "oim-coordinator",
@@ -220,11 +223,12 @@ and routes inference jobs to the best available node.
 Nodes register with: oim node start --coordinator http://<this-host>:<port>
 Optionally report aggregate health to a directory with --directory.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCoordinator(listenAddr, podID, regionHint, directoryURLs, publicURL, apiKey, dbPath,
+			return runCoordinator(listenAddr, podID, regionHint, directoryURLs, publicURL, apiKey, dbPath, ledgerDBURL,
 				maxDispatchAttempts, time.Duration(directoryIntervalSec)*time.Second, rateLimitRPS, rateLimitBurst,
 				corsOrigins, grantPoWBits, grantRateLimitPerHour, tlsCert, tlsKey,
 				identityPath, federationKey, federationDBPath, time.Duration(federationPollIntervalSec)*time.Second,
-				protectUserReads, userQuotaPerHour, trustedProxies, availabilityRewardEnabled)
+				protectUserReads, userQuotaPerHour, trustedProxies, availabilityRewardEnabled,
+				bdflPublicKey, adminTreasuryRateLimitPerMin)
 		},
 	}
 	cmd.Flags().StringVar(&listenAddr, "listen", ":9000", "Address to listen on")
@@ -236,6 +240,7 @@ Optionally report aggregate health to a directory with --directory.`,
 	cmd.Flags().IntVar(&directoryIntervalSec, "directory-interval", 60, "Seconds between directory health-digest reports")
 	cmd.Flags().StringVar(&apiKey, "api-key", "", "Bearer token required for write operations (empty = disabled)")
 	cmd.Flags().StringVar(&dbPath, "db-path", "", "SQLite file for the credit ledger and API keys (empty = in-memory only, resets on restart)")
+	cmd.Flags().StringVar(&ledgerDBURL, "ledger-db-url", "", "Postgres DSN (e.g. postgres://user:pass@host:5432/oim) for the credit ledger. Takes priority over --db-path for the ledger specifically — --db-path keeps governing the API-key store either way. Unlike SQLite, correctness here is enforced by Postgres transactions/row locks rather than this process's in-memory mutex, so multiple coordinator processes can safely share one Postgres instance (SQLite cannot)")
 	cmd.Flags().Float64Var(&rateLimitRPS, "rate-limit-rps", 20.0, "Sustained requests per second allowed per client IP (0 disables rate limiting)")
 	cmd.Flags().Float64Var(&rateLimitBurst, "rate-limit-burst", 40.0, "Burst capacity per client IP on top of the sustained rate")
 	cmd.Flags().StringSliceVar(&corsOrigins, "cors-origin", nil, "Allowed browser origin(s) for CORS (repeatable or comma-separated; empty = allow any origin, dev-friendly default)")
@@ -251,6 +256,8 @@ Optionally report aggregate health to a directory with --directory.`,
 	cmd.Flags().Float64Var(&userQuotaPerHour, "user-quota-per-hour", 0, "Per-account request quota: max requests per hour for a single authenticated user_id, layered on top of the per-IP --rate-limit-rps so one account can't abuse the API from many IPs (0 disables). Only applies to requests that resolve to a user via Bearer auth")
 	cmd.Flags().StringSliceVar(&trustedProxies, "trusted-proxy", nil, "IP or CIDR of reverse proxies (e.g. a fronting nginx) whose X-Forwarded-For may be trusted to identify the real client for per-IP rate limiting. Without this, requests behind a proxy all share one bucket (the proxy's IP), making per-IP limits ineffective. Ignored for any peer not in this list, since XFF is otherwise spoofable")
 	cmd.Flags().BoolVar(&availabilityRewardEnabled, "availability-reward", false, "Enable periodic verified-availability probes: the coordinator occasionally dispatches one small real inference request to an idle, non-simulated node and pays a tiny reward through the same measured-throughput pricing path as real traffic (never a flat/heartbeat-based reward). Throttled by queue backpressure, not a treasury cap — credits have no external monetary value in this system, so minting a small bootstrap incentive isn't deflationary the way it would be for a real currency. Off by default")
+	cmd.Flags().StringVar(&bdflPublicKey, "bdfl-public-key", "", "Hex-encoded Ed25519 public key for the admin panel's challenge-response login (see `oim admin keygen`). The coordinator never holds the matching private key. Empty = admin panel login disabled; the existing static --api-key admin workflows are unaffected either way")
+	cmd.Flags().Float64Var(&adminTreasuryRateLimitPerMin, "admin-treasury-rate-limit-per-min", 1.0, "Manual treasury credit injections (POST /admin/treasury/credit) allowed per minute, independent of the general write-path rate limit")
 	return cmd
 }
 
@@ -277,7 +284,7 @@ func (s *settlementRecordStore) store(r map[string]any) {
 	s.records = append(s.records, r)
 }
 
-func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string, publicURL, apiKey, dbPath string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64, tlsCert, tlsKey, identityPath, federationKey, federationDBPath string, federationPollInterval time.Duration, protectUserReads bool, userQuotaPerHour float64, trustedProxies []string, availabilityRewardEnabled bool) error {
+func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string, publicURL, apiKey, dbPath, ledgerDBURL string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64, tlsCert, tlsKey, identityPath, federationKey, federationDBPath string, federationPollInterval time.Duration, protectUserReads bool, userQuotaPerHour float64, trustedProxies []string, availabilityRewardEnabled bool, bdflPublicKey string, adminTreasuryRateLimitPerMin float64) error {
 	log.Printf("[coordinator] oim-coordinator %s", version.String())
 	proxyNets, err := httpmw.ParseTrustedProxies(trustedProxies)
 	if err != nil {
@@ -293,6 +300,18 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 
 	coordReg := coordinator.NewCoordinationRegistry()
 	walletMgr := wallet.NewManager()
+	// Admin panel login (BDFL key, task #96): unconfigured (bdflPublicKey=="")
+	// fails every check closed, so the coordinator starts fine without one —
+	// the existing static --api-key admin workflows (RUNBOOK's
+	// /admin/reconcile curl) are unaffected either way.
+	adminAuth, err := adminauth.NewAuthenticator(bdflPublicKey)
+	if err != nil {
+		return fmt.Errorf("configure admin auth: %w", err)
+	}
+	// Rate-limits POST /admin/treasury/credit specifically. Keyed on a single
+	// fixed bucket ("admin") since there is exactly one admin identity, unlike
+	// the per-IP/per-user limiters elsewhere.
+	adminTreasuryLimiter := httpmw.NewRateLimiter(adminTreasuryRateLimitPerMin/60.0, 1)
 	reservations := coordinator.NewReservationStore() // node-side pointer consumption (M8)
 	mx := metrics.New()                               // observability counters/gauges, exposed at GET /metrics (task #20)
 	assignments := coordinator.NewAssignmentStore()
@@ -305,23 +324,45 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 	// The ledger and API keys are different — losing those on restart means real
 	// financial data loss and silently invalidating every user's saved key, so
 	// --db-path backs them with SQLite when set.
+	//
+	// --ledger-db-url is a separate, higher-priority option for the ledger
+	// specifically: unlike --db-path's SQLite file (correctness enforced by
+	// this process's own in-memory mutex, safe for exactly one coordinator
+	// process), a Postgres-backed ledger enforces correctness via the database
+	// itself, so it's the option to reach for once more than one coordinator
+	// process needs to share the same ledger. --db-path keeps backing the
+	// API-key store regardless of whether --ledger-db-url is set.
 	var ledger *settlement.Ledger
 	var apiKeys *apiKeyStore
-	if dbPath != "" {
+	switch {
+	case ledgerDBURL != "":
+		var err error
+		ledger, err = settlement.NewPostgresLedger(ledgerDBURL)
+		if err != nil {
+			return fmt.Errorf("open postgres ledger: %w", err)
+		}
+		log.Printf("[coordinator] ledger persisted to Postgres (multi-coordinator safe)")
+	case dbPath != "":
 		var err error
 		ledger, err = settlement.NewPersistentLedger(dbPath)
 		if err != nil {
 			return fmt.Errorf("open persistent ledger: %w", err)
 		}
+		log.Printf("[coordinator] persisting ledger to %s", dbPath)
+	default:
+		ledger = settlement.NewLedger()
+		log.Printf("[coordinator] --db-path/--ledger-db-url not set: ledger is in-memory only and will reset on restart")
+	}
+	if dbPath != "" {
+		var err error
 		apiKeys, err = newPersistentAPIKeyStore(dbPath)
 		if err != nil {
 			return fmt.Errorf("open persistent api key store: %w", err)
 		}
-		log.Printf("[coordinator] persisting ledger + api keys to %s", dbPath)
+		log.Printf("[coordinator] persisting api keys to %s", dbPath)
 	} else {
-		ledger = settlement.NewLedger()
 		apiKeys = newAPIKeyStore()
-		log.Printf("[coordinator] --db-path not set: ledger and api keys are in-memory only and will reset on restart")
+		log.Printf("[coordinator] --db-path not set: api keys are in-memory only and will reset on restart")
 	}
 
 	// Coordinator identity + federated ledger witnessing (task #52, M7): a
@@ -702,7 +743,11 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		// Anonymous / internal calls are allowed through (dev mode, node-to-node).
 		userID := r.Header.Get("X-OIM-User-ID")
 		if userID != "" {
-			estimatedCost := economics.ConsumerCost(economics.LaneFast, req.OIMSensitiv, maxTok)
+			// Activity-discounted estimate (bootstrapping-economics fix, TODO.md
+			// Economic Sustainability) — using the same discount here as at actual
+			// debit time avoids a false 402 during a quiet period when the real
+			// charge would end up lower than this pre-flight check.
+			estimatedCost := economics.ConsumerCostWithActivityDiscount(economics.LaneFast, req.OIMSensitiv, maxTok, jobQueue.BackpressurePct())
 			bal := ledger.GetBalance(userID)
 			if bal.Total < estimatedCost {
 				mx.Counter(`oim_rejections_total{reason="insufficient_credits"}`).Inc()
@@ -809,13 +854,22 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 				mx.Counter(`oim_rejections_total{reason="stream_missing_usage_frame"}`).Inc()
 				log.Printf("[coordinator] streaming job=%s served_by=%s completed with no usage frame — not billed, node not credited", jobID, servedBy)
 			}
+			// actualCost is computed once, from the SAME backpressure reading,
+			// and passed to both creditNodeEarning (so the treasury's margin is
+			// derived from what's actually charged rather than the undiscounted
+			// full price — see creditNodeEarning's doc comment) and the debit
+			// below, rather than recomputed independently by each.
+			var actualCost float64
+			if tokens > 0 {
+				actualCost = economics.ConsumerCostWithActivityDiscount(economics.LaneFast, req.OIMSensitiv, tokens, jobQueue.BackpressurePct())
+			}
 			// Same observed-token credit/debit accounting as the buffered path
 			// below — just sourced from the trailing SSE usage frame instead of
 			// one buffered JSON blob (task #51's coordinator-observed guarantee
 			// applies identically either way).
 			if servedBy != "" && tokens > 0 {
 				if _, dup := creditedJobs.LoadOrStore(jobID, struct{}{}); !dup {
-					creditNodeEarning(ledger, walletMgr, &nodeUsers, registry, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, tokens)
+					creditNodeEarning(ledger, walletMgr, &nodeUsers, registry, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, tokens, actualCost)
 					registry.MarkJobServed(servedBy)
 					mx.Counter("oim_credits_total").Inc()
 					mx.AddCounter("oim_tokens_served_total", int64(tokens))
@@ -825,7 +879,6 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 			// (see the missing-usage-frame log above); skip the ledger write
 			// entirely rather than recording a meaningless $0.00 debit.
 			if userID != "" && tokens > 0 {
-				actualCost := economics.ConsumerCost(economics.LaneFast, req.OIMSensitiv, tokens)
 				if !ledger.DebitAccount(userID, actualCost, jobID) {
 					log.Printf("[coordinator] debit race user=%s job=%s cost=%.4f", userID, jobID, actualCost)
 				} else {
@@ -876,28 +929,34 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		// creditedJobs so the later self-report can't double-credit.
 		mx.Counter(`oim_jobs_dispatched_total{lane="fast"}`).Inc()
 		observedTok := extractCompletionTokens(result, maxTok)
+		// actualCost is computed once, from the same backpressure reading, and
+		// passed to both creditNodeEarning (so the treasury's margin derives
+		// from what's actually charged, not the undiscounted full price — see
+		// creditNodeEarning's doc comment) and the debit below. Naturally 0 for
+		// observedTok<=0, same as economics.ConsumerCost always was.
+		actualCost := economics.ConsumerCostWithActivityDiscount(economics.LaneFast, req.OIMSensitiv, observedTok, jobQueue.BackpressurePct())
 		if servedBy, _ := result["oim_served_by_node_id"].(string); servedBy != "" && observedTok > 0 {
 			if _, dup := creditedJobs.LoadOrStore(jobID, struct{}{}); !dup {
-				creditNodeEarning(ledger, walletMgr, &nodeUsers, registry, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, observedTok)
+				creditNodeEarning(ledger, walletMgr, &nodeUsers, registry, servedBy, jobID, economics.LaneFast, req.OIMSensitiv, observedTok, actualCost)
 				registry.MarkJobServed(servedBy)
 				mx.Counter("oim_credits_total").Inc()
 				mx.AddCounter("oim_tokens_served_total", int64(observedTok))
 			}
 		}
 
-		// Debit after successful dispatch. The consumer pays the full matrix cost;
-		// the serving node earned only (1 − house edge) of it above, with the
-		// remainder booked to the treasury.
+		// Debit after successful dispatch. The consumer pays the (possibly
+		// activity-discounted) matrix cost; the serving node earned only
+		// (1 − house edge) of the UNDISCOUNTED cost above, with the remainder
+		// (now derived from actualCost, so it can never exceed what was charged)
+		// booked to the treasury.
 		if userID != "" {
-			actualTok := extractCompletionTokens(result, maxTok)
-			actualCost := economics.ConsumerCost(economics.LaneFast, req.OIMSensitiv, actualTok)
 			if !ledger.DebitAccount(userID, actualCost, jobID) {
 				// Balance may have shifted between check and debit (concurrent requests).
 				// Job is complete — log the race but don't fail the response.
 				log.Printf("[coordinator] debit race user=%s job=%s cost=%.4f", userID, jobID, actualCost)
 			} else {
 				mx.Counter("oim_debits_total").Inc()
-				slog.Info("debit", "user", userID, "job", jobID, "tokens", actualTok, "cost", actualCost)
+				slog.Info("debit", "user", userID, "job", jobID, "tokens", observedTok, "cost", actualCost)
 			}
 		}
 
@@ -1010,7 +1069,13 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		// cycles, and each executed cycle is a distinct earning, so this is NOT
 		// deduped by job_id (job-outcome no longer credits, so there's no double).
 		if observedTok := extractCompletionTokens(result, 2048); observedTok > 0 {
-			creditNodeEarning(ledger, walletMgr, &nodeUsers, registry, nodeID, req.JobID, economics.LaneBackground, string(a.JobSpec.Sensitivity), observedTok)
+			// No activity discount here — background lane never debits a consumer
+			// in this handler at all (confirmed by direct read: no DebitAccount call
+			// exists in /jobs/background/execute), so there's nothing to keep in
+			// sync with; pass the plain undiscounted cost to reproduce today's
+			// treasury-margin behavior exactly.
+			consumerCharge := economics.ConsumerCost(economics.LaneBackground, string(a.JobSpec.Sensitivity), observedTok)
+			creditNodeEarning(ledger, walletMgr, &nodeUsers, registry, nodeID, req.JobID, economics.LaneBackground, string(a.JobSpec.Sensitivity), observedTok, consumerCharge)
 			registry.MarkJobServed(nodeID)
 		}
 		log.Printf("[coordinator] background/execute job=%s node=%s continuation=%v", req.JobID, nodeID, isCont)
@@ -1635,11 +1700,128 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 	// GET bypasses authMiddleware (dashboard reads are open), so this checks the
 	// admin bearer token itself, constant-time.
 	mux.HandleFunc("GET /admin/reconcile", func(w http.ResponseWriter, r *http.Request) {
-		if !adminAuthorized(r, apiKey) {
+		if !adminAuthorized(r, apiKey, adminAuth) {
 			writeErr(w, http.StatusUnauthorized, "admin API key required")
 			return
 		}
 		writeJSON(w, http.StatusOK, ledger.Reconcile())
+	})
+
+	// POST /admin/challenge -> {nonce, expires_at} — first half of the admin
+	// panel's BDFL-key login (task #96). Self-authenticating (added to
+	// isSelfAuthenticatingWrite): issuing a nonce requires no credential, only
+	// VerifyAndIssueSession below does. Fails closed with 404 when no
+	// --bdfl-public-key is configured, matching the "feature doesn't exist"
+	// signal the dashboard should show rather than a misleading 401.
+	mux.HandleFunc("POST /admin/challenge", func(w http.ResponseWriter, r *http.Request) {
+		if !adminAuth.Configured() {
+			writeErr(w, http.StatusNotFound, "admin panel login is not configured on this coordinator")
+			return
+		}
+		nonce, expiresAt, err := adminAuth.IssueChallenge(time.Now())
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"nonce": nonce, "expires_at": expiresAt})
+	})
+
+	// POST /admin/authenticate {nonce, signature (base64)} -> {session_token,
+	// expires_at} — second half of BDFL-key login: the browser signed the
+	// nonce with the pasted private key entirely client-side, so only the
+	// signature ever reaches the coordinator.
+	mux.HandleFunc("POST /admin/authenticate", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Nonce     string `json:"nonce"`
+			Signature string `json:"signature"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse authenticate: "+err.Error())
+			return
+		}
+		sig, err := base64.StdEncoding.DecodeString(body.Signature)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "signature must be base64")
+			return
+		}
+		token, expiresAt, err := adminAuth.VerifyAndIssueSession(body.Nonce, sig, time.Now())
+		if err != nil {
+			writeErr(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"session_token": token, "expires_at": expiresAt})
+	})
+
+	// GET /admin/treasury -> current treasury balance. Same admin gate as
+	// /admin/reconcile (GET bypasses authMiddleware, so checked directly).
+	mux.HandleFunc("GET /admin/treasury", func(w http.ResponseWriter, r *http.Request) {
+		if !adminAuthorized(r, apiKey, adminAuth) {
+			writeErr(w, http.StatusUnauthorized, "admin credential required")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"balance": ledger.GetBalance(economics.TreasuryAccount)})
+	})
+
+	// POST /admin/treasury/credit {amount, reason} — manual treasury top-up.
+	// Gated by authMiddleware (a POST, not self-authenticating), rate-limited
+	// on top of that since this is a real money-supply lever an operator could
+	// otherwise fat-finger repeatedly. Every call is recorded to the
+	// admin_actions audit table regardless of amount, per TODO.md's "audit
+	// logging" requirement.
+	mux.HandleFunc("POST /admin/treasury/credit", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Amount float64 `json:"amount"`
+			Reason string  `json:"reason"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, "parse treasury credit: "+err.Error())
+			return
+		}
+		if body.Amount <= 0 {
+			writeErr(w, http.StatusBadRequest, "amount must be positive")
+			return
+		}
+		if strings.TrimSpace(body.Reason) == "" {
+			writeErr(w, http.StatusBadRequest, "reason is required")
+			return
+		}
+		// Rate-limited AFTER validation: a malformed request never mutates the
+		// ledger, so it shouldn't burn the (deliberately tight) budget meant to
+		// bound how often a REAL credit injection can happen.
+		if !adminTreasuryLimiter.Allow("admin") {
+			w.Header().Set("Retry-After", "60")
+			writeErr(w, http.StatusTooManyRequests, "too many treasury credits; try again shortly")
+			return
+		}
+		now := time.Now()
+		if err := ledger.CreditAccount(settlement.CreditEntry{
+			UserID:            economics.TreasuryAccount,
+			Origin:            settlement.CreditOriginAdminAdjustment,
+			Amount:            body.Amount,
+			GrantedOrEarnedAt: now,
+		}); err != nil {
+			writeErr(w, http.StatusInternalServerError, "credit treasury: "+err.Error())
+			return
+		}
+		if err := ledger.RecordAdminAction("treasury_credit", body.Reason, body.Amount, now); err != nil {
+			log.Printf("[coordinator] admin: treasury credited but failed to record audit action: %v", err)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"balance": ledger.GetBalance(economics.TreasuryAccount)})
+	})
+
+	// GET /admin/audit-log?limit=50 -> recent admin actions, newest first.
+	mux.HandleFunc("GET /admin/audit-log", func(w http.ResponseWriter, r *http.Request) {
+		if !adminAuthorized(r, apiKey, adminAuth) {
+			writeErr(w, http.StatusUnauthorized, "admin credential required")
+			return
+		}
+		limit := 50
+		if v := r.URL.Query().Get("limit"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				limit = n
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"actions": ledger.RecentAdminActions(limit)})
 	})
 
 	// GET / — index for browsers and health checkers hitting the root.
@@ -1663,7 +1845,12 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 				"GET  /federation/identity",
 				"GET  /federation/ledger-events  (requires --federation-key)",
 				"GET  /federation/audit/{user_id}?peer_endpoint=  (requires --federation-key)",
-				"GET  /admin/reconcile  (requires --api-key)",
+				"GET  /admin/reconcile  (requires --api-key or admin session)",
+				"POST /admin/challenge  (requires --bdfl-public-key)",
+				"POST /admin/authenticate",
+				"GET  /admin/treasury  (requires --api-key or admin session)",
+				"POST /admin/treasury/credit  (requires --api-key or admin session)",
+				"GET  /admin/audit-log  (requires --api-key or admin session)",
 			},
 		})
 	})
@@ -1687,8 +1874,8 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 	defer userLimiter.Stop()
 
 	var handler http.Handler = mux
-	if apiKey != "" {
-		handler = authMiddleware(apiKey, apiKeys, userLimiter, mux)
+	if apiKey != "" || adminAuth.Configured() {
+		handler = authMiddleware(apiKey, adminAuth, apiKeys, userLimiter, mux)
 		log.Printf("[coordinator] API key auth enabled for write operations")
 		if userQuotaPerHour > 0 {
 			log.Printf("[coordinator] per-account quota enabled: %.0f req/hour per user", userQuotaPerHour)
@@ -1848,16 +2035,27 @@ func authorizeUserRead(r *http.Request, id string, protect bool, adminKey string
 	return false
 }
 
-// adminAuthorized gates admin-only read endpoints (e.g. GET /admin/reconcile,
-// which exposes network-wide credit/debit totals and names accounts). Requires
-// the static admin --api-key; fails closed when no admin key is configured, so
-// financial detail is never served unauthenticated. Constant-time compare.
-func adminAuthorized(r *http.Request, adminKey string) bool {
-	if adminKey == "" {
+// adminAuthorized gates admin-only endpoints (e.g. GET /admin/reconcile, which
+// exposes network-wide credit/debit totals and names accounts; the new
+// treasury/audit-log/BDFL-session endpoints). Accepts EITHER the static admin
+// --api-key (constant-time compare, unchanged from before — the
+// RUNBOOK-documented incident-response curl keeps working) OR a live
+// oimadmin_ session token minted via POST /admin/challenge +
+// /admin/authenticate. adminAuth may be nil/unconfigured (no --bdfl-public-key
+// set) — in that case only the static key works, same as before this feature
+// existed. Fails closed when neither credential form matches.
+func adminAuthorized(r *http.Request, adminKey string, adminAuth *adminauth.Authenticator) bool {
+	auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if auth == "" {
 		return false
 	}
-	auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	return subtle.ConstantTimeCompare([]byte(auth), []byte(adminKey)) == 1
+	if adminKey != "" && subtle.ConstantTimeCompare([]byte(auth), []byte(adminKey)) == 1 {
+		return true
+	}
+	if adminAuth != nil && strings.HasPrefix(auth, adminauth.SessionTokenPrefix) {
+		return adminAuth.ValidSession(auth, time.Now())
+	}
+	return false
 }
 
 // boolGauge maps a bool to the 1/0 convention Prometheus gauges use.
@@ -1928,13 +2126,19 @@ func runAvailabilityProbe(done <-chan struct{}, registry *coordinator.NodeRegist
 // subsidizing standby capacity), otherwise probe up to
 // availabilityProbeMaxPerRound of the longest-idle real nodes.
 func probeIdleNodes(registry *coordinator.NodeRegistry, jobQueue *coordinator.JobQueue, walletMgr *wallet.Manager, nodeUsers *sync.Map, ledger *settlement.Ledger, mx *metrics.Registry, idleThreshold time.Duration) {
-	if bp := jobQueue.BackpressurePct(); bp > availabilityProbeBackpressureCeiling {
+	bp := jobQueue.BackpressurePct()
+	if bp > availabilityProbeBackpressureCeiling {
 		log.Printf("[coordinator] availability-reward: skipping round — backpressure %.1f%% > %.0f%% ceiling", bp, availabilityProbeBackpressureCeiling)
 		return
 	}
+	// Budget grows as the network gets quieter (bootstrapping-economics fix,
+	// TODO.md Economic Sustainability) — more otherwise-idle capacity to
+	// subsidize, tapering back to availabilityProbeMaxPerRound as real
+	// traffic returns.
+	budget := coordinator.ScaledProbeBudget(bp, availabilityProbeBackpressureCeiling, availabilityProbeMaxPerRound, availabilityProbeMaxPerRoundCeiling)
 	candidates := registry.IdleCandidates(idleThreshold)
-	if len(candidates) > availabilityProbeMaxPerRound {
-		candidates = candidates[:availabilityProbeMaxPerRound]
+	if len(candidates) > budget {
+		candidates = candidates[:budget]
 	}
 	for len(candidates) > 0 {
 		manifest, model, ok := coordinator.SelectProbeTarget(candidates)
@@ -2141,6 +2345,8 @@ func isSelfAuthenticatingWrite(method, path string) bool {
 		path == "/settlement/records",
 		path == "/account/challenge",
 		path == "/account/auth",
+		path == "/admin/challenge",
+		path == "/admin/authenticate",
 		path == "/coordination/announce",
 		path == "/coordination/withdraw",
 		// Pull-mode work delivery — both node-signed (ClaimRequest/
@@ -2170,11 +2376,14 @@ func isSelfAuthenticatingWrite(method, path string) bool {
 // isSelfAuthenticatingWrite). GET requests and CORS preflight are always open
 // so the dashboard can read without auth. /nodes/stream is also always open
 // since EventSource cannot send Authorization headers.
-// Two token forms are accepted:
+// Three token forms are accepted:
 //   - The static admin key (--api-key flag) — grants full access, no user attribution
+//   - A live BDFL admin session token (oimadmin_*, minted via POST
+//     /admin/challenge + /admin/authenticate) — same admin-level access as the
+//     static key, additive to it
 //   - A per-user oim_* key (generated via POST /users/{id}/api-key) — the user ID is
 //     injected as X-OIM-User-ID so the credit gate can debit the right account
-func authMiddleware(adminKey string, keys *apiKeyStore, userLimiter *httpmw.RateLimiter, next http.Handler) http.Handler {
+func authMiddleware(adminKey string, adminAuth *adminauth.Authenticator, keys *apiKeyStore, userLimiter *httpmw.RateLimiter, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Reads, preflight, and self-authenticating/bootstrap writes are open
 		if r.Method == http.MethodGet || r.Method == http.MethodOptions || isSelfAuthenticatingWrite(r.Method, r.URL.Path) {
@@ -2191,7 +2400,7 @@ func authMiddleware(adminKey string, keys *apiKeyStore, userLimiter *httpmw.Rate
 		// Static admin key — accepted as-is (constant-time to avoid leaking it
 		// byte-by-byte via comparison timing). Exempt from the per-account quota:
 		// it's the operator, not a metered user account.
-		if adminKey != "" && subtle.ConstantTimeCompare([]byte(auth), []byte(adminKey)) == 1 {
+		if adminAuthorized(r, adminKey, adminAuth) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -2351,9 +2560,20 @@ const (
 	// Overridable via OIM_AVAILABILITY_IDLE_THRESHOLD — see durationFromEnv.
 	availabilityIdleThreshold = 30 * time.Minute
 
-	// availabilityProbeMaxPerRound bounds how many nodes get probed per tick —
-	// this is a small bootstrap nudge, not a bulk job-generation mechanism.
+	// availabilityProbeMaxPerRound bounds how many nodes get probed per tick
+	// under real (or moderate) load — this is a small bootstrap nudge, not a
+	// bulk job-generation mechanism. Also doubles as coordinator.ScaledProbeBudget's
+	// floor: the busy-network value this tapers back down to as backpressure
+	// rises toward availabilityProbeBackpressureCeiling.
 	availabilityProbeMaxPerRound = 3
+
+	// availabilityProbeMaxPerRoundCeiling is how many idle nodes get probed
+	// per round at 0% backpressure — a fully idle network, where there's
+	// otherwise-unpaid idle capacity to subsidize (bootstrapping-economics
+	// fix, TODO.md Economic Sustainability). Still tiny relative to a real
+	// fleet, and further bounded by however many idle candidates actually
+	// exist (coordinator.ScaledProbeBudget's ceiling, not a guaranteed count).
+	availabilityProbeMaxPerRoundCeiling = 15
 
 	// availabilityProbeFallbackTokens is the token count assumed when a
 	// probe's response omits usage entirely (mirrors extractCompletionTokens'
@@ -2454,14 +2674,31 @@ func resolveEarningsAccount(walletMgr *wallet.Manager, nodeUsers *sync.Map, node
 // availability-reward probe pool (registry.go). Every real dispatch path
 // (fast-lane buffered/streaming, background /execute) funnels through this
 // one function, so the guard lives here rather than at each call site.
-func creditNodeEarning(ledger *settlement.Ledger, walletMgr *wallet.Manager, nodeUsers *sync.Map, registry *coordinator.NodeRegistry, servedByNodeID, jobID string, lane economics.Lane, sensitivity string, tokenCount int) {
+// consumerCharge is what the consumer actually was (or, for a non-billed
+// dispatch like background/anonymous, would be) charged for this job — margin
+// is derived from it directly (consumerCharge - reward) rather than
+// recomputed independently via economics.NetworkMargin, so reward+margin
+// always equals consumerCharge exactly. This matters because
+// economics.ConsumerCostWithActivityDiscount (bootstrapping-economics fix,
+// TODO.md Economic Sustainability) can charge less than the undiscounted
+// economics.ConsumerCost during a quiet network — if margin were still
+// computed off the undiscounted cost, the network would mint reward+margin
+// in excess of what the consumer was actually debited. Fast-lane callers pass
+// the same (possibly discounted) actualCost they debit; background-lane
+// passes the plain economics.ConsumerCost, reproducing its pre-existing
+// behavior unchanged (that path never discounts — see the /jobs/background/execute
+// call site).
+func creditNodeEarning(ledger *settlement.Ledger, walletMgr *wallet.Manager, nodeUsers *sync.Map, registry *coordinator.NodeRegistry, servedByNodeID, jobID string, lane economics.Lane, sensitivity string, tokenCount int, consumerCharge float64) {
 	if m, ok := registry.Manifest(servedByNodeID); ok && m.Simulated {
 		log.Printf("[coordinator] job=%s served_by=%s is a simulated demo node — not credited (no real compute behind it)", jobID, servedByNodeID)
 		return
 	}
 	accountKey := resolveEarningsAccount(walletMgr, nodeUsers, servedByNodeID)
 	reward := economics.ProviderReward(lane, sensitivity, tokenCount)
-	margin := economics.NetworkMargin(lane, sensitivity, tokenCount)
+	margin := consumerCharge - reward
+	if margin < 0 {
+		margin = 0 // defensive: consumerCharge should never be less than reward, but never mint a negative credit
+	}
 	_ = ledger.CreditAccount(settlement.CreditEntry{
 		UserID:            accountKey,
 		Origin:            settlement.CreditOriginEarnedContrib,

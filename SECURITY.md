@@ -140,6 +140,7 @@ they are what they claim, not report them as surprises:
   deployment must enable them; the sim/dev default is open.
 - **Single coordinator per region, SQLite ledger.** No HA/failover yet; a
   managed datastore + coordinator HA are on the release path.
+- **Quantum vulnerability.** Ed25519 (used for node/coordinator/wallet identity) would fall to a sufficiently large quantum computer running Shor's algorithm. This is true of all ECC-based systems in production today (TLS, SSH, Signal, Bitcoin). NIST finalized post-quantum signature standards in 2024 (ML-DSA/Dilithium, SLH-DSA), but migration is a multi-year industry-wide project. This is a known long-term consideration, not an immediate action item.
 
 ## Suggested reviewer priorities
 

@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -61,7 +62,46 @@ Quickstart:
 	root.AddCommand(nodeCmd())
 	root.AddCommand(benchCmd())
 	root.AddCommand(versionCmd())
+	root.AddCommand(adminCmd())
 	return root
+}
+
+// --- admin subcommands ---
+
+func adminCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "admin",
+		Short: "Coordinator admin panel setup commands",
+	}
+	cmd.AddCommand(adminKeygenCmd())
+	return cmd
+}
+
+func adminKeygenCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "keygen",
+		Short: "Generate a BDFL admin keypair for the coordinator's admin panel login",
+		Long: `Generates a fresh Ed25519 keypair for the coordinator admin panel's
+challenge-response login. This is a one-time, offline operator step — the
+coordinator never generates or holds the private key, only the public half
+(see internal/adminauth).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			priv, pub, err := protocol.GenerateNodeIdentity()
+			if err != nil {
+				return fmt.Errorf("generate keypair: %w", err)
+			}
+			fmt.Println("BDFL admin keypair generated. This is the ONLY time the private key is shown.")
+			fmt.Println()
+			fmt.Println("Private key (paste this into the dashboard admin login — never give it to the coordinator):")
+			fmt.Println("  " + hex.EncodeToString(priv))
+			fmt.Println()
+			fmt.Println("Public key (pass this to the coordinator):")
+			fmt.Println("  --bdfl-public-key " + hex.EncodeToString(pub))
+			fmt.Println()
+			fmt.Println("Save the private key somewhere safe (a password manager, not a file on this host).")
+			return nil
+		},
+	}
 }
 
 func versionCmd() *cobra.Command {
@@ -313,6 +353,7 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 				CapacityPct:               capPct,
 				DeclaredMemoryGB:          declaredMemGB,
 				AllowedModels:             savedCfg.AllowedModels,
+				DraftModels:               savedCfg.DraftModels,
 				UserID:                    userID,
 				GeographicHint:            geoHint,
 				GeoLat:                    geoLat,

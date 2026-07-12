@@ -18,10 +18,34 @@ import (
 // Runner holds the local Exo client for this node.
 type Runner struct {
 	exo *exoadapter.Client
+	// draftModels configures speculative decoding pairings, keyed by served
+	// model_id — forward-compatible plumbing only (see
+	// protocol.DraftModelConfig's doc comment). Nil/empty = not configured,
+	// which is the common case today since Exo's HTTP API has no
+	// draft-model parameter to actually use this yet.
+	draftModels map[string]protocol.DraftModelConfig
 }
 
-func New(exoURL string) *Runner {
-	return &Runner{exo: exoadapter.New(exoURL)}
+func New(exoURL string, draftModels map[string]protocol.DraftModelConfig) *Runner {
+	return &Runner{exo: exoadapter.New(exoURL), draftModels: draftModels}
+}
+
+// draftExtra returns the extra request-body fields for modelID's configured
+// draft model, or nil when none is configured — merge the result into
+// whatever `extra` map is otherwise being sent to Exo. Field names match
+// mlx-lm's own --draft-model/--num-draft-tokens CLI flags so this is ready to
+// take effect the moment Exo's /v1/chat/completions accepts them; today Exo
+// ignores unrecognized JSON fields, so this is a no-op in practice.
+func (r *Runner) draftExtra(modelID string) map[string]any {
+	d, ok := r.draftModels[modelID]
+	if !ok || d.DraftModelID == "" {
+		return nil
+	}
+	extra := map[string]any{"draft_model": d.DraftModelID}
+	if d.NumDraftTokens > 0 {
+		extra["num_draft_tokens"] = d.NumDraftTokens
+	}
+	return extra
 }
 
 // RefuseIfConstrained returns an error if this node should not accept the job right now.
@@ -52,7 +76,7 @@ func (r *Runner) ExecuteFastLane(
 	if err := r.RefuseIfConstrained(capPct); err != nil {
 		return nil, fmt.Errorf("pre-flight refused: %w", err)
 	}
-	result, err := r.exo.RunChatCompletion(ctx, spec.ModelID, messages, false, nil)
+	result, err := r.exo.RunChatCompletion(ctx, spec.ModelID, messages, false, r.draftExtra(spec.ModelID))
 	if err != nil {
 		return nil, fmt.Errorf("fast-lane inference failed: %w", err)
 	}
@@ -109,7 +133,7 @@ func (r *Runner) ExecuteFastLaneStreaming(
 	if err := r.RefuseIfConstrained(capPct); err != nil {
 		return 0, false, fmt.Errorf("pre-flight refused: %w", err)
 	}
-	resp, err := r.exo.StreamChatCompletion(ctx, spec.ModelID, messages)
+	resp, err := r.exo.StreamChatCompletion(ctx, spec.ModelID, messages, r.draftExtra(spec.ModelID))
 	if err != nil {
 		return 0, false, fmt.Errorf("fast-lane streaming inference failed: %w", err)
 	}
@@ -138,6 +162,9 @@ func (r *Runner) ExecuteBackgroundLane(
 		return nil, fmt.Errorf("pre-flight refused: %w", err)
 	}
 	extra := map[string]any{"oim_is_continuation": isContinuation}
+	for k, v := range r.draftExtra(spec.ModelID) {
+		extra[k] = v
+	}
 	result, err := r.exo.RunChatCompletion(ctx, spec.ModelID, messages, false, extra)
 	if err != nil {
 		return nil, fmt.Errorf("background-lane inference failed: %w", err)

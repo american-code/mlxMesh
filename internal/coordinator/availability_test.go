@@ -105,3 +105,52 @@ func TestBuildProbeJob_EmptyQuantizationOmitted(t *testing.T) {
 		t.Fatalf("expected no quantization requirement when none given, got %q", job.QuantizationRequired)
 	}
 }
+
+// ScaledProbeBudget — the bootstrapping-economics fix (TODO.md, Economic
+// Sustainability): more idle nodes probed per round the quieter the network.
+func TestScaledProbeBudget_FullyIdleReturnsCeiling(t *testing.T) {
+	if b := ScaledProbeBudget(0, 40, 3, 15); b != 15 {
+		t.Fatalf("at 0%% backpressure want the ceiling (15), got %d", b)
+	}
+}
+
+func TestScaledProbeBudget_AtOrAboveCeilingReturnsFloor(t *testing.T) {
+	if b := ScaledProbeBudget(40, 40, 3, 15); b != 3 {
+		t.Fatalf("at the backpressure ceiling want the floor (3), got %d", b)
+	}
+	if b := ScaledProbeBudget(90, 40, 3, 15); b != 3 {
+		t.Fatalf("above the backpressure ceiling want the floor (3), got %d", b)
+	}
+}
+
+func TestScaledProbeBudget_TapersBetweenFloorAndCeiling(t *testing.T) {
+	b := ScaledProbeBudget(20, 40, 3, 15) // halfway between 0 and the 40% ceiling
+	if b <= 3 || b >= 15 {
+		t.Fatalf("expected a budget strictly between floor and ceiling at 50%% of the way there, got %d", b)
+	}
+}
+
+func TestScaledProbeBudget_MonotonicNonIncreasingInBackpressure(t *testing.T) {
+	prev := ScaledProbeBudget(0, 40, 3, 15)
+	for bp := 1.0; bp <= 40; bp++ {
+		b := ScaledProbeBudget(bp, 40, 3, 15)
+		if b > prev {
+			t.Fatalf("budget rose from %d to %d as backpressure increased to %.0f — must be non-increasing", prev, b, bp)
+		}
+		prev = b
+	}
+}
+
+// Degenerate params fall back to floor rather than misbehaving (e.g.
+// dividing by a zero/negative ceiling, or a caller passing ceiling <= floor).
+func TestScaledProbeBudget_DegenerateParamsFallBackToFloor(t *testing.T) {
+	if b := ScaledProbeBudget(10, 0, 3, 15); b != 3 {
+		t.Fatalf("backpressureCeiling<=0 should fall back to floor (3), got %d", b)
+	}
+	if b := ScaledProbeBudget(10, 40, 5, 5); b != 5 {
+		t.Fatalf("ceiling==floor should fall back to floor (5), got %d", b)
+	}
+	if b := ScaledProbeBudget(10, 40, 5, 3); b != 5 {
+		t.Fatalf("ceiling<floor should fall back to floor (5), got %d", b)
+	}
+}

@@ -63,7 +63,7 @@ func AssembleManifest(
 		totalGB = cluster.TotalMemGB
 	}
 
-	models, err := buildModelList(ctx, exo, opts.AllowedModels)
+	models, err := buildModelList(ctx, exo, opts.AllowedModels, opts.DraftModels)
 	if err != nil {
 		models = nil // exo not running — still build a valid manifest
 	}
@@ -166,6 +166,11 @@ type Options struct {
 	// this node receives work by long-polling the coordinator instead of
 	// accepting inbound dispatch (set when started with no reachability endpoint).
 	PullDelivery bool
+	// DraftModels configures speculative decoding pairings, keyed by served
+	// model_id — see protocol.DraftModelConfig. Purely informational in the
+	// manifest today (ModelCapability.DraftModelID/NumDraftTokens); dispatch
+	// eligibility is unaffected. Nil/empty = not configured.
+	DraftModels map[string]protocol.DraftModelConfig
 }
 
 // DefaultOptions returns sensible defaults for a new node.
@@ -384,7 +389,7 @@ func SaveBenchmarkResult(sig *protocol.MeasuredSignature) error {
 
 // --- private helpers ---
 
-func buildModelList(ctx context.Context, exo *exoadapter.Client, allowedModels []string) ([]protocol.ModelCapability, error) {
+func buildModelList(ctx context.Context, exo *exoadapter.Client, allowedModels []string, draftModels map[string]protocol.DraftModelConfig) ([]protocol.ModelCapability, error) {
 	raw, err := exo.GetDownloadedModels(ctx)
 	if err != nil {
 		return nil, err
@@ -416,6 +421,7 @@ func buildModelList(ctx context.Context, exo *exoadapter.Client, allowedModels [
 		if len(allowed) > 0 && !allowed[modelID] {
 			continue
 		}
+		draft := draftModels[modelID]
 		models = append(models, protocol.ModelCapability{
 			ModelID:          modelID,
 			Quantization:     inferQuantization(modelID),
@@ -423,6 +429,8 @@ func buildModelList(ctx context.Context, exo *exoadapter.Client, allowedModels [
 			MaxContextTokens: intField(m, 4096, "context_length", "max_context_tokens"),
 			IsMoE:            isMoE(modelID),
 			Loaded:           active[modelID],
+			DraftModelID:     draft.DraftModelID,
+			NumDraftTokens:   draft.NumDraftTokens,
 		})
 	}
 	return models, nil

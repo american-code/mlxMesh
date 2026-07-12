@@ -25,6 +25,21 @@ idealized one. Pair it with [SLOS.md](SLOS.md) (targets + alerts) and
 - **Secrets:** `/etc/mlxmesh/api-key`, `/etc/mlxmesh/federation-key` (root-owned,
   0600), bind-mounted to `/run/secrets/*`. Per-node TLS certs in
   `~/mlxmesh-node-certs/`.
+- **Admin panel (BDFL key):** `--bdfl-public-key` is the coordinator's **public**
+  half only — generate the keypair once, offline, with `oim admin keygen`;
+  paste the printed private key into the dashboard's Admin tab to sign in
+  (never store it on the box). The coordinator never sees or holds the private
+  key. Optional — omitting the flag just leaves the dashboard's Admin tab
+  login disabled; the static `--api-key` admin workflows below are unaffected
+  either way.
+- **Ledger backend:** the live seed runs one coordinator per region
+  (`coordinator-us`, `coordinator-eu`), each with its own SQLite ledger via
+  `--db-path` — correct today because there's exactly one writer per pod.
+  `--ledger-db-url` (Postgres DSN) is available for a deployment where more
+  than one coordinator process needs to share a single ledger — correctness
+  there comes from Postgres transactions/row locks, not this process's
+  mutex. Not in use on the live seed yet; adopt it before running more than
+  one coordinator process against the same ledger.
 - **Helper scripts on the box:** `redeploy-infra.sh` (recreate directory +
   coordinators), `refresh-nodes.py` (recreate all nodes from the current image),
   `spawn-nodes.sh` (create N new node pairs), `enable-node-tls.py`.
@@ -115,6 +130,15 @@ migration** — a rollback of code is safe against the existing DB.
   the old admin key must update.
 - **Federation key:** same, but rotate on BOTH pods together — witnessing pauses
   until both share the new key.
+- **BDFL admin key:** run `oim admin keygen` (anywhere — it's entirely offline,
+  no coordinator round-trip) to generate a fresh keypair, update
+  `--bdfl-public-key` and recreate the coordinators, then sign in with the new
+  private key. The old key stops working the moment the flag changes; there is
+  no server-side revocation list to also clean up since the coordinator never
+  stored the old private key anyway. This is additive to (and independent of)
+  the static admin key rotation above — either can be rotated without touching
+  the other, and the RUNBOOK's `/admin/reconcile` curl-with-static-key
+  workflow below keeps working unchanged regardless of BDFL key state.
 - **TLS certs (nginx / Let's Encrypt):** renew per your ACME setup; the servers
   log a warning 30 days before their own `--tls-cert` expires
   (`WarnIfExpiringSoon`).
@@ -159,8 +183,9 @@ against a never-funded account — a real integrity violation, since DebitAccoun
 refuses overdrafts atomically at spend time. **Action:** pull the detail:
 `curl -H "Authorization: Bearer <admin-key>" https://<pod>/admin/reconcile`.
 Note the offending `user_id`(s) and `kind`. Do NOT restart blindly — the anomaly
-is in persisted data and will survive it. Preserve the SQLite DB (copy the data
-volume) for analysis before any remediation; treat as a possible exploit or a
+is in persisted data and will survive it. Preserve the ledger for analysis
+before any remediation — copy the data volume (SQLite) or `pg_dump` the
+database (Postgres, `--ledger-db-url`) — and treat as a possible exploit or a
 bug in a new credit/debit path.
 
 ### Node count on a pod lower than expected but containers are up

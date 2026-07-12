@@ -93,7 +93,7 @@
 		8F693B9AB5F6EA3B48ED5ACD /* NodeDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeDetailView.swift; sourceTree = "<group>"; };
 		940809D7CDA2BF7315466231 /* TVApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVApp.swift; sourceTree = "<group>"; };
 		9515D5561CD4915256D06792 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		97E79085F54D07D0DEFCF815 /* OIMDashboard.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OIMDashboard.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		97E79085F54D07D0DEFCF815 /* OIMDashboard.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OIMDashboard.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		99B0FF9740ED10AF7921EFCE /* RuleBasedRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuleBasedRouter.swift; sourceTree = "<group>"; };
 		9E954666FE7904D2BCDA3DC1 /* ContributeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContributeView.swift; sourceTree = "<group>"; };
 		A697856052BD874CD6939B45 /* CoordinationLayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoordinationLayerView.swift; sourceTree = "<group>"; };
@@ -320,7 +320,6 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					0C9D8FF5AC8EF15DEC1A9320 = {
-						DevelopmentTeam = WXDFFW3882;
 						ProvisioningStyle = Automatic;
 					};
 					7A3DF80A524980D488FEFDD1 = {
@@ -328,7 +327,6 @@
 						ProvisioningStyle = Automatic;
 					};
 					E0AF9724DF7DF279133823BB = {
-						DevelopmentTeam = WXDFFW3882;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -543,6 +541,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				DEVELOPMENT_TEAM = 2GG83KXEYW;
 				INFOPLIST_FILE = watchOS/Info.plist;
 				PRODUCT_BUNDLE_IDENTIFIER = com.openinferencemesh.app.watchkitapp;
 				SDKROOT = watchos;
@@ -631,6 +630,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = iOS/OIMDashboard.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = 2GG83KXEYW;
 				INFOPLIST_FILE = iOS/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -649,6 +649,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = iOS/OIMDashboard.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = 2GG83KXEYW;
 				INFOPLIST_FILE = iOS/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -665,6 +666,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				DEVELOPMENT_TEAM = 2GG83KXEYW;
 				INFOPLIST_FILE = watchOS/Info.plist;
 				PRODUCT_BUNDLE_IDENTIFIER = com.openinferencemesh.app.watchkitapp;
 				SDKROOT = watchos;
