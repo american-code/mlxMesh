@@ -50,6 +50,17 @@ class NoCapacityError(MeshError):
     """503 — no eligible node available for this job right now."""
 
 
+class NoCredentialError(Exception):
+    """Raised client-side, before any HTTP request is sent, when a billable
+    call (chat/stream_chat/submit_background_job/etc.) is attempted with
+    neither a Wallet nor a pre-existing api_key configured. Not a MeshError
+    subclass — no HTTP response is ever involved, since the whole point is to
+    refuse BEFORE making the request. This is the concrete fix for a client
+    silently sending an unauthenticated (and therefore possibly free, or
+    possibly rejected depending on deployment) request: the SDK now has an
+    opinion regardless of how the target coordinator happens to be configured."""
+
+
 def raise_for(response: httpx.Response) -> None:
     """Raises the appropriate MeshError subclass for a non-2xx response.
     No-op for 2xx. Every coordinator error body is {"error": str, ...} —

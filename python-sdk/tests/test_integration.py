@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from mlxmesh import MeshClient, RecurrenceSpec
-from mlxmesh.errors import InsufficientCreditsError
+from mlxmesh import MeshClient, RecurrenceSpec, Wallet
+from mlxmesh.errors import InsufficientCreditsError, NoCredentialError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -64,10 +64,12 @@ def go_binaries(tmp_path_factory):
     return binaries
 
 
-@pytest.fixture
-def mesh(go_binaries, tmp_path):
+def _start_mesh(go_binaries, tmp_path, extra_coordinator_args=()):
     """Starts a fresh stub-exo + coordinator + node trio, yields the
-    coordinator's base URL, and tears everything down afterward."""
+    coordinator's base URL, and tears everything down afterward. Shared by
+    the `mesh` and `mesh_with_auth` fixtures below — the only difference is
+    whether the coordinator is given --api-key (and therefore actually
+    enforces Bearer auth on billable endpoints)."""
     exo_port, coord_port, node_port = _free_port(), _free_port(), _free_port()
     exo_url = f"http://127.0.0.1:{exo_port}"
     coord_url = f"http://127.0.0.1:{coord_port}"
@@ -103,6 +105,7 @@ def mesh(go_binaries, tmp_path):
             "--region=us",
             f"--public-url={coord_url}",
             "--grant-pow-bits=8",  # low difficulty — fast tests, still exercises real PoW verification
+            *extra_coordinator_args,
         ]
     )
     _wait_healthy(f"{coord_url}/health")
@@ -146,8 +149,23 @@ def mesh(go_binaries, tmp_path):
             p.wait(timeout=5)
 
 
+@pytest.fixture
+def mesh(go_binaries, tmp_path):
+    yield from _start_mesh(go_binaries, tmp_path)
+
+
+@pytest.fixture
+def mesh_with_auth(go_binaries, tmp_path):
+    """Same mesh, but with --api-key set so authMiddleware actually engages
+    on billable endpoints — the scenario that matters for proving wallet
+    auth really enforces payment, not just against a wide-open dev
+    coordinator (node registration is unaffected: /nodes/register is
+    self-authenticating regardless of --api-key)."""
+    yield from _start_mesh(go_binaries, tmp_path, extra_coordinator_args=("--api-key=pysdk-itest-static-key",))
+
+
 def test_startup_grant_balance_and_chat_end_to_end(mesh):
-    client = MeshClient(mesh, user_id="pysdk-itest-consumer", timeout=30)
+    client = MeshClient(mesh, wallet=Wallet.create(), timeout=30)
 
     grant = client.claim_startup_grant(difficulty_bits=8)
     assert grant.amount > 0
@@ -159,13 +177,14 @@ def test_startup_grant_balance_and_chat_end_to_end(mesh):
     assert "Simulated response" in resp.content
     assert resp.served_by_node_id
     assert resp.tokens_per_sec and resp.tokens_per_sec > 0
+    assert client.api_key is not None  # chat() authenticated the wallet transparently
 
     bal_after = client.balance()
     assert bal_after.total < bal.total  # the fast-lane dispatch debited the consumer
 
 
 def test_streaming_chat_parses_all_frames_including_trailing_usage(mesh):
-    client = MeshClient(mesh, user_id="pysdk-itest-stream-consumer", timeout=30)
+    client = MeshClient(mesh, wallet=Wallet.create(), timeout=30)
     client.claim_startup_grant(difficulty_bits=8)
 
     chunks = list(client.stream_chat("llama-3.2-3b", [{"role": "user", "content": "hi"}]))
@@ -181,7 +200,7 @@ def test_streaming_chat_parses_all_frames_including_trailing_usage(mesh):
 
 @pytest.mark.asyncio
 async def test_async_chat_and_streaming(mesh):
-    client = MeshClient(mesh, user_id="pysdk-itest-async-consumer", timeout=30)
+    client = MeshClient(mesh, wallet=Wallet.create(), timeout=30)
     client.claim_startup_grant(difficulty_bits=8)
 
     resp = await client.achat("llama-3.2-3b", [{"role": "user", "content": "hi"}])
@@ -193,7 +212,7 @@ async def test_async_chat_and_streaming(mesh):
 
 
 def test_background_lane_assign_and_execute(mesh):
-    client = MeshClient(mesh, user_id="pysdk-itest-bg-consumer", timeout=30)
+    client = MeshClient(mesh, wallet=Wallet.create(), timeout=30)
 
     job = client.submit_background_job(
         "llama-3.2-3b", "itest-bg-job-1", recurrence=RecurrenceSpec(interval_seconds=60)
@@ -206,7 +225,7 @@ def test_background_lane_assign_and_execute(mesh):
 
 
 def test_insufficient_credits_raises_typed_error(mesh):
-    client = MeshClient(mesh, user_id="pysdk-itest-broke", timeout=30)
+    client = MeshClient(mesh, wallet=Wallet.create(), timeout=30)
     with pytest.raises(InsufficientCreditsError) as exc_info:
         client.chat("llama-3.2-3b", [{"role": "user", "content": "hi"}])
     assert exc_info.value.required > 0
@@ -214,7 +233,7 @@ def test_insufficient_credits_raises_typed_error(mesh):
 
 
 def test_reserve_node_returns_a_usable_ecdh_key(mesh):
-    client = MeshClient(mesh, user_id="pysdk-itest-privacy-consumer", timeout=30)
+    client = MeshClient(mesh, wallet=Wallet.create(), timeout=30)
     reservation = client.reserve_node("llama-3.2-3b")
     assert reservation.reservation_id
     assert reservation.node_id
@@ -253,3 +272,55 @@ def test_directory_topology_and_find_pods(go_binaries, tmp_path):
     finally:
         proc.kill()
         proc.wait(timeout=5)
+
+
+# --- Wallet: challenge/response auth actually enforced (--api-key set) ---
+# Uses mesh_with_auth (not mesh) specifically so authMiddleware really
+# engages — this is the strongest possible proof the wallet flow works,
+# since a bug in the address/signature encoding would show up as a real 401
+# from the real coordinator, not a mock accepting anything.
+
+
+def test_wallet_authenticates_and_pays_for_a_real_job(mesh_with_auth):
+    wallet = Wallet.create()
+    client = MeshClient(mesh_with_auth, wallet=wallet, timeout=30)
+    assert client.user_id == wallet.address
+
+    grant = client.claim_startup_grant(difficulty_bits=8)
+    assert grant.amount > 0
+
+    assert client.api_key is None  # nothing minted yet — chat() must do it
+    resp = client.chat("llama-3.2-3b", [{"role": "user", "content": "hi"}])
+    assert client.api_key is not None and client.api_key.startswith("oim_")
+    assert "Simulated response" in resp.content
+
+    bal = client.balance()
+    assert bal.total < grant.amount  # the dispatch really debited the wallet's own address
+
+
+def test_static_api_key_still_works_alongside_wallet_auth(mesh_with_auth):
+    """The RUNBOOK-documented static-key workflow must keep working
+    unchanged now that wallet auth exists — additive, not a replacement."""
+    client = MeshClient(mesh_with_auth, api_key="pysdk-itest-static-key", user_id="pysdk-itest-static-user")
+    client.claim_startup_grant(difficulty_bits=8)
+    resp = client.chat("llama-3.2-3b", [{"role": "user", "content": "hi"}])
+    assert "Simulated response" in resp.content
+
+
+def test_expired_api_key_self_heals_via_wallet_reauth(mesh_with_auth):
+    wallet = Wallet.create()
+    client = MeshClient(mesh_with_auth, wallet=wallet, timeout=30)
+    client.claim_startup_grant(difficulty_bits=8)
+    client.authenticate()
+    stale_key = client.api_key
+    client.api_key = "oim_deliberately-invalid-and-unknown-key"
+
+    resp = client.chat("llama-3.2-3b", [{"role": "user", "content": "hi"}])
+    assert "Simulated response" in resp.content
+    assert client.api_key not in (stale_key, "oim_deliberately-invalid-and-unknown-key")
+
+
+def test_no_credential_client_never_reaches_the_wire_even_with_auth_enforced(mesh_with_auth):
+    client = MeshClient(mesh_with_auth, user_id="pysdk-itest-nocred", timeout=5)
+    with pytest.raises(NoCredentialError):
+        client.chat("llama-3.2-3b", [{"role": "user", "content": "hi"}])

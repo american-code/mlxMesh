@@ -101,7 +101,7 @@ final class MeshClientLiveTests: XCTestCase {
         let processes: [Process]
     }
 
-    private func startMesh(grantPoWBits: Int = 8) async throws -> RunningMesh {
+    private func startMesh(grantPoWBits: Int = 8, extraCoordinatorArgs: [String] = []) async throws -> RunningMesh {
         try buildBinariesOnce()
         let exoPort = freePort(), coordPort = freePort(), nodePort = freePort()
         let exoURL = URL(string: "http://127.0.0.1:\(exoPort)")!
@@ -142,7 +142,7 @@ final class MeshClientLiveTests: XCTestCase {
                 [
                     "--listen=:\(coordPort)", "--pod-id=meshkit-itest", "--region=us",
                     "--public-url=\(coordURL.absoluteString)", "--grant-pow-bits=\(grantPoWBits)",
-                ]
+                ] + extraCoordinatorArgs
             )
         )
         try await waitHealthy(coordURL.appendingPathComponent("health"))
@@ -187,7 +187,7 @@ final class MeshClientLiveTests: XCTestCase {
         let mesh = try await startMesh()
         defer { stop(mesh) }
 
-        let client = MeshClient(baseURL: mesh.coordinatorURL, userID: "meshkit-itest-consumer", timeout: 30)
+        let client = try MeshClient(baseURL: mesh.coordinatorURL, wallet: Wallet.create(), timeout: 30)
         let grant = try await client.claimStartupGrant(difficultyBits: 8)
         XCTAssertGreaterThan(grant.amount, 0)
 
@@ -198,6 +198,8 @@ final class MeshClientLiveTests: XCTestCase {
         XCTAssertTrue(response.content?.contains("Simulated response") ?? false)
         XCTAssertNotNil(response.servedByNodeID)
         XCTAssertGreaterThan(response.tokensPerSec ?? 0, 0)
+        let mintedKey = await client.apiKey
+        XCTAssertNotNil(mintedKey)  // chat() authenticated the wallet transparently
 
         let balanceAfter = try await client.balance()
         XCTAssertLessThan(balanceAfter.total, balance.total)
@@ -208,7 +210,7 @@ final class MeshClientLiveTests: XCTestCase {
         let mesh = try await startMesh()
         defer { stop(mesh) }
 
-        let client = MeshClient(baseURL: mesh.coordinatorURL, userID: "meshkit-itest-stream-consumer", timeout: 30)
+        let client = try MeshClient(baseURL: mesh.coordinatorURL, wallet: Wallet.create(), timeout: 30)
         _ = try await client.claimStartupGrant(difficultyBits: 8)
 
         var chunks: [ChatCompletionChunk] = []
@@ -237,7 +239,7 @@ final class MeshClientLiveTests: XCTestCase {
         let mesh = try await startMesh()
         defer { stop(mesh) }
 
-        let client = MeshClient(baseURL: mesh.coordinatorURL, userID: "meshkit-itest-bg-consumer", timeout: 30)
+        let client = try MeshClient(baseURL: mesh.coordinatorURL, wallet: Wallet.create(), timeout: 30)
         let job = try await client.submitBackgroundJob(
             model: "llama-3.2-3b", jobID: "itest-bg-job-1", recurrence: RecurrenceSpec(intervalSeconds: 60)
         )
@@ -253,7 +255,7 @@ final class MeshClientLiveTests: XCTestCase {
         let mesh = try await startMesh()
         defer { stop(mesh) }
 
-        let client = MeshClient(baseURL: mesh.coordinatorURL, userID: "meshkit-itest-broke", timeout: 30)
+        let client = try MeshClient(baseURL: mesh.coordinatorURL, wallet: Wallet.create(), timeout: 30)
         do {
             _ = try await client.chat(model: "llama-3.2-3b", messages: [ChatMessage(role: "user", content: "hi")])
             XCTFail("expected MeshError.insufficientCredits")
@@ -268,10 +270,88 @@ final class MeshClientLiveTests: XCTestCase {
         let mesh = try await startMesh()
         defer { stop(mesh) }
 
-        let client = MeshClient(baseURL: mesh.coordinatorURL, userID: "meshkit-itest-privacy-consumer", timeout: 30)
+        let client = try MeshClient(baseURL: mesh.coordinatorURL, wallet: Wallet.create(), timeout: 30)
         let reservation = try await client.reserveNode(model: "llama-3.2-3b")
         XCTAssertFalse(reservation.reservationID.isEmpty)
         XCTAssertFalse(reservation.nodeID.isEmpty)
         XCTAssertFalse(reservation.ecdhPublicKey.isEmpty)
+    }
+
+    // MARK: - Wallet: challenge/response auth actually enforced (--api-key set)
+    // Uses startMesh(extraCoordinatorArgs: ["--api-key=..."]) specifically so
+    // authMiddleware really engages — the strongest possible proof the wallet
+    // flow works, since a bug in the address/signature encoding would show up
+    // as a real 401 from the real coordinator, not a mock accepting anything.
+
+    func testWalletAuthenticatesAndPaysForARealJob() async throws {
+        try XCTSkipUnless(Self.goAvailable, "go toolchain not available")
+        let mesh = try await startMesh(extraCoordinatorArgs: ["--api-key=meshkit-itest-static-key"])
+        defer { stop(mesh) }
+
+        let wallet = Wallet.create()
+        let client = try MeshClient(baseURL: mesh.coordinatorURL, wallet: wallet, timeout: 30)
+        let resolvedUserID = await client.userID
+        XCTAssertEqual(resolvedUserID, wallet.address)
+
+        let grant = try await client.claimStartupGrant(difficultyBits: 8)
+        XCTAssertGreaterThan(grant.amount, 0)
+
+        let keyBefore = await client.apiKey
+        XCTAssertNil(keyBefore)  // nothing minted yet — chat() must do it
+
+        let response = try await client.chat(model: "llama-3.2-3b", messages: [ChatMessage(role: "user", content: "hi")])
+        XCTAssertTrue(response.content?.contains("Simulated response") ?? false)
+
+        let keyAfter = await client.apiKey
+        XCTAssertNotNil(keyAfter)
+        XCTAssertTrue(keyAfter?.hasPrefix("oim_") ?? false)
+
+        let balance = try await client.balance()
+        XCTAssertLessThan(balance.total, grant.amount)  // the dispatch really debited the wallet's own address
+    }
+
+    func testStaticAPIKeyStillWorksAlongsideWalletAuth() async throws {
+        try XCTSkipUnless(Self.goAvailable, "go toolchain not available")
+        let mesh = try await startMesh(extraCoordinatorArgs: ["--api-key=meshkit-itest-static-key"])
+        defer { stop(mesh) }
+
+        let client = try MeshClient(
+            baseURL: mesh.coordinatorURL, apiKey: "meshkit-itest-static-key", userID: "meshkit-itest-static-user",
+            timeout: 30
+        )
+        _ = try await client.claimStartupGrant(difficultyBits: 8)
+        let response = try await client.chat(model: "llama-3.2-3b", messages: [ChatMessage(role: "user", content: "hi")])
+        XCTAssertTrue(response.content?.contains("Simulated response") ?? false)
+    }
+
+    func testExpiredAPIKeySelfHealsViaWalletReauth() async throws {
+        try XCTSkipUnless(Self.goAvailable, "go toolchain not available")
+        let mesh = try await startMesh(extraCoordinatorArgs: ["--api-key=meshkit-itest-static-key"])
+        defer { stop(mesh) }
+
+        let client = try MeshClient(baseURL: mesh.coordinatorURL, wallet: Wallet.create(), timeout: 30)
+        _ = try await client.claimStartupGrant(difficultyBits: 8)
+        let staleKey = try await client.authenticate()
+        await client.setAPIKeyForTesting("oim_deliberately-invalid-and-unknown-key")
+
+        let response = try await client.chat(model: "llama-3.2-3b", messages: [ChatMessage(role: "user", content: "hi")])
+        XCTAssertTrue(response.content?.contains("Simulated response") ?? false)
+        let finalKey = await client.apiKey
+        XCTAssertNotEqual(finalKey, staleKey)
+        XCTAssertNotEqual(finalKey, "oim_deliberately-invalid-and-unknown-key")
+    }
+
+    func testNoCredentialClientNeverReachesTheWireEvenWithAuthEnforced() async throws {
+        try XCTSkipUnless(Self.goAvailable, "go toolchain not available")
+        let mesh = try await startMesh(extraCoordinatorArgs: ["--api-key=meshkit-itest-static-key"])
+        defer { stop(mesh) }
+
+        let client = try MeshClient(baseURL: mesh.coordinatorURL, userID: "meshkit-itest-nocred", timeout: 5)
+        do {
+            _ = try await client.chat(model: "llama-3.2-3b", messages: [ChatMessage(role: "user", content: "hi")])
+            XCTFail("expected MeshClientError.noCredentialConfigured")
+        } catch MeshClientError.noCredentialConfigured {
+            // expected
+        }
     }
 }

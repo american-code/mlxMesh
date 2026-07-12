@@ -15,15 +15,61 @@ path. Targets iOS 16+, macOS 13+, tvOS 16+, watchOS 9+.
 ```swift
 import MeshKit
 
-let client = MeshClient(baseURL: URL(string: "https://<coordinator>")!, apiKey: "<your-api-key>", userID: "<your-user-id>")
+let wallet = try Wallet.loadOrCreate()
+let client = try MeshClient(baseURL: URL(string: "https://<coordinator>")!, wallet: wallet)
 
 let response = try await client.chat(model: "llama-3.2-3b", messages: [ChatMessage(role: "user", content: "Summarize this: ...")])
 print(response.content ?? "")
 ```
 
-Setting `userID` isn't optional plumbing — it's what makes the coordinator
-actually debit your account. Without it, requests run in the anonymous/
-unmetered path.
+A billable call (`chat`, `streamChat`, `submitBackgroundJob`, ...) refuses
+outright — before making any request — unless a credential is configured:
+either a `wallet:` (see below) or a pre-existing `apiKey:`/`userID:` pair.
+There is no anonymous/unmetered fallback path in this SDK; if you want the
+coordinator to actually debit an account, a wallet is the way to get one.
+
+## Wallets
+
+A `Wallet` is a local Ed25519 keypair that proves ownership of a ledger
+balance — portable across devices/processes and recoverable, unlike a random
+per-session ID. The coordinator only ever sees the derived address and, once
+per session, the public key + a signature; the private key never leaves
+this process.
+
+```swift
+import MeshKit
+
+// First run: generates a new keypair and saves it (0600 permissions) under
+// the platform's Application Support directory. Later runs load the same
+// one, so the address — and the balance tied to it — is stable across
+// restarts. Pass your own WalletStorage (e.g. Keychain-backed) if you want
+// different persistence.
+let wallet = try Wallet.loadOrCreate()
+print(wallet.address)  // "oim<64 hex chars>" — this is what the ledger keys balances on
+
+let client = try MeshClient(baseURL: URL(string: "https://<coordinator>")!, wallet: wallet)
+try await client.claimStartupGrant()
+
+// The first billable call authenticates transparently: it signs a
+// coordinator challenge with the wallet's key and mints a session apiKey —
+// you never have to call this yourself, but you can:
+let apiKey = try await client.authenticate()
+
+let response = try await client.chat(model: "llama-3.2-3b", messages: [ChatMessage(role: "user", content: "...")])
+```
+
+If the coordinator ever rejects the current `apiKey` (expired, coordinator
+restarted with a fresh in-memory store, etc.), the client re-authenticates
+once automatically and retries — you don't need to handle 401s yourself as
+long as a wallet is configured.
+
+`Wallet.create()` generates a keypair without touching disk (you decide
+if/where to persist it via `.save(storage:)`); `Wallet.load(storage:)` loads
+an existing one and throws `WalletError.notFound` if there isn't one yet.
+
+You can still pass a pre-existing `apiKey:`/`userID:` pair instead of a
+wallet (e.g. a key you minted some other way) — the wallet flow is the
+recommended default for new integrations, not the only supported one.
 
 ## Streaming
 
@@ -86,6 +132,8 @@ do {
     try await client.chat(...)
 } catch MeshError.insufficientCredits(_, let balance, let required) {
     print("need \(required), have \(balance)")
+} catch MeshClientError.noCredentialConfigured {
+    print("pass wallet: or apiKey:+userID: to MeshClient(...)")
 }
 ```
 

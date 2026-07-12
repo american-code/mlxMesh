@@ -11,17 +11,61 @@ pip install mlxmesh
 ## Quick start
 
 ```python
-from mlxmesh import MeshClient
+from mlxmesh import MeshClient, Wallet
 
-client = MeshClient("https://<coordinator>", api_key="<your-api-key>", user_id="<your-user-id>")
+client = MeshClient("https://<coordinator>", wallet=Wallet.load_or_create())
 
 response = client.chat("llama-3.2-3b", [{"role": "user", "content": "Summarize this document: ..."}])
 print(response.content)
 ```
 
-Setting `user_id` isn't optional plumbing — it's what makes the coordinator
-actually debit your account. Without it, requests run in the anonymous/
-unmetered path.
+A billable call (`chat`, `stream_chat`, `submit_background_job`, ...) refuses
+outright — before making any request — unless a credential is configured:
+either a `wallet=` (see below) or a pre-existing `api_key=`/`user_id=` pair.
+There is no anonymous/unmetered fallback path in this SDK; if you want the
+coordinator to actually debit an account, a wallet is the way to get one.
+
+## Wallets
+
+A `Wallet` is a local Ed25519 keypair that proves ownership of a ledger
+balance — portable across machines/processes and recoverable, unlike a
+random per-session ID. The coordinator only ever sees the derived address
+and, once per session, the public key + a signature; the private key never
+leaves this process.
+
+```python
+from mlxmesh import MeshClient, Wallet
+
+# First run: generates a new keypair and saves it to ~/.config/mlxmesh/wallet.json
+# (0600 permissions). Later runs load the same one, so the address — and the
+# balance tied to it — is stable across restarts.
+wallet = Wallet.load_or_create()
+print(wallet.address)  # "oim<64 hex chars>" — this is what the ledger keys balances on
+
+client = MeshClient("https://<coordinator>", wallet=wallet)
+client.claim_startup_grant()
+
+# The first billable call authenticates transparently: it signs a coordinator
+# challenge with the wallet's key and mints a session api_key — you never
+# have to call this yourself, but you can:
+client.authenticate()
+print(client.api_key)  # "oim_..."
+
+response = client.chat("llama-3.2-3b", [{"role": "user", "content": "..."}])
+```
+
+If the coordinator ever rejects `client.api_key` (expired, coordinator
+restarted with a fresh in-memory store, etc.), the client re-authenticates
+once automatically and retries — you don't need to handle 401s yourself as
+long as a wallet is configured.
+
+`Wallet.create()` generates a keypair without touching disk (you decide
+if/where to persist it via `.save(path)`); `Wallet.load(path)` loads an
+existing one and raises `FileNotFoundError` if there isn't one yet.
+
+You can still pass a pre-existing `api_key=`/`user_id=` pair instead of a
+wallet (e.g. a key you minted some other way) — the wallet flow is the
+recommended default for new integrations, not the only supported one.
 
 ## Streaming
 
@@ -87,12 +131,14 @@ Not compatible with `stream=True` — a reservation always returns buffered.
 ## Errors
 
 ```python
-from mlxmesh.errors import InsufficientCreditsError, NoCapacityError
+from mlxmesh.errors import InsufficientCreditsError, NoCapacityError, NoCredentialError
 
 try:
     client.chat(...)
 except InsufficientCreditsError as e:
     print(f"need {e.required}, have {e.balance}")
+except NoCredentialError:
+    print("pass wallet=... or api_key=...+user_id=... to MeshClient(...)")
 ```
 
 ## Development

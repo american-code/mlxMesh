@@ -6,6 +6,7 @@ from .errors import (
     InsufficientCreditsError,
     MeshError,
     NoCapacityError,
+    NoCredentialError,
     RateLimitedError,
     ReservationExpiredError,
 )
@@ -21,6 +22,7 @@ from .models import (
     Reservation,
     Sensitivity,
 )
+from .wallet import Wallet
 
 __version__ = "0.1.0"
 
@@ -32,6 +34,7 @@ __all__ = [
     "ReservationExpiredError",
     "RateLimitedError",
     "NoCapacityError",
+    "NoCredentialError",
     "ChatMessage",
     "ChatCompletion",
     "ChatCompletionChunk",
@@ -42,4 +45,5 @@ __all__ = [
     "Reservation",
     "RecurrenceSpec",
     "Sensitivity",
+    "Wallet",
 ]
