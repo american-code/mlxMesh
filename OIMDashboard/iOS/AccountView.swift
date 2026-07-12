@@ -276,6 +276,23 @@ struct WalletSection: View {
     private var resolvedURL: String? { coordinatorURL.map { NetworkClient.resolvedCoordinator($0) } }
 
     var body: some View {
+        if let keychainErr = wallet.keychainError {
+            Section {
+                Label(keychainErr, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        } else if wallet.usingLocalFallback {
+            // Keychain is denied on this device, but the seed IS persisting via
+            // the local-file fallback — the wallet survives a relaunch, it just
+            // won't sync to the user's other Apple devices via iCloud Keychain.
+            // Not an error state, so no red/triangle styling.
+            Section {
+                Label("Wallet saved on this device only (Keychain unavailable — won't sync via iCloud). Your recovery key still works everywhere.", systemImage: "iphone")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
         if !wallet.hasWallet {
             Section("Wallet") {
                 Text("Create a wallet to consolidate credits across your devices and recover your balance if a device is lost. Your key is stored in iCloud Keychain and never leaves your devices.")

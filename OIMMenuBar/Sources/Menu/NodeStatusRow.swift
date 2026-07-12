@@ -40,8 +40,32 @@ struct NodeStatusRow: View {
                         .font(.caption2)
                         .foregroundStyle(isWarning ? .orange : .secondary)
                 }
+                if let line = warmKeeperLine {
+                    Text(line)
+                        .font(.caption2)
+                        .foregroundStyle(appState.warmKeeper.lastError != nil ? .orange : .secondary)
+                }
             }
         }
+    }
+
+    // "Models kept warm — last checked 4m ago" (or an error, or "checking…"
+    // on the very first sweep) — a one-glance answer to whether the
+    // idle-eviction workaround is actually running, not just enabled in
+    // Settings.
+    private var warmKeeperLine: String? {
+        guard appState.warmKeeperEnabled else { return nil }
+        if let error = appState.warmKeeper.lastError {
+            return "Model warm-up: \(error)"
+        }
+        if appState.warmKeeper.isWarming {
+            return "Keeping models warm…"
+        }
+        guard let last = appState.warmKeeper.lastWarmedAt else {
+            return "Models kept warm — checking…"
+        }
+        let minutes = max(0, Int(Date().timeIntervalSince(last) / 60))
+        return minutes == 0 ? "Models kept warm — just now" : "Models kept warm — \(minutes)m ago"
     }
 
     // How this node receives work. In the default pull mode it connects OUT to

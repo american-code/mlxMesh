@@ -43,6 +43,12 @@ idealized one. Pair it with [SLOS.md](SLOS.md) (targets + alerts) and
 - **Helper scripts on the box:** `redeploy-infra.sh` (recreate directory +
   coordinators), `refresh-nodes.py` (recreate all nodes from the current image),
   `spawn-nodes.sh` (create N new node pairs), `enable-node-tls.py`.
+- **Deployment history/rollback (`--deployment-history-path`):** optional flag
+  pointing the coordinator at the JSON file `oim deploy` (see `internal/deploytool`,
+  and "Deploy a new version" below) writes on this same host — exposes it
+  read-only at `GET /admin/deployments` for the dashboard Admin tab's
+  Deployments panel. Not set on the live seed by default; set it to (e.g.)
+  `~/.oim-deployments.json` to turn the panel on.
 
 Access: `ssh -i <key>.pem ec2-user@54.197.150.242`.
 
@@ -67,6 +73,52 @@ Prometheus (per coordinator, `GET /metrics/prometheus`): watch
 **Golden rule: never run a from-scratch `docker build` on the box without
 freeing RAM first.** A cold Go build of all five binaries has OOM'd the box
 (see Incidents → OOM). The swap now cushions it, but free RAM anyway.
+
+### Automated (recommended): `oim deploy`
+
+`oim deploy push` (see `internal/deploytool` and `cmd/oim/deploy.go`)
+orchestrates exactly the manual steps below over SSH — it does not replace
+`redeploy-infra.sh`/`refresh-nodes.py`, it calls them — and adds three things
+the purely manual process didn't have: a persisted deployment **history**
+(`~/.oim-deployments.json` on the box, readable via `GET /admin/deployments`
+if the coordinator was started with `--deployment-history-path` — see the
+dashboard's Admin tab), an automated post-deploy **golden-signal health
+check**, and a **rollback** that uses that history (most recent
+previously-healthy image) instead of an operator's memory.
+
+```bash
+# Review the plan first — prints every command without running anything:
+oim deploy push --host ec2-user@54.197.150.242 --ssh-key <key>.pem \
+  --source . --remote-dir ~/mlxmesh-src \
+  --health-endpoint https://us.mlxmesh.net/health \
+  --health-endpoint https://eu.mlxmesh.net/health \
+  --health-endpoint https://directory.mlxmesh.net/health \
+  --expected-containers 119 --dry-run
+
+# Same command without --dry-run actually deploys, then health-checks and
+# records the result. Exits non-zero if the post-deploy check fails.
+oim deploy push --host ec2-user@54.197.150.242 --ssh-key <key>.pem \
+  --source . --remote-dir ~/mlxmesh-src \
+  --health-endpoint https://us.mlxmesh.net/health \
+  --health-endpoint https://eu.mlxmesh.net/health \
+  --health-endpoint https://directory.mlxmesh.net/health \
+  --expected-containers 119
+
+# Status check any time (no deploy):
+oim deploy status --host ec2-user@54.197.150.242 --ssh-key <key>.pem \
+  --health-endpoint https://us.mlxmesh.net/health --expected-containers 119
+
+# History:
+oim deploy history --host ec2-user@54.197.150.242 --ssh-key <key>.pem
+```
+
+`--component coordinator|directory|node` scopes a single-component deploy the
+same way the manual steps below distinguish them. This is deliberately a
+CLI-only action — no button in the dashboard can trigger a deploy or rollback
+(see `internal/deploytool`'s package doc comment); the Admin tab's
+Deployments panel is read-only status/history.
+
+### Manual (what the tool above actually runs)
 
 ```bash
 # 1. Sync the release commit's source from a dev checkout:
@@ -102,8 +154,20 @@ unacceptable.
 
 ## Rollback
 
-Images are tagged. To roll back, rebuild the previous tag's source (or `docker
-load` the previously-saved image) and re-run `redeploy-infra.sh` +
+**Automated:** `oim deploy rollback --host ec2-user@54.197.150.242 --ssh-key
+<key>.pem --health-endpoint https://us.mlxmesh.net/health
+--expected-containers 119` — finds the most recent deploy in
+`~/.oim-deployments.json` that itself passed its post-deploy health check
+(skipping the current, possibly-broken head and anything that never passed),
+re-tags that image as active (a same-day rollback is usually just a re-tag —
+Docker doesn't garbage-collect image tags on its own, so no rebuild is
+needed), redeploys, and health-checks again. If the target image is no longer
+in the box's local Docker cache (an old rollback), it errors out and tells you
+to `oim deploy push` from that commit's source instead of silently doing
+something else.
+
+**Manual:** images are tagged. To roll back, rebuild the previous tag's source
+(or `docker load` the previously-saved image) and re-run `redeploy-infra.sh` +
 `refresh-nodes.py`. Data volumes are untouched by a rollback, so ledger/identity
 survive. **The ledger schema is append-only and has not had a breaking
 migration** — a rollback of code is safe against the existing DB.

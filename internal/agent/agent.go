@@ -376,20 +376,32 @@ func Run(ctx context.Context, priv, pub []byte, cfg Config) error {
 			manifest = fresh
 
 		case <-benchC:
-			// Re-benchmark and submit result so the coordinator can detect tier fraud.
-			// Non-fatal — a failed bench does not kill the agent.
-			if len(manifest.Models) == 0 {
-				continue
-			}
-			sig, err := bench.Run(ctx, exo, manifest.Models[0].ModelID, "medium", 1)
-			if err != nil {
-				log.Printf("[agent] re-bench error: %v", err)
-				continue
-			}
-			if err := SubmitBenchmarkResult(ctx, cfg.CoordinatorURL, nodeID, priv, sig); err != nil {
-				log.Printf("[agent] submit benchmark result: %v", err)
-			} else {
-				log.Printf("[agent] submitted benchmark: %.1f tok/s decode", sig.TokensPerSecDecode)
+			// Re-benchmark EVERY downloaded model, not just the first — a real
+			// inference call is exactly what forces Exo to (re-)place shards and
+			// load weights if it had evicted an idle instance, so this doubles as
+			// this node's own keep-warm sweep for its whole model set, not just
+			// whichever model happened to be manifest.Models[0]. (Previously only
+			// [0] was ever benchmarked, silently leaving every other downloaded
+			// model to go cold between real dispatches.)
+			//
+			// protocol.MeasuredSignature is tracked ONE PER NODE, not per model
+			// (see its own struct — no ModelID field), so submitting after each
+			// model in the loop still only leaves the coordinator with the LAST
+			// model's numbers by the time the tick finishes; that's an existing
+			// wire-protocol limit, not something this loop can fix on its own.
+			// Non-fatal — a failed bench for one model does not kill the agent or
+			// skip the rest of the sweep.
+			for _, m := range manifest.Models {
+				sig, err := bench.Run(ctx, exo, m.ModelID, "medium", 1)
+				if err != nil {
+					log.Printf("[agent] re-bench %s error: %v", m.ModelID, err)
+					continue
+				}
+				if err := SubmitBenchmarkResult(ctx, cfg.CoordinatorURL, nodeID, priv, sig); err != nil {
+					log.Printf("[agent] submit benchmark result for %s: %v", m.ModelID, err)
+				} else {
+					log.Printf("[agent] submitted benchmark for %s: %.1f tok/s decode", m.ModelID, sig.TokensPerSecDecode)
+				}
 			}
 		}
 	}

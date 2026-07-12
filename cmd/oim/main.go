@@ -63,6 +63,7 @@ Quickstart:
 	root.AddCommand(benchCmd())
 	root.AddCommand(versionCmd())
 	root.AddCommand(adminCmd())
+	root.AddCommand(deployCmd())
 	return root
 }
 
@@ -231,7 +232,7 @@ func nodeStatusCmd() *cobra.Command {
 func nodeStartCmd() *cobra.Command {
 	var coordinatorURL, listenAddr, geoHint, exoURL, reachabilityEndpoint, userID string
 	var capPct, geoLat, geoLng, declaredMemGB float64
-	var refreshSec int
+	var refreshSec, benchIntervalSec int
 	var attemptEnclaveAttestation bool
 	var scheduleMode, scheduleStart, scheduleEnd string
 	var scheduleDays []string
@@ -350,6 +351,7 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 				ListenAddr:                listenAddr,
 				ReachabilityEndpoint:      reachabilityEndpoint,
 				RefreshInterval:           time.Duration(refreshSec) * time.Second,
+				BenchInterval:             time.Duration(benchIntervalSec) * time.Second,
 				CapacityPct:               capPct,
 				DeclaredMemoryGB:          declaredMemGB,
 				AllowedModels:             savedCfg.AllowedModels,
@@ -392,6 +394,7 @@ Prerequisites: Exo must be running (oim node status to verify).`,
 	cmd.Flags().BoolVar(&disableAutoPortMap, "no-auto-port-map", false, "Disable the automatic UPnP/NAT-PMP port-mapping attempt this node makes at startup when --reachability-endpoint is unset. On by default since most contributors are behind a home router's NAT; has no effect at all when --reachability-endpoint is set explicitly. Set this on networks where the attempt is pointless (Docker/cloud/corporate) to skip its ~5s discovery timeout")
 	cmd.Flags().Float64Var(&capPct, "cap", 0.5, "Memory contribution cap (0.0–1.0)")
 	cmd.Flags().IntVar(&refreshSec, "refresh-interval", 30, "Manifest refresh interval in seconds")
+	cmd.Flags().IntVar(&benchIntervalSec, "bench-interval", 0, "Seconds between re-benchmarking every downloaded model against Exo and submitting the result (0 = disabled). Was previously unreachable — no flag ever set agent.Config.BenchInterval, so this feature has always been off no matter what the doc comment claimed. A real inference call per model, so it also re-warms any model Exo evicted while idle; a tight interval (e.g. 300 for 5 minutes) trades a small steady background cost for near-real-time measured throughput and fewer cold-load surprises on the first real request")
 	cmd.Flags().StringVar(&geoHint, "region", "", "Geographic region hint (us/eu/apac); defaults to auto-detect")
 	cmd.Flags().Float64Var(&geoLat, "lat", 0, "Approximate latitude of this node (for dashboard mapping; 0 = not declared)")
 	cmd.Flags().Float64Var(&geoLng, "lng", 0, "Approximate longitude of this node (for dashboard mapping; 0 = not declared)")
@@ -543,13 +546,16 @@ func printTableWithHeader(title string, headers []string, rows [][]string) {
 	t := tablewriter.NewWriter(os.Stdout)
 	t.SetHeader(headers)
 	t.SetBorder(true)
-	t.SetHeaderColor(
-		tablewriter.Colors{tablewriter.Bold, tablewriter.FgCyanColor},
-		tablewriter.Colors{tablewriter.Bold, tablewriter.FgCyanColor},
-		tablewriter.Colors{tablewriter.Bold, tablewriter.FgCyanColor},
-		tablewriter.Colors{tablewriter.Bold, tablewriter.FgCyanColor},
-		tablewriter.Colors{tablewriter.Bold, tablewriter.FgCyanColor},
-	)
+	// tablewriter requires exactly one Colors entry per header column — a
+	// hardcoded 5-entry call here silently assumed every caller has exactly 5
+	// columns and panics ("Number of header colors must be equal to number of
+	// headers") on any other width. Build it from len(headers) instead so
+	// this helper works for any column count.
+	headerColors := make([]tablewriter.Colors, len(headers))
+	for i := range headerColors {
+		headerColors[i] = tablewriter.Colors{tablewriter.Bold, tablewriter.FgCyanColor}
+	}
+	t.SetHeaderColor(headerColors...)
 	for _, row := range rows {
 		t.Append(row)
 	}

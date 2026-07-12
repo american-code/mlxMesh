@@ -1,6 +1,6 @@
 import type {
   TopologyResponse, NodesResponse, Balance, NodeDetection, NodeConfig, PodHealthDigest,
-  ReconciliationReport, AdminAction,
+  ReconciliationReport, AdminAction, DeploymentRecord, DeploymentHistory,
 } from './types'
 import { mineProofOfWork, DEFAULT_GRANT_POW_BITS } from './pow'
 import { getStoredApiKey, setStoredApiKey } from './identity'
@@ -153,7 +153,14 @@ export async function checkApiKeyExists(
 }
 
 export async function revokeApiKey(coordinatorURL: string, userId: string): Promise<void> {
-  const res = await fetch(`${coordinatorURL}/users/${userId}/api-key`, { method: 'DELETE' })
+  // Must present this account's own key: the coordinator ownership-gates
+  // DELETE /users/{id}/api-key (any authenticated caller used to be able to
+  // revoke anyone's key, which reopened the account-takeover path). The user is
+  // revoking their OWN key here, so send it as the Bearer token to prove control.
+  const headers: Record<string, string> = {}
+  const key = getStoredApiKey()
+  if (key) headers.Authorization = `Bearer ${key}`
+  const res = await fetch(`${coordinatorURL}/users/${userId}/api-key`, { method: 'DELETE', headers })
   if (!res.ok) throw new Error(`Key revoke returned ${res.status}`)
 }
 
@@ -318,6 +325,19 @@ export async function fetchAuditLog(coordinatorURL: string, sessionToken: string
   if (!res.ok) throw new Error(`Audit log fetch returned ${res.status}`)
   const data = await res.json()
   return data.actions ?? []
+}
+
+// fetchDeploymentHistory reads GET /admin/deployments — the read-only view of
+// what `oim deploy` (internal/deploytool) has written on this coordinator's
+// own host. 404 means the coordinator wasn't started with
+// --deployment-history-path (not configured on this deployment), which the
+// panel treats as "nothing to show" rather than an error.
+export async function fetchDeploymentHistory(coordinatorURL: string, sessionToken: string): Promise<DeploymentRecord[]> {
+  const res = await fetch(`${coordinatorURL}/admin/deployments`, { headers: adminHeaders(sessionToken) })
+  if (res.status === 404) return []
+  if (!res.ok) throw new Error(`Deployment history fetch returned ${res.status}`)
+  const data: DeploymentHistory = await res.json()
+  return data.records ?? []
 }
 
 export async function postTreasuryCredit(

@@ -29,6 +29,11 @@ export interface NodeSnapshot {
   // One coarse chip family per cluster device (e.g. "Apple M1") — no hostnames,
   // no exact chip variant. Empty/absent for non-cluster nodes.
   cluster_chip_families?: string[]
+  // Opaque fingerprint of this cluster's device-ID set — the coordinator's own
+  // internal cluster identity (registry.go), exposed so map views can group
+  // markers by ACTUAL shared cluster membership instead of by raw coordinates
+  // (two unrelated clusters can geolocate to the same city). Empty for solo nodes.
+  cluster_signature?: string
   last_seen_at: string
   in_flight_jobs: number
   // Decorative/seed capacity, not a real operator's hardware — labeled
@@ -116,6 +121,24 @@ export interface AdminAction {
   detail: string
   amount: number
   performed_at: string
+}
+
+// DeploymentRecord mirrors internal/deploytool.Record — one `oim deploy`
+// push/rollback event, read-only via GET /admin/deployments.
+export interface DeploymentRecord {
+  timestamp: string
+  action: 'deploy' | 'rollback'
+  git_commit?: string
+  image_tag: string
+  component: string
+  deployed_by: string
+  // Absent = never health-checked (e.g. the CLI was interrupted mid-run);
+  // true/false = the post-deploy golden-signal result.
+  healthy_after?: boolean
+}
+
+export interface DeploymentHistory {
+  records: DeploymentRecord[] | null
 }
 
 // Schedule controls when this node contributes to the mesh. Mode 'window'

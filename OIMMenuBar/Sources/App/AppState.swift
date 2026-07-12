@@ -14,6 +14,7 @@ final class AppState {
     let launchAtLogin = LaunchAtLoginController()
     let detectMonitor = LocalDetectMonitor()
     let podMetricsMonitor = NodePodMetricsMonitor()
+    let warmKeeper = ModelWarmKeeper()
 
     enum Region: String, CaseIterable, Identifiable {
         case us, eu
@@ -60,6 +61,37 @@ final class AppState {
     /// cosmetic.
     var reachabilityEndpoint: String
 
+    /// Periodically re-warms this node's downloaded models against Exo so an
+    /// idle-evicted instance doesn't silently pay a cold-load penalty on the
+    /// next real request (see ModelWarmKeeper's doc comment). Defaults on —
+    /// it's billing-free and cheap when a model is already warm, so there's
+    /// no real downside to leaving it running.
+    var warmKeeperEnabled: Bool
+    /// How often to re-warm, in minutes. Exo's own idle-eviction window isn't
+    /// a fixed, documented number, so this is left operator-tunable rather
+    /// than hardcoded — someone who observes eviction sooner (or never) on
+    /// their own hardware can tighten or loosen it. Default lowered from an
+    /// initial 20 to 5: real-world testing showed 20 minutes was NOT tight
+    /// enough to reliably beat Exo's actual idle-eviction window.
+    var warmKeeperIntervalMinutes: Double
+
+    /// Enables `oim node start --bench-interval` — a SIGNED, coordinator-
+    /// visible re-benchmark of every downloaded model (see
+    /// internal/agent/agent.go). Distinct from warmKeeper above: warmKeeper
+    /// talks to Exo directly and reports nothing upstream; this is the only
+    /// channel that updates the coordinator's near-real-time per-node
+    /// throughput metrics, because only the Go node process (not this Swift
+    /// app) holds the real node identity key that signs the report. As a
+    /// side effect it's also a second, independent keep-warm mechanism (a
+    /// real inference call per model). Takes effect on next node start — the
+    /// running `oim node start` process isn't hot-reloaded.
+    var benchIntervalEnabled: Bool
+    /// How often to re-benchmark, in minutes. Slightly looser than
+    /// warmKeeperIntervalMinutes by default since this is a real, signed
+    /// network round trip per model (more expensive than warmKeeper's local
+    /// Exo-only sweep), not because it's less important.
+    var benchIntervalMinutes: Double
+
     private let defaults = UserDefaults.standard
     private enum Keys {
         static let cap = "oim.menubar.cap"
@@ -69,6 +101,10 @@ final class AppState {
         static let scheduleEnd = "oim.menubar.scheduleEnd"
         static let scheduleDays = "oim.menubar.scheduleDays"
         static let reachabilityEndpoint = "oim.menubar.reachabilityEndpoint"
+        static let warmKeeperEnabled = "oim.menubar.warmKeeperEnabled"
+        static let warmKeeperIntervalMinutes = "oim.menubar.warmKeeperIntervalMinutes"
+        static let benchIntervalEnabled = "oim.menubar.benchIntervalEnabled"
+        static let benchIntervalMinutes = "oim.menubar.benchIntervalMinutes"
     }
 
     init() {
@@ -110,6 +146,20 @@ final class AppState {
         reachabilityEndpoint = Self.sanitizedReachability(
             defaults.string(forKey: Keys.reachabilityEndpoint) ?? existing?.reachabilityEndpoint ?? "")
 
+        warmKeeperEnabled = defaults.object(forKey: Keys.warmKeeperEnabled) != nil
+            ? defaults.bool(forKey: Keys.warmKeeperEnabled)
+            : true
+        warmKeeperIntervalMinutes = defaults.object(forKey: Keys.warmKeeperIntervalMinutes) != nil
+            ? defaults.double(forKey: Keys.warmKeeperIntervalMinutes)
+            : 5
+
+        benchIntervalEnabled = defaults.object(forKey: Keys.benchIntervalEnabled) != nil
+            ? defaults.bool(forKey: Keys.benchIntervalEnabled)
+            : true
+        benchIntervalMinutes = defaults.object(forKey: Keys.benchIntervalMinutes) != nil
+            ? defaults.double(forKey: Keys.benchIntervalMinutes)
+            : 10
+
         exoMonitor.startPolling()
     }
 
@@ -143,6 +193,10 @@ final class AppState {
         defaults.set(scheduleEnd, forKey: Keys.scheduleEnd)
         defaults.set(scheduleDays.map(\.rawValue), forKey: Keys.scheduleDays)
         defaults.set(reachabilityEndpoint, forKey: Keys.reachabilityEndpoint)
+        defaults.set(warmKeeperEnabled, forKey: Keys.warmKeeperEnabled)
+        defaults.set(warmKeeperIntervalMinutes, forKey: Keys.warmKeeperIntervalMinutes)
+        defaults.set(benchIntervalEnabled, forKey: Keys.benchIntervalEnabled)
+        defaults.set(benchIntervalMinutes, forKey: Keys.benchIntervalMinutes)
     }
 
     // MARK: - Node control
@@ -161,7 +215,8 @@ final class AppState {
             reachabilityEndpoint: {
                 let sane = Self.sanitizedReachability(reachabilityEndpoint)
                 return sane.isEmpty ? nil : sane
-            }()
+            }(),
+            benchIntervalSec: benchIntervalEnabled ? Int(max(1, benchIntervalMinutes) * 60) : nil
         )
         nodeController.start(options)
     }
@@ -184,16 +239,38 @@ final class AppState {
     /// back the "This node: N peers, X/Y GB used" and in-flight/queue summary
     /// lines — both endpoints only mean anything while a node process is
     /// actually up, so they track the node's own state rather than polling
-    /// unconditionally like exoMonitor does.
+    /// unconditionally like exoMonitor does. The warm-keeper follows the same
+    /// rule: warming only makes sense while this node is actually registered
+    /// and dispatchable.
     func nodeStateChanged(_ newState: NodeProcessController.State) {
         if case .running(let nodeID) = newState {
             Task { await linkNodeIfPossible() }
             detectMonitor.startPolling()
             podMetricsMonitor.startPolling(nodeID: nodeID, coordinatorURL: region.coordinatorURL)
+            restartWarmKeeperIfNeeded()
         } else {
             detectMonitor.stopPolling()
             podMetricsMonitor.stopPolling()
+            warmKeeper.stopPolling()
         }
+    }
+
+    /// Re-applies warmKeeperEnabled/warmKeeperIntervalMinutes to the running
+    /// warm-keeper. Safe to call any time the node is running, including
+    /// right after a Settings change — startPolling always stops any prior
+    /// timer first, so this never stacks duplicate loops. Talks directly to
+    /// Exo (exoMonitor.exoURL), not the coordinator, so unlike the prior
+    /// coordinator-mediated design this needs no node ID at all.
+    func restartWarmKeeperIfNeeded() {
+        guard isNodeRunning else { return }
+        guard warmKeeperEnabled else {
+            warmKeeper.stopPolling()
+            return
+        }
+        warmKeeper.startPolling(
+            exoURL: exoMonitor.exoURL,
+            interval: max(1, warmKeeperIntervalMinutes) * 60
+        )
     }
 
     // MARK: - Combined state for the menu bar icon / banners

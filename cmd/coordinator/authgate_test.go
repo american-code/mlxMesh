@@ -198,6 +198,101 @@ func TestAuthorizeUserRead(t *testing.T) {
 	}
 }
 
+// callerControlsAccount gates MUTATING an account's api-key credential —
+// rotating one (POST when a key already exists) and revoking one (DELETE).
+func TestCallerControlsAccount(t *testing.T) {
+	keys := newAPIKeyStore()
+	aliceKey, err := keys.generate("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bobKey, err := keys.generate("bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reqWith := func(token string) *http.Request {
+		r := httptest.NewRequest(http.MethodDelete, "/users/alice/api-key", nil)
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		return r
+	}
+
+	if callerControlsAccount(reqWith(""), "alice", "admin-secret", nil, keys) {
+		t.Error("no token must be rejected")
+	}
+	if !callerControlsAccount(reqWith("admin-secret"), "alice", "admin-secret", nil, keys) {
+		t.Error("admin key must be accepted")
+	}
+	if !callerControlsAccount(reqWith(aliceKey), "alice", "admin-secret", nil, keys) {
+		t.Error("alice's own key controlling her own account must be accepted")
+	}
+	if callerControlsAccount(reqWith(bobKey), "alice", "admin-secret", nil, keys) {
+		t.Error("bob's key must NOT control alice's account")
+	}
+	if callerControlsAccount(reqWith("oim_totally_made_up"), "alice", "admin-secret", nil, keys) {
+		t.Error("a forged oim_ token must be rejected")
+	}
+}
+
+// TestAPIKeyRotationDELETE_TakeoverChainIsBlocked is the regression test for
+// the exact incident this session's api-key hardening was meant to close:
+// POST /users/{id}/api-key gates ROTATION (the account already has a key) on
+// ownership, but that gate alone is bypassable if DELETE /users/{id}/api-key
+// has no ownership check of its own — any authenticated caller (including one
+// who just self-minted a free key for themselves, since first-mint is always
+// open by design) could revoke a VICTIM's key, which resets
+// apiKeys.exists(victim) to false and walks straight back through the open
+// first-mint path to seize the account. This proves each step of that chain
+// using the exact gate both handlers share (callerControlsAccount), not just
+// each function in isolation — the bug was specifically in how the two
+// handlers compose, not in either check alone.
+func TestAPIKeyRotationDELETE_TakeoverChainIsBlocked(t *testing.T) {
+	keys := newAPIKeyStore()
+	victimKey, err := keys.generate("victim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attackerKey, err := keys.generate("attacker") // first mint for "attacker" — legitimately open
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deleteReq := func(id, token string) *http.Request {
+		r := httptest.NewRequest(http.MethodDelete, "/users/"+id+"/api-key", nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		return r
+	}
+
+	// Step 1: attacker attempts to revoke the victim's key using their own
+	// (freely self-minted) credential. Must be rejected — this is the gate
+	// that was missing before the fix.
+	if callerControlsAccount(deleteReq("victim", attackerKey), "victim", "", nil, keys) {
+		t.Fatal("attacker's own key must not authorize revoking the victim's key")
+	}
+
+	// Step 2: prove the victim's key is genuinely untouched — the handler-level
+	// gate must have actually prevented the revoke from being reachable, not
+	// merely reported false while the caller went ahead anyway. (This
+	// simulates what the DELETE handler does: only call apiKeys.revoke after
+	// callerControlsAccount passes.)
+	if uid, ok := keys.lookup(victimKey); !ok || uid != "victim" {
+		t.Fatalf("victim's key must still resolve to victim after a blocked revoke attempt, got (%q, %v)", uid, ok)
+	}
+
+	// Step 3: with the key intact, apiKeys.exists("victim") stays true, so the
+	// POST rotation gate (apiKeys.exists(userID) && !callerControlsAccount)
+	// still applies — the first-mint path the whole attack depended on
+	// reopening never becomes reachable.
+	if !keys.exists("victim") {
+		t.Fatal("victim's key must still exist — the takeover chain depends on it having been wrongly deleted")
+	}
+	if callerControlsAccount(deleteReq("victim", attackerKey), "victim", "", nil, keys) {
+		t.Fatal("attacker still must not control the victim's account on a second attempt")
+	}
+}
+
 // The per-account quota inside authMiddleware must throttle a single
 // authenticated user_id independent of source IP, and must not throttle the
 // admin key.

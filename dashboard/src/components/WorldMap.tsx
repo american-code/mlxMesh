@@ -1,6 +1,6 @@
 import { ComposableMap, Geographies, Geography, Marker, Line } from 'react-simple-maps'
 import type { NodeSnapshot } from '../types'
-import { computeNodeStatus, statusColor, isExoNode } from '../utils'
+import { computeNodeStatus, statusColor, isExoNode, worseStatus, worstStatus, groupMarkers } from '../utils'
 
 const GEO_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'
 
@@ -85,19 +85,23 @@ function buildKnnEdges(nodes: NodeSnapshot[], k = 3): KnnEdge[] {
 }
 
 function edgeColor(a: NodeSnapshot, b: NodeSnapshot): string {
-  const ord: Record<string, number> = { live: 0, degraded: 1, stale: 2, unreachable: 3 }
-  const sa = computeNodeStatus(a), sb = computeNodeStatus(b)
-  return statusColor(ord[sa] >= ord[sb] ? sa : sb)
+  return statusColor(worseStatus(computeNodeStatus(a), computeNodeStatus(b)))
 }
 
 // ── Component ──────────────────────────────────────────────────────────────
 
 export function WorldMap({ nodes, selected, onNodeClick, userLocation, activeRoute }: Props) {
   const mapped = nodes.filter(n => n.geo_lat !== 0 || n.geo_lng !== 0)
-  const edges  = buildKnnEdges(mapped, 3)
+  const markerGroups = groupMarkers(mapped)
+  // One representative node per merged marker for KNN edges/projection bounds
+  // — otherwise every device in a cluster draws its own near-duplicate set of
+  // proximity edges, stacked on top of each other exactly like the markers
+  // were before groupMarkers.
+  const deduped = markerGroups.map(g => g.nodes[0])
+  const edges  = buildKnnEdges(deduped, 3)
   const projectionPoints = userLocation
-    ? [...mapped, { geo_lat: userLocation.lat, geo_lng: userLocation.lng }]
-    : mapped
+    ? [...deduped, { geo_lat: userLocation.lat, geo_lng: userLocation.lng }]
+    : deduped
   const { scale, center } = autoProjection(projectionPoints)
 
   return (
@@ -153,18 +157,22 @@ export function WorldMap({ nodes, selected, onNodeClick, userLocation, activeRou
         </Marker>
       )}
 
-      {/* Node markers */}
-      {mapped.map(node => {
-        const status   = computeNodeStatus(node)
+      {/* Node markers — grouped so a multi-device cluster (every device
+          registers its own node entry at the SAME location) draws one marker
+          with a device-count badge instead of N overlapping circles. */}
+      {markerGroups.map(group => {
+        const node     = group.nodes[0] // representative for click/detail
+        const status   = worstStatus(group.nodes)
         const color    = statusColor(status)
-        const isSel    = selected?.node_id === node.node_id
+        const isSel    = group.nodes.some(n => selected?.node_id === n.node_id)
         const isExo    = isExoNode(node)
         const s        = isExo ? 7 : 5  // diamond half-size / circle radius
+        const count    = node.is_cluster ? (node.cluster_device_count ?? group.nodes.length) : 1
 
         return (
           <Marker
-            key={node.node_id}
-            coordinates={[node.geo_lng, node.geo_lat]}
+            key={group.key}
+            coordinates={[group.lng, group.lat]}
             onClick={() => onNodeClick(node)}
           >
             {/* Pulse ring — always a circle for animation compatibility */}
@@ -206,6 +214,15 @@ export function WorldMap({ nodes, selected, onNodeClick, userLocation, activeRou
                 strokeWidth={1.2}
                 style={{ cursor: 'pointer' }}
               />
+            )}
+            {/* Device-count badge — only shown when this marker represents
+                more than one merged cluster-member registration. */}
+            {count > 1 && (
+              <text y={-(s + 8)} textAnchor="middle"
+                fill="#e6edf3" fontSize={7} fontWeight={700}
+                style={{ pointerEvents: 'none', userSelect: 'none' }}>
+                ×{count}
+              </text>
             )}
           </Marker>
         )

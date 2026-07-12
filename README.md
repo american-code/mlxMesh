@@ -710,24 +710,50 @@ decentralized credit network — see the open items below.
    `stream_options.include_usage` shows up in monitoring instead of quietly giving
    away free inference. Billing itself is unchanged (never invents a cost it didn't
    observe) — this is an observability fix, not a new charge.
+6. ✅ **RESOLVED — Self-minting + replay via `POST /settlement/records`.** This
+   endpoint used to credit the ledger for any settlement record whose signature
+   verified against the claimed node's own registered key. That check only proves
+   *which node authored the record*, not that any work happened — a node holds its
+   own private key, so it could self-sign a record naming itself with an arbitrary
+   value and mint credit with no cross-check against a coordinator-dispatched job,
+   and with no `record_id` dedup or freshness bound the same valid record replayed
+   indefinitely. This was a live counterexample to item #1's "a modified node
+   cannot inflate its earnings" (a *different* credit path than `/job-outcome`).
+   The endpoint no longer credits at all — records are stored purely as inert
+   dispute evidence ("publishing a record is not the same as moving money"), and
+   the only authoritative earning path is the coordinator's own observed-token
+   crediting (items #1/#2). No honest flow depended on it
+   (`CreateSettlementRecord`/`PublishSettlementRecord` have no live callers).
+7. ✅ **RESOLVED — Account takeover via unauthenticated API-key rotation.** The
+   *first* `POST /users/{id}/api-key` mint for a new `user_id` is open by design
+   (anonymous-account bootstrap), but nothing used to stop an unauthenticated
+   caller from *replacing* an already-issued key — so anyone who learned a
+   victim's `user_id` could overwrite their key and seize the account. Rotation
+   now requires proof of control (the current `oim_` key or an admin credential);
+   trust-on-first-use for the initial mint is unchanged.
 
 ### "How do I stop someone from modifying the code to mint credits?" — direct answer
 
 - **Modifying the client or node** does **not** let you mint: the coordinator owns
-  the ledger, so the worst a forked node can do is *lie about work delivered* to
-  inflate its own earnings. That is mitigated by signatures (no impersonation) +
-  rate limits (bounded volume) + — once wired — spot-checks/redundancy that catch
-  output fraud, plus tier-verification that catches capacity lies. Item #1 above is
-  what makes this fully airtight; until it lands, treat earned credits as
-  provisional.
+  the ledger and credits *only* from its own observed token count for jobs it
+  dispatched and verified (items #1/#2/#6), so a forked node can't self-report
+  earnings on any path. The residual risk is *output fraud* — a node returning
+  garbage tokens it never really computed — bounded by signatures (no
+  impersonation) + rate limits + tier-verification (catches capacity lies), and
+  fully closed only by spot-checks/redundancy that catch bad output (on the
+  release path). Earned credits are no longer provisional against the
+  self-reporting attack that used to make them so.
 - **Modifying the coordinator** only matters in the *federated* model. In the
   current seed model, a rogue coordinator's credits aren't honored anywhere else.
   In the federated model this is item #3 — the open research problem, not a bug to
   patch.
 
-**Bottom line:** run by a trusted operator (the seed), the credit system is sound
-against client/node tampering *except* for unverified earnings (#1/#2), which are
-fixable with existing machinery. True open decentralization (#3) needs a
+**Bottom line:** run by a trusted operator (the seed), the credit system is now
+sound against client/node tampering on every crediting path — the two remaining
+credit-integrity holes (self-reported earnings #1/#2 and the settlement-record
+self-mint #6) are closed, and account takeover via key rotation (#7) is gated.
+The residual is *output-quality* fraud (mitigable with spot-checks/redundancy, on
+the release path) and true open decentralization (#3), which needs a
 consensus/staking/proof design that does not yet exist here. A third-party
 security review of the credit, attestation, and settlement paths is on the
 release path.

@@ -76,10 +76,16 @@ struct TVRegionDetailView: View {
                 .padding(.horizontal, 40)
                 .padding(.top, 30)
 
+                // driftEnabled: false — tvOS is a 10-foot ambient display, not a
+                // touch surface; the iOS-side "gently alive" force-directed drift
+                // (added in a later, iOS-scoped pass) is constant motion that
+                // hasn't been verified on-device here, same reasoning as Fix 6
+                // below for not rippling untested visual changes into tvOS.
                 NetworkGraphView(nodes: nodes,
                                  podId: pod.podId,
                                  region: pod.regionHint,
-                                 selected: $selectedNode)
+                                 selected: $selectedNode,
+                                 driftEnabled: false)
                     .frame(maxHeight: 420)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
                     .padding(.horizontal, 40)
@@ -339,12 +345,19 @@ struct TVHealthBadge: View {
 //          green, small-tier GB values dim.
 //   Fix 7  Try-the-mesh placeholder tab with a v2 TODO.
 //
+// Resolved by a later, iOS-scoped pass (rippled into tvOS as a pure
+// improvement — no tvOS-specific work needed):
+//   Fix 6  Graph label overlap was fixed directly in the SHARED
+//          NetworkGraphView (radial-outward label placement + de-densifying on
+//          crowded outer rings). That same pass also added a force-directed
+//          "drift" animation to the graph, which IS gated off here
+//          (driftEnabled: false, see the call site above) since constant
+//          motion is a bigger, unverified-on-device behavioral change than a
+//          static label fix.
+//
 // Deferred — require a real Apple TV to verify, do not ship blind:
 //   Fix 3b Focus routing into the node list (Siri Remote down-swipe). List is
 //          focusable by default; confirm on device before relying on it.
-//   Fix 6  Graph label overlap lives in the SHARED NetworkGraphView; changing it
-//          would also alter the iOS app, which this pass must not touch. Do the
-//          abbreviate-labels change behind a platform flag in a tvOS-scoped pass.
 //   Fix 8  Idle auto-rotate between pods needs reliable Siri-Remote interaction
 //          detection (no UIApplication on tvOS) so rotation never fights the
 //          user; unsafe to enable without on-device testing.

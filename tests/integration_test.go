@@ -1551,4 +1551,51 @@ func TestIntegrationAdminPanelAuthAndTreasuryFlow(t *testing.T) {
 	if status, _ := doRequest(t, "DELETE", coordURL+"/nodes/nonexistent-node", nil); status != http.StatusUnauthorized {
 		t.Fatalf("DELETE /nodes/{id} with no credential = %d, want 401", status)
 	}
+
+	// GET /admin/deployments: same admin gate as every other /admin/* read,
+	// and 404 (not 200 with empty data) when --deployment-history-path was
+	// never set on this coordinator — this instance didn't pass it.
+	if status, _ := doRequest(t, "GET", coordURL+"/admin/deployments", authHeader); status != http.StatusNotFound {
+		t.Errorf("GET /admin/deployments with no --deployment-history-path configured = %d, want 404", status)
+	}
+	if status, _ := doRequest(t, "GET", coordURL+"/admin/deployments", nil); status != http.StatusUnauthorized {
+		t.Errorf("GET /admin/deployments with no credential = %d, want 401", status)
+	}
+}
+
+// TestIntegrationAdminDeploymentsEndpoint drives GET /admin/deployments
+// against a coordinator that DOES have --deployment-history-path configured,
+// proving the read-only view actually surfaces what `oim deploy` (see
+// internal/deploytool) writes on the host — the dashboard admin panel's
+// Deployments tab reads through this exact path.
+func TestIntegrationAdminDeploymentsEndpoint(t *testing.T) {
+	historyPath := filepath.Join(t.TempDir(), "deployments.json")
+	historyJSON := `{"records":[{"timestamp":"2026-07-01T00:00:00Z","action":"deploy","git_commit":"abc123","image_tag":"mlxmesh-abc123-20260701-000000","component":"all","deployed_by":"test@ci","healthy_after":true}]}`
+	if err := os.WriteFile(historyPath, []byte(historyJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	coordPort := freePort(t)
+	coordURL := fmt.Sprintf("http://127.0.0.1:%d", coordPort)
+	startProc(t, nil, bin.coordinator,
+		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest-deploy", "--region=us",
+		"--api-key=static-secret",
+		fmt.Sprintf("--deployment-history-path=%s", historyPath))
+	waitHealthy(t, coordURL+"/health")
+
+	status, resp := doRequest(t, "GET", coordURL+"/admin/deployments", map[string]string{"Authorization": "Bearer static-secret"})
+	if status != http.StatusOK {
+		t.Fatalf("GET /admin/deployments = %d: %v", status, resp)
+	}
+	records, _ := resp["records"].([]any)
+	if len(records) != 1 {
+		t.Fatalf("expected exactly 1 deployment record, got %+v", resp)
+	}
+	first, _ := records[0].(map[string]any)
+	if tag, _ := first["image_tag"].(string); tag != "mlxmesh-abc123-20260701-000000" {
+		t.Errorf("image_tag = %q, want mlxmesh-abc123-20260701-000000", tag)
+	}
+	if healthy, ok := first["healthy_after"].(bool); !ok || !healthy {
+		t.Errorf("healthy_after = %v, want true", first["healthy_after"])
+	}
 }
