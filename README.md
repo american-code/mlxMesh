@@ -4,6 +4,8 @@ A distributed inference protocol that turns geographically-spread machines into 
 
 **Brand:** MeshAI &nbsp;|&nbsp; **Protocol:** Open Inference Mesh &nbsp;|&nbsp; **CLI:** `oim`
 
+> **Honest positioning:** mlxMesh doesn't compete with OpenAI or Anthropic on interactive latency or frontier-model capability. It competes on **background and batch workloads** — the jobs that run overnight, that don't need a $44M/MW data center, and that represent the majority of real production AI usage by volume. No per-token cost to the operator. No data leaving infrastructure you control. No single company in the trust chain.
+
 ---
 
 ## What it is
