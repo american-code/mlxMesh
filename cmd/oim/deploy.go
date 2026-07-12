@@ -265,7 +265,7 @@ func deployPushCmd() *cobra.Command {
 			fmt.Printf("Deploying commit %s as image tag %s (component=%s) to %s\n", commit, tag, component, hostLabel(host))
 
 			// 1. sync source
-			rsyncArgs := deploytool.RsyncPushArgs(sourceDir, host, remoteDir)
+			rsyncArgs := deploytool.RsyncPushArgs(sourceDir, host, remoteDir, sshKey)
 			if dryRun || host == "" {
 				fmt.Printf("[dry-run] rsync %s\n", strings.Join(rsyncArgs, " "))
 			} else {

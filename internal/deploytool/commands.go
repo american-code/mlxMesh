@@ -25,10 +25,14 @@ import (
 // name) for syncing source to the deploy target — byte-for-byte the same
 // include/exclude list RUNBOOK.md's "Deploy a new version" step 1 documents,
 // so this tool syncs exactly what an operator following the runbook by hand
-// would sync, nothing more or less.
-func RsyncPushArgs(sourceDir, sshHost, remoteDir string) []string {
-	return []string{
-		"-az",
+// would sync, nothing more or less. sshKey may be empty (rsync uses ssh's
+// default key resolution).
+func RsyncPushArgs(sourceDir, sshHost, remoteDir, sshKey string) []string {
+	args := []string{"-az"}
+	if sshKey != "" {
+		args = append(args, "-e", "ssh -i "+sshKey+" -o StrictHostKeyChecking=no")
+	}
+	args = append(args,
 		"--include=go.mod",
 		"--include=go.sum",
 		"--include=Dockerfile",
@@ -36,9 +40,10 @@ func RsyncPushArgs(sourceDir, sshHost, remoteDir string) []string {
 		"--include=internal/***",
 		"--include=tools/***",
 		"--exclude=*",
-		sourceDir + "/",
-		sshHost + ":" + remoteDir + "/",
-	}
+		sourceDir+"/",
+		sshHost+":"+remoteDir+"/",
+	)
+	return args
 }
 
 // RemoteBuildCommand is the on-box `docker build` step (RUNBOOK step 3),

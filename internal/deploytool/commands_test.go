@@ -7,7 +7,7 @@ import (
 )
 
 func TestRsyncPushArgs_MatchesRunbookIncludeList(t *testing.T) {
-	args := RsyncPushArgs("/home/dev/mesh", "ec2-user@1.2.3.4", "/home/ec2-user/mlxmesh-src")
+	args := RsyncPushArgs("/home/dev/mesh", "ec2-user@1.2.3.4", "/home/ec2-user/mlxmesh-src", "")
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
 		"--include=go.mod", "--include=go.sum", "--include=Dockerfile",
