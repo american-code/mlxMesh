@@ -97,7 +97,12 @@ struct AccountView: View {
     @State private var error: String?
     @State private var claiming = false
     @State private var claimMsg: String?
+    // Pinned on view appear so a topology refresh (which may reorder store.pods)
+    // doesn't silently switch balance fetches to a different coordinator mid-session.
+    @State private var pinnedCoordinatorURL: String?
 
+    // Live coordinator for UI disabled-state checks and WalletSection pass-through;
+    // balance/grant fetches use pinnedCoordinatorURL instead.
     private var coordinatorURL: String? { store.pods.first?.coordinatorEndpoint }
 
     // The identity credits key on: the wallet account address when a wallet
@@ -189,11 +194,14 @@ struct AccountView: View {
             }
         }
         .navigationTitle("Account")
-        .task { await loadBalance() }
+        .task {
+            pinnedCoordinatorURL = coordinatorURL
+            await loadBalance()
+        }
     }
 
     private func loadBalance() async {
-        guard let url = coordinatorURL else { return }
+        guard let url = pinnedCoordinatorURL ?? coordinatorURL else { return }
         loading = true
         error = nil
         defer { loading = false }
@@ -207,7 +215,7 @@ struct AccountView: View {
     }
 
     private func claimGrant() async {
-        guard let url = coordinatorURL else { return }
+        guard let url = pinnedCoordinatorURL ?? coordinatorURL else { return }
         claiming = true
         claimMsg = "Solving proof-of-work…"
         defer { claiming = false }
