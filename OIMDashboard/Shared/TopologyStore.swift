@@ -67,7 +67,7 @@ final class TopologyStore {
                     }
                 }
                 for await (podId, response) in group {
-                    nodesByPod[podId] = response?.nodes ?? []
+                    nodesByPod[podId] = (response?.nodes ?? []).filter { !$0.clusterStandby }
                     metricsByPod[podId] = response?.metrics
                     coordinationByPod[podId] = response?.coordinationNodes ?? []
                 }

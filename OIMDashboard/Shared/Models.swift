@@ -23,6 +23,11 @@ struct NodeSnapshot: Codable, Identifiable, Hashable {
     // Decorative/seed capacity, not a real operator's hardware — absent/false
     // for genuine contributor nodes. See pickDemoModel in TryMeshView.swift.
     let simulated: Bool?
+    // True for the duplicate registration of a physical Exo ring that the
+    // coordinator already represents via another node with the same
+    // ClusterSignature. Should be hidden from all UI — only the primary
+    // registration (standby=false) is displayed.
+    let clusterStandby: Bool
 
     var id: String { nodeId }
 
@@ -62,6 +67,7 @@ struct NodeSnapshot: Codable, Identifiable, Hashable {
         lastSeenAt = try c.decode(String.self, forKey: .lastSeenAt)
         inFlightJobs = try c.decode(Int.self, forKey: .inFlightJobs)
         simulated = try c.decodeIfPresent(Bool.self, forKey: .simulated)
+        clusterStandby = try c.decodeIfPresent(Bool.self, forKey: .clusterStandby) ?? false
     }
 }
 
