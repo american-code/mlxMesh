@@ -40,7 +40,7 @@ func AssembleManifest(
 		totalGB = opts.DeclaredMemoryGB
 	}
 
-	cluster, err := DetectClusterNode(ctx, exo)
+	cluster, err := DetectClusterNode(ctx, exo, nodeID)
 	if err != nil {
 		// Non-fatal: default to single-node
 		cluster = ClusterInfo{IsCluster: false, DeviceCount: 1}
@@ -249,7 +249,7 @@ func perDeviceReserveGB(deviceTotalGB float64) float64 {
 // self) or topology.peers (documented as EXCLUDING self, so +1 for self).
 // Getting this wrong either double-counts or under-counts devices, so the two
 // shapes are handled explicitly rather than treated as interchangeable.
-func DetectClusterNode(ctx context.Context, exo *exoadapter.Client) (ClusterInfo, error) {
+func DetectClusterNode(ctx context.Context, exo *exoadapter.Client, selfID string) (ClusterInfo, error) {
 	solo := ClusterInfo{IsCluster: false, DeviceCount: 1}
 
 	state, err := exo.GetState(ctx)
@@ -265,9 +265,10 @@ func DetectClusterNode(ctx context.Context, exo *exoadapter.Client) (ClusterInfo
 	if peers, _ := topology["peers"].([]any); len(peers) > 0 {
 		// peers excludes self — self's own device isn't identifiable from this
 		// list alone, so it's counted but not included in the chip/memory scan.
-		// No ClusterSignature here either: without self's ID, each member of
-		// the same ring would hash a DIFFERENT peer set, so a signature from
-		// this shape could never match across devices — worse than none.
+		// ClusterSignature: include selfID so every ring member hashes the same
+		// complete set {self, peer1, peer2, ...} regardless of which machine is
+		// asking. Without selfID (empty string) we skip the signature rather
+		// than produce a per-machine hash that could never match across devices.
 		for _, p := range peers {
 			if id, ok := p.(string); ok {
 				deviceIDs = append(deviceIDs, id)
@@ -276,6 +277,9 @@ func DetectClusterNode(ctx context.Context, exo *exoadapter.Client) (ClusterInfo
 		agg := aggregateClusterStats(state, deviceIDs)
 		agg.IsCluster = true
 		agg.DeviceCount = len(deviceIDs) + 1
+		if selfID != "" {
+			agg.ClusterSignature = clusterSignature(append(deviceIDs, selfID))
+		}
 		return agg, nil
 	}
 	if nodes, _ := topology["nodes"].([]any); len(nodes) > 0 {
