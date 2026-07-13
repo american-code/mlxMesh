@@ -90,14 +90,14 @@ struct NetworkGraphView: View {
 
         var animated: [AnimatedNode] = items.map { item in
             let seed = stableSeed(item.node.nodeId)
-            let freq1 = 0.35 + seed.0 * 0.25
-            let freq2 = 0.6 + seed.1 * 0.3
+            let freq1: Double = 0.35 + seed.0 * 0.25
+            let freq2: Double = 0.6 + seed.1 * 0.3
             let amp: CGFloat = 5 + CGFloat(seed.2) * 3
-            let dx = CGFloat(sin(now * freq1 + seed.0 * .pi * 2)) * amp
-                   + CGFloat(sin(now * freq2 + seed.1 * .pi * 2)) * amp * 0.35
-            let dy = CGFloat(cos(now * freq1 * 0.85 + seed.1 * .pi * 2)) * amp
-                   + CGFloat(cos(now * freq2 * 1.15 + seed.2 * .pi * 2)) * amp * 0.35
-            return AnimatedNode(base: item, x: item.x + dx, y: item.y + dy)
+            let dx1: CGFloat = CGFloat(sin(now * freq1 + seed.0 * .pi * 2)) * amp
+            let dx2: CGFloat = CGFloat(sin(now * freq2 + seed.1 * .pi * 2)) * amp * 0.35
+            let dy1: CGFloat = CGFloat(cos(now * freq1 * 0.85 + seed.1 * .pi * 2)) * amp
+            let dy2: CGFloat = CGFloat(cos(now * freq2 * 1.15 + seed.2 * .pi * 2)) * amp * 0.35
+            return AnimatedNode(base: item, x: item.x + dx1 + dx2, y: item.y + dy1 + dy2)
         }
 
         for _ in 0..<2 {
