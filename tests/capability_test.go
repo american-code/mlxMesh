@@ -78,7 +78,7 @@ func TestDetectClusterNodeSumsMemoryAcrossDevices(t *testing.T) {
 	srv := stateServer(t, realClusterState())
 	exo := exoadapter.New(srv.URL)
 
-	info, err := capability.DetectClusterNode(context.Background(), exo)
+	info, err := capability.DetectClusterNode(context.Background(), exo, "")
 	if err != nil {
 		t.Fatalf("DetectClusterNode: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestDetectClusterNodeChipFamiliesExcludeHostnames(t *testing.T) {
 	srv := stateServer(t, realClusterState())
 	exo := exoadapter.New(srv.URL)
 
-	info, err := capability.DetectClusterNode(context.Background(), exo)
+	info, err := capability.DetectClusterNode(context.Background(), exo, "")
 	if err != nil {
 		t.Fatalf("DetectClusterNode: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestDetectClusterNodeSingleDeviceIsNotACluster(t *testing.T) {
 	srv := stateServer(t, state)
 	exo := exoadapter.New(srv.URL)
 
-	info, err := capability.DetectClusterNode(context.Background(), exo)
+	info, err := capability.DetectClusterNode(context.Background(), exo, "")
 	if err != nil {
 		t.Fatalf("DetectClusterNode: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestDetectClusterNodePeersShapeExcludesSelfCorrectly(t *testing.T) {
 	srv := stateServer(t, state)
 	exo := exoadapter.New(srv.URL)
 
-	info, err := capability.DetectClusterNode(context.Background(), exo)
+	info, err := capability.DetectClusterNode(context.Background(), exo, "self-id")
 	if err != nil {
 		t.Fatalf("DetectClusterNode: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestDetectClusterNodeSignatureStableAcrossDeviceOrder(t *testing.T) {
 		state := realClusterState()
 		state["topology"] = map[string]any{"nodes": nodeOrder}
 		srv := stateServer(t, state)
-		info, err := capability.DetectClusterNode(context.Background(), exoadapter.New(srv.URL))
+		info, err := capability.DetectClusterNode(context.Background(), exoadapter.New(srv.URL), "")
 		if err != nil {
 			t.Fatalf("DetectClusterNode: %v", err)
 		}
@@ -206,23 +206,48 @@ func TestDetectClusterNodeSignatureStableAcrossDeviceOrder(t *testing.T) {
 	}
 }
 
-// TestDetectClusterNodePeersShapeHasNoSignature: the peers shape excludes
-// self, so each ring member would hash a DIFFERENT peer set — a signature
-// from this shape could never match across devices and would mis-key dedup.
-// It must stay empty.
-func TestDetectClusterNodePeersShapeHasNoSignature(t *testing.T) {
-	state := map[string]any{
-		"topology": map[string]any{
-			"peers": []any{"peer-a", "peer-b"},
-		},
-	}
-	srv := stateServer(t, state)
-	info, err := capability.DetectClusterNode(context.Background(), exoadapter.New(srv.URL))
+// TestDetectClusterNodePeersShapeSignatureMatchesAcrossDevices: the peers
+// shape excludes self, but now that selfID is passed in, both machines in a
+// 2-device ring must produce the SAME ClusterSignature — the coordinator's
+// dedup keys on this property to suppress the standby registration.
+// Machine A sees peers=[B], selfID=A → sorts to {A,B} → hash X
+// Machine B sees peers=[A], selfID=B → sorts to {A,B} → hash X  ✓
+// Without selfID (empty string) the signature is still left empty so
+// callers that genuinely don't know their own ID don't mis-key dedup.
+func TestDetectClusterNodePeersShapeSignatureMatchesAcrossDevices(t *testing.T) {
+	nodeA, nodeB := "06405abc", "c5fa90de"
+
+	stateA := map[string]any{"topology": map[string]any{"peers": []any{nodeB}}}
+	stateB := map[string]any{"topology": map[string]any{"peers": []any{nodeA}}}
+
+	srvA := stateServer(t, stateA)
+	srvB := stateServer(t, stateB)
+
+	infoA, err := capability.DetectClusterNode(context.Background(), exoadapter.New(srvA.URL), nodeA)
 	if err != nil {
-		t.Fatalf("DetectClusterNode: %v", err)
+		t.Fatalf("DetectClusterNode (A): %v", err)
 	}
-	if info.ClusterSignature != "" {
-		t.Errorf("peers shape must leave ClusterSignature empty (self-identity unknowable), got %q", info.ClusterSignature)
+	infoB, err := capability.DetectClusterNode(context.Background(), exoadapter.New(srvB.URL), nodeB)
+	if err != nil {
+		t.Fatalf("DetectClusterNode (B): %v", err)
+	}
+
+	if infoA.ClusterSignature == "" {
+		t.Fatal("machine A: expected non-empty ClusterSignature when selfID is provided")
+	}
+	if infoA.ClusterSignature != infoB.ClusterSignature {
+		t.Errorf("peers-shape signatures must match across ring members: A=%q B=%q",
+			infoA.ClusterSignature, infoB.ClusterSignature)
+	}
+
+	// Without selfID the signature must stay empty — callers that don't know
+	// their own ID should not produce a per-machine hash that mis-keys dedup.
+	infoNoSelf, err := capability.DetectClusterNode(context.Background(), exoadapter.New(srvA.URL), "")
+	if err != nil {
+		t.Fatalf("DetectClusterNode (no selfID): %v", err)
+	}
+	if infoNoSelf.ClusterSignature != "" {
+		t.Errorf("empty selfID must leave ClusterSignature empty, got %q", infoNoSelf.ClusterSignature)
 	}
 }
 
@@ -230,7 +255,7 @@ func TestDetectClusterNodeSafeContributableDefersToRoomierDevices(t *testing.T) 
 	srv := stateServer(t, realClusterState())
 	exo := exoadapter.New(srv.URL)
 
-	info, err := capability.DetectClusterNode(context.Background(), exo)
+	info, err := capability.DetectClusterNode(context.Background(), exo, "")
 	if err != nil {
 		t.Fatalf("DetectClusterNode: %v", err)
 	}
@@ -349,7 +374,7 @@ func TestDetectClusterNodeNoTopologyIsSolo(t *testing.T) {
 	srv := stateServer(t, map[string]any{"instances": map[string]any{}})
 	exo := exoadapter.New(srv.URL)
 
-	info, err := capability.DetectClusterNode(context.Background(), exo)
+	info, err := capability.DetectClusterNode(context.Background(), exo, "")
 	if err != nil {
 		t.Fatalf("DetectClusterNode: %v", err)
 	}

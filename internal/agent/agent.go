@@ -449,7 +449,7 @@ func buildJobServer(runner *jobrunner.Runner, exo *exoadapter.Client, capPct flo
 		var clusterDeviceCount int
 		var clusterChipFamilies []string
 		var safeContributableGB float64
-		if cluster, clusterErr := capability.DetectClusterNode(r.Context(), exo); clusterErr == nil && cluster.IsCluster && cluster.TotalMemGB > 0 {
+		if cluster, clusterErr := capability.DetectClusterNode(r.Context(), exo, nodeID); clusterErr == nil && cluster.IsCluster && cluster.TotalMemGB > 0 {
 			isCluster = true
 			clusterDeviceCount = cluster.DeviceCount
 			clusterChipFamilies = cluster.ChipFamilies
