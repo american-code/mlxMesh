@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mlxMesh Whitepaper — Distributed AI Inference on Apple Silicon</title>
+<meta name="description" content="A whitepaper on distributed inference infrastructure built on Apple Silicon unified memory. The case for a public, open-source mesh network for AI inference.">
+<link rel="icon" type="image/png" href="assets/favicon-32.png">
+<link rel="apple-touch-icon" href="assets/favicon-180.png">
+<style>
+:root {
+  --bg: #ffffff;
+  --bg-raised: #f6f8fa;
+  --border: #d0d7de;
+  --border-strong: #8c959f;
+  --text: #1f2328;
+  --text-dim: #57606a;
+  --blue: #0969da;
+  --blue-strong: #0550ae;
+  --green: #1a7f37;
+  --amber: #9a6700;
+  --accent: #0969da;
+  --nav-bg: rgba(255,255,255,0.92);
+  --code-bg: #f6f8fa;
+  --table-header: #f6f8fa;
+  --badge-done-bg: #dafbe1;
+  --badge-done-text: #1a7f37;
+  --badge-partial-bg: #fff8c5;
+  --badge-partial-text: #9a6700;
+  --badge-stub-bg: #ffd8d3;
+  --badge-stub-text: #82071e;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117;
+    --bg-raised: #161b22;
+    --border: #30363d;
+    --border-strong: #6e7681;
+    --text: #e6edf3;
+    --text-dim: #7d8590;
+    --blue: #58a6ff;
+    --blue-strong: #79c0ff;
+    --green: #3fb950;
+    --amber: #d29922;
+    --accent: #58a6ff;
+    --nav-bg: rgba(13,17,23,0.92);
+    --code-bg: #161b22;
+    --table-header: #161b22;
+    --badge-done-bg: rgba(63,185,80,0.15);
+    --badge-done-text: #3fb950;
+    --badge-partial-bg: rgba(210,153,34,0.15);
+    --badge-partial-text: #d29922;
+    --badge-stub-bg: rgba(248,81,73,0.15);
+    --badge-stub-text: #f85149;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --bg-raised: #f6f8fa; --border: #d0d7de; --border-strong: #8c959f;
+  --text: #1f2328; --text-dim: #57606a; --blue: #0969da; --blue-strong: #0550ae;
+  --accent: #0969da; --nav-bg: rgba(255,255,255,0.92); --code-bg: #f6f8fa;
+  --table-header: #f6f8fa; --badge-done-bg: #dafbe1; --badge-done-text: #1a7f37;
+  --badge-partial-bg: #fff8c5; --badge-partial-text: #9a6700;
+  --badge-stub-bg: #ffd8d3; --badge-stub-text: #82071e;
+}
+:root[data-theme="dark"] {
+  --bg: #0d1117; --bg-raised: #161b22; --border: #30363d; --border-strong: #6e7681;
+  --text: #e6edf3; --text-dim: #7d8590; --blue: #58a6ff; --blue-strong: #79c0ff;
+  --accent: #58a6ff; --nav-bg: rgba(13,17,23,0.92); --code-bg: #161b22;
+  --table-header: #161b22; --badge-done-bg: rgba(63,185,80,0.15); --badge-done-text: #3fb950;
+  --badge-partial-bg: rgba(210,153,34,0.15); --badge-partial-text: #d29922;
+  --badge-stub-bg: rgba(248,81,73,0.15); --badge-stub-text: #f85149;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.nav {
+  position: sticky; top: 0; z-index: 10;
+  background: var(--nav-bg);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+.nav-inner {
+  max-width: 860px; margin: 0 auto; padding: 14px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.brand {
+  display: flex; align-items: center; gap: 8px;
+  font-weight: 700; font-size: 16px; color: var(--text);
+  text-decoration: none;
+}
+.brand img { border-radius: 5px; }
+.nav-back { font-size: 13px; color: var(--text-dim); }
+.nav-back:hover { color: var(--text); text-decoration: none; }
+
+.doc-wrap {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 56px 24px 80px;
+}
+.doc-eyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 14px;
+}
+h1.doc-title {
+  font-size: 34px;
+  font-weight: 800;
+  line-height: 1.2;
+  margin: 0 0 10px;
+  letter-spacing: -0.02em;
+}
+.doc-subtitle {
+  font-size: 17px;
+  color: var(--text-dim);
+  margin: 0 0 6px;
+}
+.doc-meta {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin: 0 0 40px;
+  padding-bottom: 32px;
+  border-bottom: 1px solid var(--border);
+}
+h2 {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 52px 0 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  letter-spacing: -0.01em;
+}
+h2:first-of-type { margin-top: 32px; }
+h3 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 32px 0 10px;
+  color: var(--text);
+}
+p { margin: 0 0 18px; }
+ul, ol { margin: 0 0 18px; padding-left: 28px; }
+li { margin-bottom: 6px; }
+strong { font-weight: 600; }
+em { font-style: italic; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  margin: 24px 0;
+  overflow-x: auto;
+  display: block;
+}
+th {
+  background: var(--table-header);
+  text-align: left;
+  padding: 10px 14px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+td {
+  padding: 9px 14px;
+  border: 1px solid var(--border);
+  vertical-align: top;
+}
+tr:nth-child(even) td { background: var(--bg-raised); }
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.badge-done { background: var(--badge-done-bg); color: var(--badge-done-text); }
+.badge-partial { background: var(--badge-partial-bg); color: var(--badge-partial-text); }
+.badge-stub { background: var(--badge-stub-bg); color: var(--badge-stub-text); }
+
+blockquote {
+  margin: 24px 0;
+  padding: 14px 20px;
+  border-left: 3px solid var(--accent);
+  background: var(--bg-raised);
+  border-radius: 0 8px 8px 0;
+  font-style: italic;
+  color: var(--text-dim);
+}
+.footnote {
+  margin-top: 56px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+.diff-list { list-style: none; padding: 0; counter-reset: diff; }
+.diff-list li {
+  counter-increment: diff;
+  padding: 14px 14px 14px 48px;
+  position: relative;
+  margin-bottom: 12px;
+  background: var(--bg-raised);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.diff-list li::before {
+  content: counter(diff);
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  font-weight: 700;
+  color: var(--accent);
+  font-size: 14px;
+  width: 20px;
+}
+.roadmap-section { margin-bottom: 28px; }
+.roadmap-section h3 { margin-top: 20px; }
+</style>
+</head>
+<body>
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="/" class="brand">
+      <img src="assets/favicon-32.png" alt="" width="22" height="22">
+      <span>mlxMesh</span>
+    </a>
+    <a href="/" class="nav-back">← Back to mlxmesh.net</a>
+  </div>
+</nav>
+
+<div class="doc-wrap">
+  <div class="doc-eyebrow">Whitepaper</div>
+  <h1 class="doc-title">mlxMesh: A Public, Open-Source, Community-Driven Mesh Network for AI Inference</h1>
+  <p class="doc-subtitle">Distributed Inference Infrastructure Built on Apple Silicon Unified Memory</p>
+  <p class="doc-meta">mlxmesh.net &nbsp;·&nbsp; Published 2026 &nbsp;·&nbsp; Data current as of mid-2026</p>
+
+  <h2>Executive Summary</h2>
+  <p>The AI industry is capitalizing infrastructure for a narrow slice of its own usage. Hundreds of billions of dollars are being committed to hyperscale data center buildout — much of it debt-financed, much of it behind schedule, and much of it sized for a real-time, frontier-model interaction pattern that represents a minority of how AI is actually being used in production today. Meanwhile, a large and growing share of real-world AI workloads are asynchronous, latency-tolerant, and well within the capability of small, purpose-fit models — the kind of jobs that don't need a $44-million-per-megawatt data center to run.</p>
+  <p>At the same time, millions of Apple Silicon Macs — machines with genuinely fast unified memory architecture — sit idle overnight, on desks, in labs, and in closets, contributing nothing to this equation.</p>
+  <p><strong>mlxMesh</strong> is a public, open-source mesh network for AI inference, purpose-built for Apple's M-series unified memory architecture and built on the foundation laid by <a href="https://github.com/exo-explore/exo" target="_blank" rel="noopener">Exo</a>. It reframes the infrastructure question: instead of asking "how do we build more centralized compute," it asks "how do we make the compute that already exists legible, poolable, and trustworthy enough to use." This paper lays out the case for that approach, the architecture behind it, how it compares to the existing decentralized-compute landscape, and why the specific combination of technologies mlxMesh uses — division-order-style contribution accounting, Ed25519 wallet identity, MQTT-based backpressure, true mesh networking, MLX-native unified memory execution, Exo clustering, end-to-end encryption, and iOS devices as a secure coordination layer — represents a materially different approach than the compute marketplaces that came before it.</p>
+
+  <h2>1. The Problem: Concentration &amp; Waste</h2>
+
+  <h3>1.1 The capital math doesn't close</h3>
+  <p>Building a modern AI data center costs roughly $44 million per megawatt — about $30 million in servers and GPUs plus $14 million or more in construction — and a single facility can run hundreds of megawatts, meaning total costs reach into the billions before a single paying customer signs on. Much of this is now underwritten by debt: $178.5 billion in data center credit deals closed in 2025 alone, with most of that debt rated junk grade.</p>
+  <p>Despite headline claims of gigawatts of capacity coming online, real buildout is lagging badly behind announcements. Independent tracking suggests only about 3GW of new IT load came online in the US in 2025, against roughly 5GW under construction worldwide — a fraction of what's been publicly promised. Even simple facilities move slowly: a 1MW edge data center in Raleigh, NC — a fraction the size of the gigawatt campuses now being pitched — took eleven months to build, before accounting for land acquisition, permitting, and other delays.</p>
+  <p>The revenue side compounds the risk. Much of the customer base financing this debt-fueled buildout consists of AI startups that are themselves unprofitable, creating a chain where lenders' repayment depends on companies that can't yet cover their own costs. If announced capacity fails to materialize at the promised scale, hundreds of billions of dollars — much of it channeled through private credit backed by pensions, retirement funds, and insurers — will have been misallocated.</p>
+
+  <h3>1.2 The energy and environmental cost</h3>
+  <p>The International Energy Agency (IEA) provides the clearest picture available of the physical footprint behind this buildout:</p>
+  <ul>
+    <li>Global data center electricity consumption reached approximately 415 TWh in 2024 (about 1.5% of world electricity use), and has grown at roughly 12% annually since 2017 — more than four times faster than total global electricity demand.</li>
+    <li>The IEA's Base Case projects this more than doubling to approximately 945 TWh by 2030, and approximately 1,200 TWh by 2035.</li>
+    <li>AI-focused data center electricity demand specifically surged 50% in 2025 alone.</li>
+    <li>The United States hosts 45% of global data center electricity consumption. By 2030, the US is projected to consume more electricity for data centers than for aluminum, steel, cement, chemicals, and all other energy-intensive manufacturing combined.</li>
+    <li>Natural gas and coal are expected to supply over 40% of the <em>additional</em> electricity demand from data centers through 2030 — meaning a meaningful share of this growth is not being met by clean generation.</li>
+    <li>Critically: over 80% of AI compute today is inference, not training. The energy and capital story isn't primarily about training frontier models — it's about the cumulative cost of serving day-to-day queries, a large share of which don't require frontier-scale infrastructure at all (see Section 2).</li>
+  </ul>
+
+  <h3>1.3 Concentration as a fragility risk, not just a cost risk</h3>
+  <p>There is a second, less-discussed cost to centralization: dependency risk at the level of individual human capability. Developers increasingly work in a mode where an LLM generates syntax while the developer supervises logic, architecture, and intent — a legitimate and often more productive way to work. But this creates a quiet single point of failure. When a centralized coding assistant goes down, an affected developer isn't merely inconvenienced — they may be working in a language, framework, or codebase pattern they don't have deep independent fluency in, generated by a tool that is now unavailable. They have the map but not the muscle memory. This is a new category of infrastructure risk: not "the app doesn't work," but "a human capability was quietly outsourced to a service that just went offline." A distributed mesh with local and regional inference doesn't just add redundancy for cost reasons — it's a continuity-of-capability argument. If inference can fail over to a local or regional pod instead of a single hyperscale provider, the person relying on it never hits that cliff.</p>
+
+  <h3>1.4 The "Beat China" Framing: Strategic Necessity or Investment Narrative?</h3>
+  <p>A common justification for the pace and scale of US AI infrastructure spending is that it is a necessary response to strategic competition with China. The data suggests this framing overstates the closeness of the race, even as it understates a different, more grounded set of concerns.</p>
+  <p><strong>By capacity, the US is not in a close race.</strong> US technology companies' capital expenditure on AI infrastructure surpassed $400 billion in 2025, compared to $63 billion in China, and is projected to exceed $800 billion in 2026 — roughly 12–13 times China's spend. US data center capacity stood at over 50 GW at the end of 2025, versus approximately 31 GW in China and 12 GW in the EU. One industry estimate puts the US's AI-optimized computing power (measured in H100-equivalent GPUs) at roughly 8 times the size of China's. By nearly every infrastructure metric, this is a decisive US lead, not a close contest.</p>
+  <p><strong>China's own strategy does not attempt to match this scale.</strong> China's five-year plan commits approximately $295 billion over five years to a state-led computing buildout — a fraction of what a single year of US hyperscaler capex now represents. China's approach instead leans on cheap domestic electricity, state-directed siting of data centers in its western provinces, and increasing reliance on domestic chips (Huawei, Cambricon, SMIC) in response to US export controls on advanced Nvidia hardware. This is a strategy built around the inputs China already controls, not an attempt to outbuild US hyperscale capacity gigawatt for gigawatt.</p>
+  <p><strong>The race framing itself has on-the-record critics.</strong> Some policy researchers have argued that the "race with China" narrative functions in part as a pretext to justify deregulation and favorable conditions for AI companies, independent of how close the underlying competition actually is. Separately, market analysts — including NYU's Scott Galloway — have compared the current pace of US capex to prior technology overinvestment cycles, warning that the industry may be building five years' worth of infrastructure capacity into a two-year window, a pattern that has historically preceded overcapacity and valuation corrections.</p>
+  <p>The more defensible synthesis: the US is funding an infrastructure race against a competitor that, by its own stated strategy, is not attempting to match that scale. A distributed, open-source mesh sidesteps this dynamic by design. It does not require winning a capital-expenditure arms race to be useful, and because it is open-source from inception, there is no proprietary advantage at stake to lose in the first place.</p>
+
+  <h2>2. The Workload Reality Gap</h2>
+  <p>Public discourse about AI value — and nearly all current infrastructure investment — is implicitly modeled around real-time, frontier-model, chat-style interaction. That is real value. But it is a minority of what production AI usage actually looks like, or will look like as adoption matures.</p>
+  <p>A large and growing share of industrial AI usage is background, asynchronous, and does not require frontier capability. A representative example: a scheduled job that polls SQL Server telemetry every few minutes and passes the metrics to a small model (e.g., Qwen 3B) for interpretation — flagging anomalies, recommending query optimizations, or suggesting execution plan changes. This pattern generalizes across log triage, anomaly scoring, batch summarization, and alert enrichment: anything that runs on a schedule rather than in a chat window. None of this needs GPT/Claude/Gemini-class frontier latency or scale. It needs "good enough," cheap, and reliably available — exactly the profile a mesh of distributed, smaller, specialized models is well-suited to serve.</p>
+
+  <h3>2.1 The efficiency analogy: EVs and e-bikes</h3>
+  <p>This mismatch has a clean physical analogy. An EV under good conditions runs about 250–300 Wh per mile. Under real-world stress — cold weather, highway speeds, active climate control — that can climb to 500–600 Wh per mile or more; real-world owner data confirms Wh/mi commonly rises from a 250 Wh/mi baseline at 60mph to 325+ Wh/mi at 80mph, with another 25–50 Wh/mi added in extreme heat or cold. An e-bike, by contrast, covers 30–50 miles on a single kWh, largely independent of weather, because it isn't fighting the aerodynamic drag, rolling resistance, and climate-control load of a multi-thousand-pound vehicle. On a hard day, that same 1 kWh moves an EV roughly 1.7–2 miles, while it moves an e-bike rider 40 miles — a 20x-plus efficiency gap between two vehicles solving very different problems with the same unit of energy.</p>
+  <p>The current AI infrastructure build-out is, in effect, issuing everyone a semi truck because <em>some</em> trips genuinely need one — while most trips could run on a bicycle, and the truck would still be there for genuine freight work. A frontier model in a hyperscale data center is the semi truck: necessary for novel reasoning, huge context windows, and genuinely heavy multi-modal work. A small model on a cron job reading server telemetry is the e-bike: right-sized for a narrow, repeated, latency-tolerant job. The industry is currently capitalizing infrastructure for the semi-truck use case while a large share of real usage is bicycle-shaped.</p>
+
+  <h3>2.2 What the research says about AI's actual labor impact</h3>
+  <p>This workload mismatch pairs with a broader and more contested question: how much of the AI value proposition is genuine displacement versus genuine augmentation? The research picture here is mixed and worth presenting honestly rather than cherry-picked.</p>
+  <p>MIT Sloan's <em>"The EPOCH of AI: Human-Machine Complementarities at Work"</em> (March 2025) distinguishes automation (task transfer to machines) from augmentation (AI enhancing human productivity), and argues many tasks benefit more from the latter. The research found that human-intensive tasks not only persisted but grew in frequency between 2016 and 2024, and that newly created job tasks in 2024 showed higher levels of human-intensive characteristics than the tasks that disappeared that year.</p>
+  <p>A related MIT CSAIL study on economic — not just technical — limits to automation found that even where AI is technically capable of a task, it is often not economically viable to deploy: only about 23% of wages tied to vision-based tasks were found to be cost-effective to automate with AI at then-current costs, meaning capability and adoption follow different curves.</p>
+  <p>This is not the whole picture, and a credible whitepaper should say so. A more recent Stanford analysis (cited via MIT Technology Review, May 2026) found a 16% decline in entry-level jobs in AI-exposed occupations after controlling for other factors, and a separate MIT labor-exposure index estimated that current AI systems could technically already replace roughly 11.7% of the US workforce by task-mapping — though the authors caution this is a capability snapshot, not a prediction of actual job loss. The honest synthesis: the picture is contested, not settled, and the "right tool for the right job" framing (Section 2.1) is a better foundation for infrastructure planning than either "AI replaces everything" or "AI replaces nothing."</p>
+
+  <h2>3. The Idle Compute Opportunity</h2>
+  <p>Set against this backdrop of overbuilt, debt-financed, energy-hungry centralized infrastructure is a simple and underexploited fact: a very large share of existing consumer and prosumer compute sits idle. One widely cited estimate puts global GPU utilization at under 60% at any given moment — meaning over 40% of global GPU capacity is idle at any point in time, spread across gaming rigs, creative workstations, and leftover mining-era hardware.</p>
+  <p>Apple Silicon is a particularly strong candidate for this untapped pool, for reasons that go beyond simple idle-cycle harvesting:</p>
+  <ul>
+    <li><strong>Unified memory architecture.</strong> M-series chips share a single high-bandwidth memory pool between CPU and GPU, which is directly relevant to running large language models efficiently without the PCIe bottleneck that constrains traditional discrete-GPU setups.</li>
+    <li><strong>Scale of the installed base.</strong> Millions of M-series Macs are in active use worldwide, and the overwhelming majority sit fully idle overnight — a predictable, recurring window of unused unified-memory-backed compute that no current decentralized compute network is architected to target specifically.</li>
+    <li><strong>Efficiency per watt.</strong> Apple Silicon's efficiency-per-watt characteristics make it a legitimate alternative to traditional GPU inference for a meaningful class of workloads, particularly the asynchronous, moderate-scale jobs described in Section 2.</li>
+  </ul>
+  <p>mlxMesh's core wager is that this idle, high-bandwidth-memory hardware fleet — activated overnight, coordinated intelligently, and paid fairly — is a better foundation for the <em>inference layer</em> of AI infrastructure than another gigawatt-scale data center campus.</p>
+
+  <h2>4. Prior Art &amp; Foundations</h2>
+  <p>mlxMesh does not start from zero. It builds directly on <a href="https://github.com/exo-explore/exo" target="_blank" rel="noopener">Exo</a>, which demonstrated that consumer Apple Silicon devices can be clustered to run models too large for any single machine, using peer-to-peer coordination rather than a centralized orchestrator. mlxMesh extends this foundation with WAN-scale mesh coordination, MoE expert-sharding, and a purpose-built incentive and identity layer, described in Section 5.</p>
+
+  <h3>4.1 Historical precedent: volunteer distributed computing</h3>
+  <p>The idea of pooling idle consumer hardware for meaningful compute is not new, and has a strong, decades-long track record:</p>
+  <ul>
+    <li><strong>SETI@home and Folding@home</strong>, both launched in 1999, pioneered large-scale volunteer distributed computing. Folding@home alone had over 700,000 volunteers contribute 2.43 exaFLOPs of compute to COVID-19 protein-folding research in a single month (April 2020).</li>
+    <li><strong>BOINC</strong> (Berkeley Open Infrastructure for Network Computing, founded 2002) became the standard open middleware for volunteer computing, at points combining over 41.5 petaFLOPs from more than 790,000 active computers.</li>
+    <li>Volunteer computing systems were, in fact, the first "supercomputers" to cross both the 1-petaFLOP and 1-exaFLOP thresholds — ahead of purpose-built HPC installations.</li>
+  </ul>
+  <p>This history matters for mlxMesh's credibility: pooling distributed consumer hardware for serious computational work is a proven model with a 25-year track record, not a speculative new idea.</p>
+
+  <h3>4.2 Academic precedent for distributed MoE</h3>
+  <p>More directly relevant to mlxMesh's architecture, recent academic work has explored the exact pattern of mixture-of-experts execution across decentralized, volunteer-style hardware:</p>
+  <ul>
+    <li><em>"Towards Crowdsourced Training of Large Neural Networks using Decentralized Mixture-of-Experts"</em> (the Learning@home line of research) directly explores MoE expert-sharding across volunteer and heterogeneous hardware, including the part-time-availability problem — contributors are not always online — which maps closely onto mlxMesh's pod/node hierarchy.</li>
+    <li><em>"Distributed Deep Learning in Open Collaborations"</em> provides a general framework for collaborative model execution across unreliable, geographically distributed consumer hardware.</li>
+  </ul>
+  <p>This gives mlxMesh's MoE expert-sharding approach a peer-reviewed academic foundation, not just an engineering hypothesis.</p>
+
+  <h2>5. mlxMesh Architecture</h2>
+  <p>mlxMesh combines several distinct technical layers into a single coherent system. Each layer solves a specific problem that, taken individually, exists in prior art — but the combination is what differentiates the architecture from every existing decentralized compute network (see Section 7).</p>
+
+  <h3>5.1 Three-layer hierarchy</h3>
+  <ul>
+    <li><strong>Global librarian directory</strong> — a top-level registry of regional pods, model availability, and network-wide routing metadata.</li>
+    <li><strong>Regional pod coordinators</strong> — mid-tier nodes responsible for coordinating a geographically or logically local cluster of node agents, handling job distribution and health monitoring within their pod.</li>
+    <li><strong>Node agents</strong> — the individual Apple Silicon devices contributing unified memory and compute to the mesh.</li>
+  </ul>
+  <p>This hierarchy avoids the two failure modes common to naive peer-to-peer designs: it doesn't require every node to know about every other node (which doesn't scale), and it doesn't rely on a single centralized coordinator (which reintroduces the single-point-of-failure problem this whole project exists to avoid).</p>
+
+  <h3>5.2 MLX-native execution on unified memory</h3>
+  <p>Node agents run inference natively against Apple's MLX framework, taking direct advantage of unified memory architecture rather than treating Apple Silicon as a generic accelerator. This is a deliberate scope narrowing rather than a limitation.</p>
+
+  <h3>5.3 Exo clustering as the substrate</h3>
+  <p>mlxMesh uses Exo's clustering approach as the substrate for coordinating multiple physical machines into a single logical inference target, extending it with WAN-aware routing rather than assuming all nodes are on the same local network.</p>
+
+  <h3>5.4 MoE expert-sharding for WAN inference</h3>
+  <p>Rather than requiring an entire model to reside on a single machine, mlxMesh shards mixture-of-experts models across nodes, routing individual inference requests to the specific experts needed rather than replicating full models everywhere. This is what allows the network to serve large models using hardware that individually could never hold the full model in memory, and it is grounded in the academic work described in Section 4.2.</p>
+
+  <h3>5.5 MQTT backpressure and mesh networking</h3>
+  <p>Node health, congestion, and availability are communicated across the mesh using MQTT-based backpressure signaling, allowing the network to make real-time routing decisions based on actual network conditions rather than static assumptions about node capacity. This is a structural difference from GPU rental marketplaces (Section 7), which isolate every job to a single host and have no mechanism for network-aware, multi-node request routing.</p>
+
+  <h3>5.6 iOS devices as a secure coordinator layer</h3>
+  <p>iOS devices, backed by Secure Enclave, serve as a trusted coordination and identity layer for the mesh — anchoring device identity and authorization in hardware-backed security rather than software-only credentials. This is paired with end-to-end encryption across the mesh, so that inference requests and responses traveling between nodes are not exposed to intermediate coordinators.</p>
+
+  <h3>5.7 Portable wallet identity — off-chain, no native token</h3>
+  <p>Each participating node is identified by an Ed25519 keypair functioning as a portable wallet identity, used both for authentication and as the basis for the settlement mechanism described in Section 6. This is a deliberate departure from the rest of the decentralized-compute field: mlxMesh does not issue a native token and does not settle contribution on-chain. Contribution and settlement are tracked on an off-chain ledger tied to each node's Ed25519 identity, avoiding the failure mode common to token-based compute networks, where network security and participant incentives end up funded by market speculation in the token itself rather than by the value of the compute actually being provided. Node identity also carries forward across sessions and devices as a portable credential, rather than being re-established per job the way a marketplace account typically is.</p>
+  <p>Additional trust mechanisms reinforce this identity layer: trust-on-first-use certificate pinning (the same model used by SSH) for node-to-node authentication after initial contact, and a Hashcash/Bitcoin-style proof-of-work requirement for bootstrap credit issuance, which raises the cost of Sybil attacks (an attacker creating many fake identities to claim disproportionate rewards) without requiring a token market to do it.</p>
+
+  <h3>5.8 Dual-lane routing</h3>
+  <p>mlxMesh routes requests through two distinct lanes rather than a single undifferentiated queue: a fast/interactive lane for latency-sensitive requests, and a background/batch lane for asynchronous, latency-tolerant jobs — the workload class described in Section 2. This lets the network serve both use cases from the same pool of nodes without one workload type degrading the other.</p>
+
+  <h3>5.9 Sensitivity tiers with hardware-gated access</h3>
+  <p>Not all inference requests carry the same sensitivity, and mlxMesh treats this as a routing input rather than an afterthought: requests can be tagged with a sensitivity tier, and higher-sensitivity tiers are gated to nodes that can attest to Secure Enclave-backed hardware security, rather than being routed to any available node in the mesh.</p>
+
+  <h2>6. Incentive &amp; Trust Model</h2>
+
+  <h3>6.1 Division-order-style contribution accounting</h3>
+  <p>mlxMesh's incentive layer borrows a structure from real-world revenue-interest accounting: the division order. In traditional industries where multiple parties hold a fractional interest in a single output (a common model in oil and gas royalty accounting, for example), a division order specifies exactly how proceeds from that shared output are split among contributors. mlxMesh applies the same logic to inference: when a single request is served by multiple nodes contributing different experts or pipeline stages, each contributing node's share of the resulting payment is calculated proportionally and auditable — not estimated, not flattened into a generic per-hour or per-token rate that ignores who actually did the work.</p>
+  <p>This is a meaningfully different incentive primitive than anything currently used in the decentralized compute space. Akash and Golem use straightforward marketplace or task-based billing tied to a single provider per job. Bittensor uses algorithmic reward distribution for subnet-level output quality, not a proportional accounting of multi-party contribution to a single output. None of them are designed for the case mlxMesh is built around: several physically distinct nodes jointly producing a single inference result.</p>
+
+  <h3>6.2 Addressing known trust gaps</h3>
+  <p>Earlier architectural work surfaced specific trust vulnerabilities common to naive decentralized compute designs: unauthenticated credit minting, self-reported enclave/security status, and in-memory-only deduplication that could be gamed. mlxMesh's design addresses these directly rather than assuming good-faith participation:</p>
+  <ul>
+    <li><strong>Hardware-backed identity</strong> (Sections 5.6 and 5.9) replaces self-reported security claims with Secure Enclave-anchored attestation, gating sensitive requests to nodes that can actually prove the hardware backing they claim.</li>
+    <li><strong>Proof-of-work bootstrap requirements</strong> (Section 5.7) raise the cost of Sybil identity creation without relying on a speculative token market to do it.</li>
+    <li><strong>Division-order accounting</strong> (Section 6.1) is tied to verifiable contribution against an off-chain ledger, not self-reported completion.</li>
+    <li><strong>End-to-end encryption</strong> prevents intermediate coordinators from tampering with or misattributing job results as they pass through the mesh.</li>
+  </ul>
+
+  <h2>7. Comparative Landscape</h2>
+  <p>The decentralized compute space — much of it blockchain-based — is more mature than it might appear, and mlxMesh should be positioned honestly against it rather than presented as having no competition. Notably, mlxMesh itself is not blockchain-based; it is included here as a decentralized compute network, not a token or crypto project.</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Capability</th>
+        <th>Akash</th>
+        <th>Vast.ai</th>
+        <th>Golem</th>
+        <th>Bittensor</th>
+        <th>Surplus Intelligence</th>
+        <th>mlxMesh</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>What it actually sells</td><td>Container leases on GPUs</td><td>Raw GPU instance rental</td><td>Task-split compute jobs</td><td>Incentivized ML outputs</td><td>Resold API credits (not hardware)</td><td>Coordinated inference across a live mesh</td></tr>
+      <tr><td>Unit of work</td><td>Whole GPU / container</td><td>Whole GPU instance</td><td>Subtask</td><td>Subnet-defined task</td><td>API call</td><td>Model-shard / expert-routed request</td></tr>
+      <tr><td>Hardware model</td><td>Heterogeneous, unvetted</td><td>Heterogeneous, reliability-scored</td><td>Heterogeneous</td><td>Heterogeneous, subnet-specific</td><td>N/A (software layer only)</td><td>Apple Silicon unified memory, MLX-native</td></tr>
+      <tr><td>Interconnect awareness</td><td>None — jobs run in isolation</td><td>None</td><td>Basic subtask splitting</td><td>None</td><td>None</td><td>MQTT backpressure + mesh networking, live network-aware</td></tr>
+      <tr><td>Cross-node model execution</td><td>No</td><td>No</td><td>Limited</td><td>No — separate miners per subnet</td><td>No</td><td>Yes — MoE expert-sharding across nodes for one request</td></tr>
+      <tr><td>Incentive layer</td><td>On-chain token (AKT), escrow</td><td>Fiat, per-second billing</td><td>Token (GLM), usage-based</td><td>Token, algorithmic quality reward</td><td>Fiat credits</td><td>Off-chain, division-order-style proportional, auditable settlement — no native token</td></tr>
+      <tr><td>Identity layer</td><td>Blockchain wallet</td><td>Platform account</td><td>Blockchain wallet</td><td>Blockchain wallet</td><td>Platform account</td><td>Ed25519 portable wallet identity + iOS Secure Enclave coordination</td></tr>
+      <tr><td>Security posture</td><td>Platform SOC2 only, not hosts</td><td>Platform SOC2 only, not hosts</td><td>Minimal</td><td>Minimal</td><td>Standard API auth</td><td>End-to-end encryption, hardware-anchored identity, PoW Sybil resistance</td></tr>
+      <tr><td>Target workload</td><td>Training + general containers</td><td>Training, fine-tuning, batch inference</td><td>General task computing</td><td>ML subnet competitions</td><td>API arbitrage</td><td>Inference-first, latency-tolerant, MoE-shardable</td></tr>
+    </tbody>
+  </table>
+
+  <p><strong>Where mlxMesh is genuinely differentiated:</strong></p>
+  <ol class="diff-list">
+    <li>Every marketplace above treats compute as a fungible commodity — a GPU is a GPU, rented whole, in isolation. mlxMesh treats the network itself as the product: live, mesh-aware routing that none of these platforms are architected to do, because they isolate every job to a single host.</li>
+    <li>None of the existing players have solved cross-node execution of a single model. Bittensor runs independent miners per subnet rather than splitting one model across nodes; Akash, Vast, and Golem rent whole machines and stop there. mlxMesh's MoE expert-sharding over Exo clustering is architecturally closer to the academic Learning@home line of research than to any commercial competitor.</li>
+    <li>The identity and security layer is a genuine gap in the field. Every platform above discloses, in some form, that platform-level certification doesn't extend to individual hosts. Anchoring identity in iOS Secure Enclave hardware, combined with end-to-end encryption at the mesh layer, is a materially stronger trust model.</li>
+    <li>Division-order accounting is a new incentive primitive for this space. It's designed specifically for proportional, auditable multi-party contribution to a single output — a case none of the existing token or billing models handle natively, because they were all designed around single-provider, single-job billing.</li>
+    <li>mlxMesh deliberately does not issue a native token. Every blockchain-based competitor above ties network security and participant incentives, at least in part, to a token whose market value can diverge sharply from the value of the compute actually being provided — a well-documented failure mode in the decentralized compute space. mlxMesh's off-chain ledger and Ed25519-based identity sidestep this entirely: contribution and payout are tied directly to verifiable work, not to token price.</li>
+  </ol>
+
+  <p><strong>An honest tradeoff worth stating directly:</strong> targeting Apple Silicon specifically is simultaneously mlxMesh's core technical differentiator (unified memory bandwidth advantages for MoE-style workloads) and its biggest adoption constraint relative to Akash, Vast.ai, and Golem, all of which are hardware-agnostic and already have large NVIDIA GPU fleets onboarded. This is a deliberate strategic bet, not an oversight: there are many millions of M-series Macs in the world, a large share of them sitting fully idle overnight, and none of the existing networks are built to address that specific pool.</p>
+  <p><strong>A note on frontier training vs. mesh inference:</strong> decentralized networks, including mlxMesh, are not positioned to replace frontier-scale training clusters — tightly-coupled training across 100,000+ top-tier GPUs has interconnect requirements that a WAN-based mesh cannot realistically meet. This sharpens rather than weakens mlxMesh's positioning: the target is the inference layer, and specifically the async, latency-tolerant workload class described in Section 2, not a head-on competition with hyperscale training infrastructure.</p>
+
+  <h2>8. Governance &amp; Community</h2>
+  <p>mlxMesh is built as open-source infrastructure from the outset, on the premise that a public compute mesh should be auditable by the people whose hardware and data pass through it.</p>
+
+  <h3>License &amp; stewardship</h3>
+  <p>The project is licensed under <strong>AGPL-3.0</strong>. Free use, modification, and distribution are permitted under those terms — network users (SaaS operators) get access to the source, and derivative works remain AGPL-3.0. Commercial use outside those terms (proprietary SaaS integration, closed-source products, or enterprise deployments without AGPL compliance) requires a separate commercial license. Contact <a href="mailto:jmelton@americancode.org">jmelton@americancode.org</a>.</p>
+  <p>During its early phase, the project operates under a BDFL (Benevolent Dictator For Life) governance model. The project maintainer is Jacob Melton at American Code (<a href="mailto:jmelton@americancode.org">jmelton@americancode.org</a>). This is the period where architectural decisions are made quickly and with full accountability — a model appropriate for a project that is still stabilizing its core protocol.</p>
+
+  <h3>Contributing</h3>
+  <p>The repository is publicly available at <a href="https://github.com/american-code/mlxMesh" target="_blank" rel="noopener">github.com/american-code/mlxMesh</a>. Bug reports, security disclosures, and pull requests are welcome. Security issues should be reported privately to <a href="mailto:jmelton@americancode.org">jmelton@americancode.org</a> rather than as public issues — see <a href="https://github.com/american-code/mlxMesh/blob/master/SECURITY.md" target="_blank" rel="noopener">SECURITY.md</a> for the full disclosure policy and verification instructions.</p>
+
+  <h3>Node participation</h3>
+  <p>Any Apple Silicon Mac running <a href="https://github.com/exo-explore/exo" target="_blank" rel="noopener">Exo</a> can join the mesh. Nodes connect outbound to the coordinator — no NAT traversal, no port forwarding, no firewall rules required:</p>
+  <pre style="background:var(--bg-raised);border:1px solid var(--border);border-radius:8px;padding:14px 18px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;overflow-x:auto;margin:14px 0;">oim node start --coordinator https://us.mlxmesh.net</pre>
+  <p>Nodes are independently operated. The project maintainer does not control individual node hardware, data, or earnings. Credits are tracked per Ed25519 node identity and earned proportionally to verified compute delivered.</p>
+
+  <h3>Governance evolution</h3>
+  <p>As the network grows and its economics stabilize, governance will evolve toward a more formally participatory model. The intent is that a public compute mesh should remain publicly governed — with the protocol itself serving as the authoritative layer rather than any single operator's word. The specific mechanism (a technical steering committee, an on-chain vote, a foundation structure, or something else) will be determined as the community of node operators and contributors grows large enough to make it meaningful rather than performative.</p>
+
+  <h2>9. Roadmap</h2>
+
+  <div class="roadmap-section">
+    <h3>Protocol core milestones</h3>
+    <table>
+      <thead>
+        <tr><th>#</th><th>Status</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>M1</td><td><span class="badge badge-done">Done</span></td><td>Node agent: manifest assembly, resource governor, bench, Ed25519 identity</td></tr>
+        <tr><td>M2</td><td><span class="badge badge-done">Done</span></td><td>Pod coordinator: registry, fast-lane router, background scheduler, job queue, rate limiting</td></tr>
+        <tr><td>M3</td><td><span class="badge badge-done">Done</span></td><td>Spot-check verification, tier-claim validation, measurement store</td></tr>
+        <tr><td>M4</td><td><span class="badge badge-done">Done</span></td><td>Centralized global directory with gossip sync and cache fallback</td></tr>
+        <tr><td>M5</td><td><span class="badge badge-done">Done</span></td><td>Division-order settlement ledger with SQLite persistence, startup grants with PoW</td></tr>
+        <tr><td>M6</td><td><span class="badge badge-done">Done</span></td><td>MoE expert-shard planner with proportional assignment and load imbalance detection</td></tr>
+        <tr><td>M7</td><td><span class="badge badge-partial">Partial</span></td><td>Federated directory: PKI-based pod witnessing and cross-pod signed-ledger-event audit live in production. Full permissionless decentralization (BFT consensus, open pod registration) remains a future milestone.</td></tr>
+        <tr><td>M8</td><td><span class="badge badge-done">Done</span></td><td>iOS coordination/security layer: CoreML classifier, P256 ECDH payload encryption, coordination registry, native SwiftUI apps for iOS/tvOS/watchOS</td></tr>
+        <tr><td>M9</td><td><span class="badge badge-done">Done</span></td><td>Portable wallet identity: Ed25519 account key, challenge-response auth, iCloud-Keychain sync, Base32 seed recovery</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="roadmap-section">
+    <h3>Near-term (v1.x)</h3>
+    <ul>
+      <li><strong>App Store / TestFlight</strong> — CI pipeline scaffolded; Apple Developer provisioning is an operator task</li>
+      <li><strong>Speculative decoding on node side</strong> — MLX-native speculative decoding targeting 2–3× throughput improvement on the 30–50 tok/s bottleneck</li>
+      <li><strong>Coordinator HA + Ledger beyond SQLite</strong> — PostgreSQL backend available; HA coordinator failover is the next scaling gate</li>
+      <li><strong>Kademlia DHT for M7 directory federation</strong> — solves the discovery half of M7 without requiring BFT consensus; O(log n) lookup, resilient to churn</li>
+    </ul>
+  </div>
+
+  <div class="roadmap-section">
+    <h3>Longer-term</h3>
+    <ul>
+      <li><strong>Progressive decentralization</strong> — open pod registration with reputation/staking for trust without a permissioned seed list</li>
+      <li><strong>visionOS spatial topology visualization</strong> — live network graph as a spatial computing surface</li>
+      <li><strong>Byzantine-fault-tolerant consensus for the federated ledger</strong> — the full M7 end-state; enables genuinely trustless cross-pod settlement</li>
+    </ul>
+  </div>
+
+  <h2>10. Call to Action</h2>
+  <p>The industry's current answer to rising AI demand is more concentration: more debt-financed data centers, more centralized dependency, more capital chasing a workload profile that doesn't match how most AI is actually used.</p>
+  <p>mlxMesh is a bet on the opposite answer — that the compute already sitting idle in millions of homes and offices, coordinated intelligently and paid fairly, is a better foundation for the next phase of AI infrastructure than another gigawatt campus. The project is open source, the architecture is documented, and the mesh needs nodes.</p>
+  <ul>
+    <li><strong>Run a node:</strong> <a href="https://github.com/american-code/mlxMesh" target="_blank" rel="noopener">github.com/american-code/mlxMesh</a></li>
+    <li><strong>Read the architecture:</strong> <a href="/docs">Technical Overview</a></li>
+    <li><strong>Commercial licensing:</strong> <a href="mailto:jmelton@americancode.org">jmelton@americancode.org</a></li>
+  </ul>
+
+  <div class="footnote">
+    <p>This whitepaper draws on public reporting and research from the IEA, MIT Sloan, MIT CSAIL, Brookings, and independent technology journalism, alongside academic literature on volunteer and decentralized computing. Figures cited reflect publicly available data as of mid-2026 and are subject to revision as the underlying research evolves.</p>
+  </div>
+</div>
+</body>
+</html>

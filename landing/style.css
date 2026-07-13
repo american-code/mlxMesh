@@ -282,7 +282,6 @@ main { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
 }
 .section-lead {
   color: var(--text-dim);
-  max-width: 700px;
   font-size: 16px;
   margin: 0 0 32px;
 }
