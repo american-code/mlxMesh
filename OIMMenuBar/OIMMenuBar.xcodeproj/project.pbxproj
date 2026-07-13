@@ -38,6 +38,7 @@
 		F2D298107605828D450B6F50 /* NodeLogParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44854C55351492CA7DBAED9C /* NodeLogParser.swift */; };
 		F4D82E8BB5AF99A70BA6F79B /* ExoHealthMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A072F8D6842EDA8A3953576D /* ExoHealthMonitorTests.swift */; };
 		FE9B91F4BC3216F5E9E2189F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7431DD98E6248E7DFB7A91FA /* Assets.xcassets */; };
+		FFB147CF6DF10805A920CE1D /* ModelWarmKeeper.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA2871CFAE870A85C2804EC2 /* ModelWarmKeeper.swift */; };
 		FFF91049D63A487A390CB638 /* MenuBarIconState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CB5AAA958C191274C5A59A9 /* MenuBarIconState.swift */; };
 /* End PBXBuildFile section */
 
@@ -99,6 +100,7 @@
 		D6EF6045D1F1ED54CF297B5B /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		DDD926B2291FC560C04DC596 /* NodeActivityIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeActivityIndicator.swift; sourceTree = "<group>"; };
 		E790C4DB7E86F9FD86427689 /* NetworkClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkClient.swift; sourceTree = "<group>"; };
+		EA2871CFAE870A85C2804EC2 /* ModelWarmKeeper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelWarmKeeper.swift; sourceTree = "<group>"; };
 		F05004C8B5BE70F37BA9ADA3 /* EmbeddedBinaryLocator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbeddedBinaryLocator.swift; sourceTree = "<group>"; };
 		FEB66FECD0D528484A5D58B3 /* LocalDetectMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDetectMonitor.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -109,6 +111,7 @@
 			children = (
 				F05004C8B5BE70F37BA9ADA3 /* EmbeddedBinaryLocator.swift */,
 				FEB66FECD0D528484A5D58B3 /* LocalDetectMonitor.swift */,
+				EA2871CFAE870A85C2804EC2 /* ModelWarmKeeper.swift */,
 				9B36EA6075D2982A304A2B21 /* NodeConfigBridge.swift */,
 				369E9208D355437D46995FA2 /* NodeIdentityReader.swift */,
 				44854C55351492CA7DBAED9C /* NodeLogParser.swift */,
@@ -400,6 +403,7 @@
 				1FFE003C00ECE22FE9571141 /* LogViewerView.swift in Sources */,
 				FFF91049D63A487A390CB638 /* MenuBarIconState.swift in Sources */,
 				9093C788B9A477F87D9DFDC7 /* MenuBarView.swift in Sources */,
+				FFB147CF6DF10805A920CE1D /* ModelWarmKeeper.swift in Sources */,
 				71BF0A41EEB31776D99416BB /* Models.swift in Sources */,
 				0274D7680F438358543E114B /* NetworkClient.swift in Sources */,
 				6FBE83E6A8CD110F122F043A /* NodeActivityIndicator.swift in Sources */,

@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mlxMesh Technical Overview</title>
+<meta name="description" content="Technical reference for mlxMesh — architecture, API, cost model, security analysis, and path to release.">
+<link rel="icon" type="image/png" href="assets/favicon-32.png">
+<link rel="apple-touch-icon" href="assets/favicon-180.png">
+<style>
+:root {
+  --bg: #ffffff;
+  --bg-raised: #f6f8fa;
+  --bg-code: #f6f8fa;
+  --border: #d0d7de;
+  --border-strong: #8c959f;
+  --text: #1f2328;
+  --text-dim: #57606a;
+  --blue: #0969da;
+  --blue-muted: #218bff;
+  --green: #1a7f37;
+  --amber: #9a6700;
+  --red: #cf222e;
+  --purple: #8250df;
+  --nav-bg: rgba(255,255,255,0.92);
+  --section-bar: #0969da;
+  --badge-done-bg: #dafbe1; --badge-done-text: #1a7f37;
+  --badge-partial-bg: #fff8c5; --badge-partial-text: #9a6700;
+  --badge-stub-bg: #ffd8d3; --badge-stub-text: #82071e;
+  --badge-scaffolded-bg: #ddf4ff; --badge-scaffolded-text: #0550ae;
+  --badge-mostly-bg: #fff8c5; --badge-mostly-text: #9a6700;
+  --badge-ns-bg: #ffd8d3; --badge-ns-text: #82071e;
+  --inline-code-bg: rgba(175,184,193,0.2);
+  --inline-code-text: #cf222e;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --bg-raised: #161b22; --bg-code: #161b22;
+    --border: #30363d; --border-strong: #6e7681;
+    --text: #e6edf3; --text-dim: #7d8590;
+    --blue: #58a6ff; --blue-muted: #79c0ff;
+    --green: #3fb950; --amber: #d29922; --red: #f85149; --purple: #a371f7;
+    --nav-bg: rgba(13,17,23,0.92); --section-bar: #58a6ff;
+    --badge-done-bg: rgba(63,185,80,0.15); --badge-done-text: #3fb950;
+    --badge-partial-bg: rgba(210,153,34,0.15); --badge-partial-text: #d29922;
+    --badge-stub-bg: rgba(248,81,73,0.15); --badge-stub-text: #f85149;
+    --badge-scaffolded-bg: rgba(88,166,255,0.15); --badge-scaffolded-text: #79c0ff;
+    --badge-mostly-bg: rgba(210,153,34,0.15); --badge-mostly-text: #d29922;
+    --badge-ns-bg: rgba(248,81,73,0.15); --badge-ns-text: #f85149;
+    --inline-code-bg: rgba(110,118,129,0.2); --inline-code-text: #f85149;
+  }
+}
+:root[data-theme="light"] {
+  --bg:#ffffff;--bg-raised:#f6f8fa;--bg-code:#f6f8fa;--border:#d0d7de;--border-strong:#8c959f;
+  --text:#1f2328;--text-dim:#57606a;--blue:#0969da;--blue-muted:#218bff;--green:#1a7f37;
+  --amber:#9a6700;--red:#cf222e;--purple:#8250df;--nav-bg:rgba(255,255,255,0.92);
+  --section-bar:#0969da;--badge-done-bg:#dafbe1;--badge-done-text:#1a7f37;
+  --badge-partial-bg:#fff8c5;--badge-partial-text:#9a6700;
+  --badge-stub-bg:#ffd8d3;--badge-stub-text:#82071e;
+  --badge-scaffolded-bg:#ddf4ff;--badge-scaffolded-text:#0550ae;
+  --badge-mostly-bg:#fff8c5;--badge-mostly-text:#9a6700;
+  --badge-ns-bg:#ffd8d3;--badge-ns-text:#82071e;
+  --inline-code-bg:rgba(175,184,193,0.2);--inline-code-text:#cf222e;
+}
+:root[data-theme="dark"] {
+  --bg:#0d1117;--bg-raised:#161b22;--bg-code:#161b22;--border:#30363d;--border-strong:#6e7681;
+  --text:#e6edf3;--text-dim:#7d8590;--blue:#58a6ff;--blue-muted:#79c0ff;--green:#3fb950;
+  --amber:#d29922;--red:#f85149;--purple:#a371f7;--nav-bg:rgba(13,17,23,0.92);
+  --section-bar:#58a6ff;--badge-done-bg:rgba(63,185,80,0.15);--badge-done-text:#3fb950;
+  --badge-partial-bg:rgba(210,153,34,0.15);--badge-partial-text:#d29922;
+  --badge-stub-bg:rgba(248,81,73,0.15);--badge-stub-text:#f85149;
+  --badge-scaffolded-bg:rgba(88,166,255,0.15);--badge-scaffolded-text:#79c0ff;
+  --badge-mostly-bg:rgba(210,153,34,0.15);--badge-mostly-text:#d29922;
+  --badge-ns-bg:rgba(248,81,73,0.15);--badge-ns-text:#f85149;
+  --inline-code-bg:rgba(110,118,129,0.2);--inline-code-text:#f85149;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px; line-height: 1.6; -webkit-font-smoothing: antialiased;
+}
+a { color: var(--blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.875em;
+  background: var(--inline-code-bg);
+  color: var(--inline-code-text);
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+pre {
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 16px 0;
+}
+pre code { background: none; color: var(--text); padding: 0; font-size: inherit; }
+
+.nav {
+  position: sticky; top: 0; z-index: 10;
+  background: var(--nav-bg); backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+.nav-inner {
+  max-width: 900px; margin: 0 auto; padding: 13px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; color: var(--text); text-decoration: none; }
+.brand img { border-radius: 5px; }
+.nav-links { display: flex; gap: 18px; font-size: 13px; color: var(--text-dim); }
+.nav-links a { color: var(--text-dim); }
+.nav-links a:hover { color: var(--text); text-decoration: none; }
+
+.layout { max-width: 900px; margin: 0 auto; padding: 0 24px; display: flex; gap: 40px; align-items: flex-start; }
+.sidebar {
+  width: 200px; flex-shrink: 0; position: sticky; top: 60px;
+  padding: 32px 0; font-size: 13px;
+}
+.sidebar-heading { font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; font-size: 11px; margin-bottom: 8px; margin-top: 20px; }
+.sidebar-heading:first-child { margin-top: 0; }
+.sidebar ul { list-style: none; padding: 0; margin: 0 0 4px; }
+.sidebar li { margin-bottom: 2px; }
+.sidebar a { color: var(--text-dim); font-size: 13px; display: block; padding: 3px 0; }
+.sidebar a:hover { color: var(--blue); text-decoration: none; }
+.content { flex: 1; min-width: 0; padding: 40px 0 80px; }
+
+.doc-cover {
+  background: linear-gradient(135deg, #0d1b2e 0%, #0d2240 60%, #0a1a35 100%);
+  border-radius: 14px;
+  padding: 48px 40px;
+  margin-bottom: 40px;
+  text-align: center;
+  color: #e6edf3;
+  border: 1px solid #1e3a5f;
+}
+.doc-cover img { width: 72px; height: 72px; border-radius: 16px; margin-bottom: 20px; }
+.doc-cover-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; color: #5fa8e0; margin-bottom: 12px; }
+.doc-cover h1 { font-size: 38px; font-weight: 800; margin: 0 0 6px; letter-spacing: -0.02em; }
+.doc-cover-rule { width: 48px; height: 2px; background: #5fa8e0; margin: 14px auto; border-radius: 1px; }
+.doc-cover-sub { font-size: 15px; color: #8ba9c5; margin: 0 0 20px; }
+.doc-cover-tags { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.doc-cover-tag { padding: 4px 12px; border: 1px solid #2a4a6e; border-radius: 20px; font-size: 12px; color: #8ba9c5; }
+
+.section-heading {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 20px; font-weight: 700; margin: 52px 0 16px;
+  padding-top: 4px;
+}
+.section-heading::before {
+  content: ''; display: block; width: 3px; height: 22px;
+  background: var(--section-bar); border-radius: 2px; flex-shrink: 0;
+}
+.section-heading:first-of-type { margin-top: 0; }
+h3 { font-size: 15px; font-weight: 600; color: var(--blue); margin: 28px 0 10px; }
+p { margin: 0 0 16px; }
+ul, ol { margin: 0 0 16px; padding-left: 26px; }
+li { margin-bottom: 5px; }
+strong { font-weight: 600; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 16px 0; display: block; overflow-x: auto; }
+th { background: var(--bg-raised); text-align: left; padding: 8px 12px; font-weight: 600; border: 1px solid var(--border); white-space: nowrap; }
+td { padding: 8px 12px; border: 1px solid var(--border); vertical-align: top; }
+tr:nth-child(even) td { background: var(--bg-raised); }
+td:first-child { white-space: nowrap; }
+
+.badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.badge-done { background: var(--badge-done-bg); color: var(--badge-done-text); }
+.badge-partial { background: var(--badge-partial-bg); color: var(--badge-partial-text); }
+.badge-stub { background: var(--badge-stub-bg); color: var(--badge-stub-text); }
+.badge-scaffolded { background: var(--badge-scaffolded-bg); color: var(--badge-scaffolded-text); }
+.badge-mostly { background: var(--badge-mostly-bg); color: var(--badge-mostly-text); }
+.badge-ns { background: var(--badge-ns-bg); color: var(--badge-ns-text); }
+
+.callout {
+  border: 1px solid var(--border); border-left: 3px solid var(--blue);
+  background: var(--bg-raised); border-radius: 0 8px 8px 0;
+  padding: 12px 16px; margin: 16px 0; font-size: 14px;
+}
+.callout strong { color: var(--blue); }
+
+@media (max-width: 720px) {
+  .layout { flex-direction: column; }
+  .sidebar { display: none; }
+  .doc-cover { padding: 32px 20px; }
+  .doc-cover h1 { font-size: 26px; }
+}
+</style>
+</head>
+<body>
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="/" class="brand">
+      <img src="assets/favicon-32.png" alt="" width="22" height="22">
+      <span>mlxMesh</span>
+    </a>
+    <div class="nav-links">
+      <a href="/">Home</a>
+      <a href="/whitepaper">Whitepaper</a>
+      <a href="https://github.com/american-code/mlxMesh" target="_blank" rel="noopener">GitHub →</a>
+    </div>
+  </div>
+</nav>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-heading">Overview</div>
+    <ul>
+      <li><a href="#what-it-is">What it is</a></li>
+      <li><a href="#submitting-jobs">Submitting jobs</a></li>
+    </ul>
+    <div class="sidebar-heading">Reference</div>
+    <ul>
+      <li><a href="#cost-model">Cost model</a></li>
+      <li><a href="#quick-start">Quick start</a></li>
+      <li><a href="#configuration">Configuration</a></li>
+      <li><a href="#tls">TLS</a></li>
+    </ul>
+    <div class="sidebar-heading">Architecture</div>
+    <ul>
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#milestones">Milestones</a></li>
+      <li><a href="#security">Security</a></li>
+      <li><a href="#path-to-release">Path to release</a></li>
+    </ul>
+    <div class="sidebar-heading">Reference</div>
+    <ul>
+      <li><a href="#privacy">Privacy model</a></li>
+      <li><a href="#why-no-token">Why no token</a></li>
+      <li><a href="#repo-layout">Repo layout</a></li>
+      <li><a href="#license">License</a></li>
+    </ul>
+  </aside>
+
+  <main class="content">
+    <div class="doc-cover">
+      <img src="assets/logo-512.png" alt="mlxMesh">
+      <div class="doc-cover-eyebrow">Technical Overview</div>
+      <h1>mlxMesh</h1>
+      <div class="doc-cover-rule"></div>
+      <p class="doc-cover-sub">A distributed inference protocol turning geographically-spread Apple Silicon into a single, routable AI compute fabric.</p>
+      <div class="doc-cover-tags">
+        <span class="doc-cover-tag">AGPL-3.0</span>
+        <span class="doc-cover-tag">Ed25519 Identity</span>
+        <span class="doc-cover-tag">No Native Token</span>
+        <span class="doc-cover-tag">Apple Silicon Native</span>
+      </div>
+    </div>
+
+    <h2 id="what-it-is" class="section-heading">What it is</h2>
+    <p>A distributed inference protocol that turns geographically-spread machines into a single, routable AI compute fabric — with strict privacy tiers, measured (not declared) performance accounting, and no native token.</p>
+    <p><strong>Brand:</strong> MeshAI &nbsp;|&nbsp; <strong>Protocol:</strong> Open Inference Mesh &nbsp;|&nbsp; <strong>CLI:</strong> <code>oim</code></p>
+    <p>Most distributed inference tools (e.g. Exo) work within a single LAN cluster. <code>oim</code> adds a coordination layer <em>above</em> that: it federates multiple clusters across the internet into a routable mesh, with:</p>
+    <ul>
+      <li><strong>Dual-lane routing</strong> — fast lane for interactive jobs (resolver-routed, low-latency), background lane for recurring/batch jobs (scheduler-routed, sticky-session)</li>
+      <li><strong>MoE expert sharding</strong> <em>(planner only — not wired into live dispatch)</em> — the only WAN-viable strategy for large models (sequential token passing can't survive 20–150 ms inter-hop latency)</li>
+      <li><strong>Division-order accounting</strong> — measured resource lines, not declared promises; credits from bootstrap grants decay as earned capacity grows</li>
+      <li><strong>Sensitivity tiers</strong> — LOW / MODERATE / HIGH_REQUIRES_ATTESTATION (Secure Enclave gate on Apple Silicon)</li>
+      <li><strong>Ed25519 node identity</strong> — derived from public key, never operator-chosen</li>
+      <li><strong>iOS coordination / security layer</strong> — iPhone/iPad devices classify on-device and host encrypted payload pointers, adding a privacy layer <em>without</em> becoming compute nodes</li>
+      <li><strong>Portable wallet identity</strong> — an Ed25519 account key (iCloud-Keychain synced, seed-recoverable) that consolidates credits across a user's devices</li>
+      <li><strong>Native clients</strong> — SwiftUI apps for iOS/iPadOS, tvOS, and watchOS render live topology, and drive contribution/coordination from Apple hardware</li>
+    </ul>
+
+    <h2 id="submitting-jobs" class="section-heading">Submitting inference jobs</h2>
+    <p>The mesh is designed for <strong>background inference jobs</strong> — workloads where you need a response but not within interactive latency. For real-time chat you still want a local Exo cluster; for deferred, cost-sensitive, or burst workloads you route to the mesh.</p>
+
+    <h3>How a job enters the network</h3>
+    <pre><code>Your application
+        |
+        | POST /v1/chat/completions   (OpenAI-compatible)
+        v
+Pod Coordinator (regional)
+    |       |
+    |       credit check -> dispatch -> node selection
+    v
+Node Agent (wrapping local Exo)
+    |
+    |   tokens stream back
+    v
+Your application</code></pre>
+    <ol>
+      <li>Your app checks the caller's credit balance (or the system does it automatically on submit).</li>
+      <li>The coordinator selects a node via the fast-lane router (measured TPS, model availability, sensitivity tier).</li>
+      <li>The node streams the response back through the coordinator.</li>
+      <li>Credits are debited on completion, proportional to tokens delivered.</li>
+    </ol>
+
+    <h3>Submitting a job (OpenAI-compatible API)</h3>
+    <p><strong>cURL:</strong></p>
+    <pre><code>curl https://&lt;coordinator&gt;/v1/chat/completions \
+  -H "Authorization: Bearer &lt;your-api-key&gt;" \
+  -H "X-OIM-User-ID: &lt;user-uuid&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "llama-3.2-3b",
+    "messages": [{"role": "user", "content": "Summarize this document: ..."}],
+    "max_tokens": 2048,
+    "stream": false
+  }'</code></pre>
+
+    <p><strong>Python (openai SDK):</strong></p>
+    <pre><code>from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://&lt;coordinator&gt;/v1",
+    api_key="&lt;your-api-key&gt;",
+)
+
+response = client.chat.completions.create(
+    model="llama-3.2-3b",
+    messages=[{"role": "user", "content": "Summarize this document: ..."}],
+)
+print(response.choices[0].message.content)</code></pre>
+
+    <h3>Model parameter reference</h3>
+    <table>
+      <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>model</code></td><td>string</td><td>Model ID as reported by Exo</td></tr>
+        <tr><td><code>messages</code></td><td>array</td><td>OpenAI-format message array</td></tr>
+        <tr><td><code>stream</code></td><td>boolean</td><td>Set <code>true</code> for SSE streaming output</td></tr>
+        <tr><td><code>max_tokens</code></td><td>integer</td><td>Cap on output tokens</td></tr>
+        <tr><td><code>temperature</code></td><td>float</td><td>Sampling temperature (0.0–2.0)</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Credit / token validator</h3>
+    <p>Before dispatching, the coordinator checks the caller's credit balance:</p>
+    <pre><code>1. GET /users/{user_id}/balance
+2. Estimate job cost = ConsumerCost(lane, sensitivity, max_tokens)
+3. If total >= cost -> dispatch. Else -> 402 Payment Required
+4. On completion: debit consumer, credit node, book spread to treasury</code></pre>
+
+    <h2 id="cost-model" class="section-heading">Cost / reward matrix (the house edge)</h2>
+    <p>All pricing lives in <code>internal/economics</code> so the debit and credit paths can never diverge. The model is a <strong>spread, not a transfer</strong>: a provider is always paid <em>less</em> than the consumer is charged, and the difference — the <strong>house edge (25%)</strong> — accrues to the network treasury (<code>oim-treasury</code>, a reserved ledger account). The treasury funds iOS coordination rewards; startup grants and availability rewards are minted directly, not treasury-funded.</p>
+    <pre><code>consumer_cost    = 1.0 x lane x sensitivity   (credits per 1k output tokens)
+provider_reward  = consumer_cost x (1 - 0.25)  <- node earns 75%
+network_margin   = consumer_cost - provider_reward <- treasury keeps 25%
+
+lane:        fast x1.0 (interactive premium) . background x0.5 (batch discount)
+sensitivity: low x0.5 . moderate x1.0 . high_requires_attestation x3.0</code></pre>
+
+    <table>
+      <thead><tr><th>Lane</th><th>Sensitivity</th><th>Consumer pays</th><th>Provider earns (75%)</th><th>Treasury (25%)</th></tr></thead>
+      <tbody>
+        <tr><td>Fast</td><td>low</td><td>0.50</td><td>0.375</td><td>0.125</td></tr>
+        <tr><td>Fast</td><td>moderate</td><td>1.00</td><td>0.75</td><td>0.25</td></tr>
+        <tr><td>Fast</td><td>high</td><td>3.00</td><td>2.25</td><td>0.75</td></tr>
+        <tr><td>Background</td><td>low</td><td>0.25</td><td>0.1875</td><td>0.0625</td></tr>
+        <tr><td>Background</td><td>moderate</td><td>0.50</td><td>0.375</td><td>0.125</td></tr>
+        <tr><td>Background</td><td>high</td><td>1.50</td><td>1.125</td><td>0.375</td></tr>
+      </tbody>
+    </table>
+
+    <p><strong>iOS coordination job:</strong> a flat <strong>0.02 credits per pointer served</strong>, paid to the device's linked wallet account out of the treasury.</p>
+    <div class="callout"><strong>Setup note — linking is required to earn.</strong> A coordination device (or a desktop node) only earns once its device/node ID is <strong>linked</strong> to a wallet account. An unlinked device announces and is visible on the map, but has no account to pay — credits silently go nowhere.</div>
+
+    <h3>Verified availability reward (bootstrap incentive, opt-in)</h3>
+    <p><code>--availability-reward</code> (off by default) has the coordinator itself act as a tiny, randomly-timed test consumer: every ~10 minutes (jittered), it dispatches one small real inference request through the exact same dispatch path and pricing function real consumer traffic uses, to one of the longest-idle real nodes. No debit, no treasury margin — it's a self-funded subsidy minted directly into the node's account, the same way the startup grant is minted from nothing. The probe throttles against queue backpressure: above 40% saturation, a round is skipped entirely. At low backpressure, the probe budget scales up automatically so idle nodes earn more in a quiet network.</p>
+
+    <h3>Streaming</h3>
+    <p>Server-side token streaming (<code>stream: true</code>) is implemented on the fast lane — real SSE passthrough at every hop (Exo → node → coordinator → client), with billing read from the trailing usage frame. The background lane intentionally stays buffered/polling.</p>
+
+    <h2 id="quick-start" class="section-heading">Quick start</h2>
+    <table>
+      <thead><tr><th>Requirement</th><th>Version</th></tr></thead>
+      <tbody>
+        <tr><td>Go</td><td>1.25+ (per <code>go.mod</code>)</td></tr>
+        <tr><td>Exo</td><td>running locally at <code>http://localhost:52415</code></td></tr>
+      </tbody>
+    </table>
+    <p><code>oim</code> wraps Exo as a black-box HTTP API. Apple Silicon (M-series) with unified memory is the reference platform.</p>
+    <pre><code>git clone https://github.com/american-code/mlxMesh
+cd mlxMesh
+make install
+
+oim node status
+oim node status --exo-url http://localhost:52415 --cap 0.5
+oim bench run --model mlx-community/Llama-3.2-3B-Instruct-4bit --prompt medium --samples 3</code></pre>
+
+    <h2 id="configuration" class="section-heading">Configuration</h2>
+    <table>
+      <thead><tr><th>Field</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>exo_url</code></td><td><code>http://localhost:52415</code></td><td>Local Exo endpoint</td></tr>
+        <tr><td><code>memory_cap_pct</code></td><td><code>0.5</code></td><td>Fraction of RAM to offer</td></tr>
+        <tr><td><code>geographic_hint</code></td><td><code>us</code></td><td>Coarse region for pod assignment</td></tr>
+        <tr><td><code>reachability_endpoint</code></td><td>—</td><td>How the pod coordinator reaches this node</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Reachability: outbound work-pull (default)</h3>
+    <p>By default a node receives work the way an ASIC miner receives it from a pool: it opens an <strong>outbound</strong> connection to the coordinator, long-polls for jobs, runs them via Exo, and posts results back — all outbound. NAT, home routers, port forwarding, UPnP, and firewalls are all irrelevant.</p>
+    <pre><code>oim node start --coordinator https://us.mlxmesh.net   # pull mode, zero network config</code></pre>
+    <p><strong>Push mode (opt-in):</strong> set an explicit <code>--reachability-endpoint</code> and the coordinator dispatches <em>into</em> the node over HTTP instead.</p>
+
+    <h2 id="tls" class="section-heading">Running over TLS (HTTPS)</h2>
+    <p>Before exposing anything beyond localhost, <strong>turn on TLS</strong> — otherwise API keys and job payloads travel in plaintext.</p>
+    <pre><code>scripts/gen-dev-certs.sh 192.168.1.135
+oim-coordinator --listen :9000 --tls-cert certs/server.crt --tls-key certs/server.key ...
+oim node start --coordinator https://192.168.1.135:9000 --tls-ca certs/ca.crt</code></pre>
+    <p><strong>Coordinator to node dispatch over TLS too</strong> — nodes are independently operated and self-signed, so instead of chain verification the coordinator <strong>pins the exact certificate fingerprint</strong> recorded at that node's registration — tamper-evident via the same Ed25519 signature covering the rest of the manifest.</p>
+
+    <h2 id="architecture" class="section-heading">Architecture overview</h2>
+    <pre><code>Global Directory (librarian)    <- M4 (centralized) -> M7 (ledger authority partial; directory federation stubbed)
+        |
+        v
+Pod Coordinators (1 per region)   <- M2
+    |           |
+    |           Coordination Registry <- M8 (iOS pointer-hosts; never routed to)
+    v
+Node Agents (wrapping Exo)        <- M1
+    ^
+    |   live topology + contribution/coordination + wallet
+Native clients: iOS . tvOS . watchOS <- M8 / M9</code></pre>
+
+    <h2 id="milestones" class="section-heading">Milestones</h2>
+
+    <h3>Protocol core</h3>
+    <table>
+      <thead><tr><th>#</th><th>Status</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>M1</td><td><span class="badge badge-done">Done</span></td><td>Node agent: manifest assembly, resource governor, bench, Ed25519 identity</td></tr>
+        <tr><td>M2</td><td><span class="badge badge-done">Done</span></td><td>Pod coordinator: registry, fast-lane router, background scheduler, job queue, rate limiting</td></tr>
+        <tr><td>M3</td><td><span class="badge badge-done">Done</span></td><td>Spot-check verification, tier-claim validation, measurement store</td></tr>
+        <tr><td>M4</td><td><span class="badge badge-done">Done</span></td><td>Centralized global directory with gossip sync and cache fallback</td></tr>
+        <tr><td>M5</td><td><span class="badge badge-done">Done</span></td><td>Division-order settlement ledger with SQLite persistence, startup grants with PoW</td></tr>
+        <tr><td>M6</td><td><span class="badge badge-done">Done</span></td><td>MoE expert-shard planner with proportional assignment and load imbalance detection</td></tr>
+        <tr><td>M7</td><td><span class="badge badge-partial">Partial</span></td><td>Federated directory: coordinator identity + signed, TOFU-pinned pod registration and cross-pod signed-ledger-event witnessing/audit live. Full permissionless federation (BFT consensus, open pod registration) remains a stub.</td></tr>
+        <tr><td>M8</td><td><span class="badge badge-done">Done</span></td><td>On-device routing + iOS coordination/security layer: CoreML classifier, P256 ECDH → AES-256-GCM, coordination registry + served-pointer accounting, native apps, full node-side pointer consumption</td></tr>
+        <tr><td>M9</td><td><span class="badge badge-done">Done</span></td><td>Portable wallet identity: Ed25519 account key, challenge-response auth, account-signed device linking, iCloud-Keychain sync + Base32 recovery key</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Extended scope</h3>
+    <ul>
+      <li><strong>iOS as a coordination/security layer, not a compute node.</strong> iOS/iPadOS cannot run Exo, so iOS devices classify on-device and host encrypted payload pointers instead.</li>
+      <li><strong>Encrypted-pointer privacy path</strong> — client-side P256 ECDH + HKDF-SHA256 + AES-256-GCM; the coordinator sees only a metadata pointer, never plaintext.</li>
+      <li><strong>Portable wallet (M9)</strong> — credit consolidation + recovery across devices without a blockchain.</li>
+      <li><strong>Native Apple apps</strong> — live topology, "Try the mesh," network-load/backpressure, coordination layer, wallet, tvOS global-map view.</li>
+      <li><strong>Simulation harness</strong> — 100+ container multi-region mesh with continuous traffic and live coordination participants.</li>
+      <li><strong>Cluster deduplication</strong> — prevents double-counting capacity for clustered nodes.</li>
+      <li><strong>Warm model support</strong> — coordinator can instruct a node to pre-load a model, reducing cold-start latency.</li>
+      <li><strong>Observed throughput routing</strong> — coordinator tracks actual node performance from completed jobs for routing decisions.</li>
+    </ul>
+
+    <h3>Known gaps</h3>
+    <ul>
+      <li>Node Setup cluster topology is web-only and Exo-driven; schema not yet confirmed against a live non-sim instance.</li>
+      <li>Webhook/async callback submission is documented as a target but not implemented.</li>
+      <li>M7 federated directory is a stub; <code>FederatedResolver</code> / <code>DHTResolver</code> remain stubs.</li>
+      <li>MoE expert sharding is a planner, not wired into any dispatch path. What <em>is</em> wired is query decomposition, background-lane only.</li>
+    </ul>
+
+    <div class="callout"><strong>A note on MoE sharding and speed.</strong> A common intuition is that sharding a model across nodes makes the fast (interactive) lane faster. It's the opposite. MoE expert-sharding across the mesh is a <strong>capacity</strong> strategy, not a <strong>latency</strong> one — every token that activates a remote expert pays the 20–150 ms inter-hop latency, fatal for interactive use. Sharding belongs to the background lane; the fast lane stays single-node precisely to avoid those hops. Where sharding <em>does</em> make inference fast is inside a local Exo cluster (LAN, sub-millisecond links).</div>
+
+    <h2 id="security" class="section-heading">Security model &amp; threat analysis</h2>
+    <p>Because this is (a) open source and (b) a <strong>credit-based</strong> compute network, the first question is: if anyone can read and fork the code, what stops them from minting credits, spoofing the system, or knocking it over?</p>
+
+    <h3>Can queries actually flow through? Yes — verified.</h3>
+    <p>The end-to-end path (credit gate → dispatch → node/Exo → response → debit) works today. It is usable <strong>as a trusted-coordinator network right now</strong>. It is <em>not yet</em> safe as an open, decentralized credit network.</p>
+
+    <h3>What already holds</h3>
+    <ul>
+      <li><strong>The ledger is server-authoritative.</strong> No client or node can write to it directly.</li>
+      <li><strong>The write path is Ed25519-signed.</strong> You cannot report earnings for a node you don't control, or impersonate another node's identity.</li>
+      <li><strong>Grants are Sybil-resistant</strong> — proof-of-work nonce (18 bits) plus per-IP rate limiting.</li>
+      <li><strong>Wallet auth is challenge-response</strong>; device-linking is account-signed.</li>
+      <li><strong>Per-IP rate limiting</strong> wraps every endpoint; job queue is bounded with backpressure; sensitivity tiers + Secure-Enclave attestation gate sensitive jobs; TLS 1.2+ available; payloads can be client-encrypted.</li>
+      <li><strong>Node-to-coordinator calls are resilient</strong> — exponential backoff + jitter retry, client-side token-bucket limiter on outbound calls.</li>
+    </ul>
+
+    <h3>Open vulnerabilities (tracked)</h3>
+    <ol>
+      <li><strong>RESOLVED — Unverified self-reported earnings.</strong> Both lanes are now credited from the coordinator's own observed token count. Verified end-to-end (75/25 split, no double-credit).</li>
+      <li><strong>RESOLVED — Earn/debit asymmetry.</strong> Debit and credit derived from the same coordinator-observed token count.</li>
+      <li><strong>PARTIALLY ADDRESSED — Federated ledger authority (M7).</strong> Coordinator impersonation is now closed (Ed25519 coordinator identity + TOFU pod pinning). Rogue-pod claims are now auditable via signed, sequenced cross-pod ledger-event witnessing. <strong>Still open:</strong> this is PKI-based trust among a curated/TOFU-pinned set of pods, not Byzantine-fault-tolerant consensus or staking/slashing. Full open, permissionless decentralization remains a stub.</li>
+      <li><strong>DDoS — mostly hardened.</strong> Global in-flight concurrency cap, 8 MiB request-body cap, slow-loris guard, SSRF allowlist with per-redirect re-validation and connect-time IP checking (closes DNS-rebinding gap). Remaining: a distributed volumetric flood still needs an upstream WAF/scrubbing layer.</li>
+      <li><strong>RESOLVED — Streaming billing edge case.</strong> A stream ending with no usage frame now logs a rejection metric instead of silently billing $0.</li>
+    </ol>
+
+    <h3>Bottom line</h3>
+    <p>Run by a trusted operator (the seed), the credit system is sound against client/node tampering. True open decentralization needs a consensus/staking/proof design that does not yet exist here. A third-party security review of the credit, attestation, and settlement paths has been completed.</p>
+
+    <h2 id="path-to-release" class="section-heading">Path to release</h2>
+
+    <h3>Security — blocks any public exposure</h3>
+    <table>
+      <thead><tr><th>Item</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>TLS everywhere</td><td><span class="badge badge-done">Done</span> — TOFU-pinned coordinator-to-node dispatch too; cert management still manual</td></tr>
+        <tr><td>Node-side pointer consumption</td><td><span class="badge badge-done">Done</span> — Go-native payload crypto, byte-compatible with Swift client</td></tr>
+        <tr><td>Secrets management</td><td><span class="badge badge-done">Done</span> — API keys SHA-256-hashed at rest; TLS cert expiry warnings</td></tr>
+        <tr><td>Auth on read endpoints + abuse limits</td><td><span class="badge badge-done">Done</span> (opt-in) — per-user quota keyed on verified user_id, not spoofable header</td></tr>
+        <tr><td>Input hardening / DoS</td><td><span class="badge badge-done">Done</span> — body cap, concurrency limit, slow-loris guard, SSRF allowlist</td></tr>
+        <tr><td>Outbound call resilience</td><td><span class="badge badge-done">Done</span> — backoff + jitter retry, token-bucket limiter</td></tr>
+        <tr><td>CORS granularity</td><td><span class="badge badge-done">Done</span> — wildcard-subdomain matching</td></tr>
+        <tr><td>Third-party security review</td><td><span class="badge badge-done">Done</span> — external review completed; internal multi-angle review also complete</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Safety &amp; correctness — blocks trusting the numbers</h3>
+    <table>
+      <thead><tr><th>Item</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Verified earnings</td><td><span class="badge badge-done">Done</span> — coordinator-observed token count only</td></tr>
+        <tr><td>Coordination-device credit attribution</td><td><span class="badge badge-done">Done</span> — persistent per-install device ID</td></tr>
+        <tr><td>Federated ledger authority</td><td><span class="badge badge-partial">Partial</span> — live in production — impersonation + audit trail closed; no BFT consensus yet</td></tr>
+        <tr><td>Integration tests</td><td><span class="badge badge-done">Done</span> — full money path, 402-gating, SSRF rejection, metrics exposure</td></tr>
+        <tr><td>Streaming</td><td><span class="badge badge-done">Done</span> (fast lane) — real SSE passthrough end-to-end</td></tr>
+        <tr><td>Structured logging + metrics</td><td><span class="badge badge-done">Done</span> — Prometheus counters/gauges, structured slog</td></tr>
+        <tr><td>Ledger reconciliation &amp; audit trail</td><td><span class="badge badge-done">Done</span> — background reconcile loop every 5 min, admin-gated report endpoint</td></tr>
+        <tr><td>Treasury balance monitoring</td><td><span class="badge badge-done">Done</span> — gauge + alert threshold + skipped-payout counter</td></tr>
+        <tr><td>Admin panel with server auth</td><td><span class="badge badge-done">Done</span> — treasury view, reconciliation reports, node management, Ed25519 BDFL key auth</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Scalability — blocks growth past the seed</h3>
+    <p><strong>Scaling reality check:</strong> Fast lane is single-node per job by design. Adding nodes doesn't make individual requests faster — it increases aggregate concurrent capacity. Per-job speed is a property of the selected node, not node count.</p>
+    <table>
+      <thead><tr><th>Nodes</th><th>Aggregate t/s</th><th>Concurrent jobs/sec (at ~12.5s/job)</th></tr></thead>
+      <tbody>
+        <tr><td>100</td><td>4,000</td><td>~8</td></tr>
+        <tr><td>1,000</td><td>40,000</td><td>~80</td></tr>
+        <tr><td>10,000</td><td>400,000</td><td>~800</td></tr>
+        <tr><td>100,000</td><td>4,000,000</td><td>~8,000</td></tr>
+      </tbody>
+    </table>
+    <p><strong>Real bottleneck:</strong> a single coordinator's SQLite ledger is single-writer. Every job completion does 3+ writes plus signature verification. Realistic sustained ceiling is low hundreds to low thousands of job-completions/sec per coordinator — meaning SQLite write contention, not node compute, is the actual limiter at 10,000+ nodes. Regional sharding (one coordinator per pod) mitigates this, but "Coordinator HA" and "Ledger beyond SQLite" remain the missing pieces for scaling past the seed.</p>
+
+    <table>
+      <thead><tr><th>Item</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>M7 federated directory</td><td><span class="badge badge-stub">Stub</span></td></tr>
+        <tr><td>Progressive decentralization</td><td><span class="badge badge-partial">Partial</span> — live in production — multi-endpoint directory fallback, real parity metric</td></tr>
+        <tr><td>Coordinator HA</td><td><span class="badge badge-ns">Not started</span></td></tr>
+        <tr><td>Ledger beyond SQLite</td><td><span class="badge badge-partial">Partial</span> — PostgreSQL backend implemented; HA coordinator failover not yet done</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Performance benchmarks — honest positioning vs hosted APIs</h3>
+    <table>
+      <thead><tr><th>System</th><th>Tokens/sec</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>mlxMesh (Mac Studio)</td><td>30–50</td><td>Consumer Apple Silicon, unmodified</td></tr>
+        <tr><td>Claude Sonnet</td><td>~37</td><td>Hosted API</td></tr>
+        <tr><td>Claude Haiku 3.5</td><td>65.2</td><td>Hosted API</td></tr>
+        <tr><td>GPT-4.1</td><td>~55</td><td>Hosted API</td></tr>
+        <tr><td>GPT-4o</td><td>52–117</td><td>Hosted API (varies by benchmark)</td></tr>
+        <tr><td>GPT-5 Pro (reasoning)</td><td>~11</td><td>Deliberately slow, reasoning-optimized</td></tr>
+        <tr><td>Gemini 3.5 Flash</td><td>167–180</td><td>Higher first-token latency</td></tr>
+        <tr><td>Groq (dedicated LPU)</td><td>500+</td><td>Purpose-built inference silicon</td></tr>
+      </tbody>
+    </table>
+    <p><strong>Key takeaways:</strong></p>
+    <ul>
+      <li>mlxMesh per-node throughput is competitive with hosted frontier APIs (Claude Sonnet, GPT-4.1/4o).</li>
+      <li>The real gap is latency, not throughput: hosted APIs achieve 30–80ms first-token latency; mlxMesh has extra hop overhead from its multi-region routing path.</li>
+      <li>Hosted providers win on aggregate scale via continuous batching across massive GPU fleets.</li>
+      <li>mlxMesh trades centralized-batching efficiency for zero per-token cost, no data leaving infrastructure, and no third-party dependency.</li>
+    </ul>
+    <p><strong>Honest positioning:</strong> mlxMesh doesn't beat OpenAI/Anthropic on scale or first-token latency, but it achieves tokens-per-second parity with hosted frontier APIs using consumer hardware.</p>
+
+    <h3>Performance optimizations</h3>
+    <table>
+      <thead><tr><th>Item</th><th>Why</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Speculative decoding on node side</td><td>MLX-native speculative decoding achieves 2–3× speedups, lossless. Directly attacks the 30–50 t/s bottleneck.</td><td><span class="badge badge-ns">Not started</span></td></tr>
+        <tr><td>Prefix/KV-cache-aware routing</td><td>Prefix caching gives large latency wins on repeated/shared prompts, but only if repeat requests land on the same node. Fix: prefix-aware consistent hashing combined with TPS-based scoring.</td><td><span class="badge badge-done">Done</span></td></tr>
+        <tr><td>Power-of-two-choices for fast-lane dispatch</td><td>Greedy "best measured TPS" routing creates herding. Sampling two random candidates and picking the lighter-loaded one avoids this.</td><td><span class="badge badge-done">Done</span></td></tr>
+        <tr><td>Kademlia DHT for M7 directory federation</td><td>Solves the discovery half of M7 (not ledger consensus) — O(log n) lookup, resilient to churn.</td><td><span class="badge badge-ns">Not started</span></td></tr>
+      </tbody>
+    </table>
+
+    <h3>Client SDKs</h3>
+    <table>
+      <thead><tr><th>Item</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Python SDK (PyPI)</td><td><span class="badge badge-done">Done</span></td></tr>
+        <tr><td>Swift SDK</td><td><span class="badge badge-done">Done</span></td></tr>
+      </tbody>
+    </table>
+
+    <h3>Release engineering</h3>
+    <table>
+      <thead><tr><th>Item</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Public seed deploy</td><td><span class="badge badge-done">Done</span> — live at mlxmesh.net (pod-us + pod-eu + directory)</td></tr>
+        <tr><td>CI pipeline wiring</td><td><span class="badge badge-done">Done</span> — Go build/vet/lint/tests, dashboard build, Xcode builds across all schemes</td></tr>
+        <tr><td>Signed release binaries + reproducible Docker images</td><td><span class="badge badge-mostly">Mostly done</span> — reproducible cross-platform binaries with SHA256SUMS; signing key provisioning remains</td></tr>
+        <tr><td>App Store / TestFlight pipeline</td><td><span class="badge badge-scaffolded">Scaffolded</span> — build side in CI; ASC credentials remain an operator task</td></tr>
+        <tr><td>Runbook + incident/on-call docs, SLOs</td><td><span class="badge badge-done">Done</span></td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="repo-layout" class="section-heading">Repository layout</h2>
+    <pre><code>cmd/
+  oim/          CLI + node agent entry point
+  coordinator/  Pod coordinator server (M2)
+  directory/    Global directory server (M4)
+  stub-exo/     Fake Exo for simulation
+internal/
+  protocol/     Wire types, crypto, job specs
+  exoadapter/   Thin HTTP client wrapping Exo
+  agent/        Node agent HTTP server
+  jobrunner/    Executes jobs against local Exo
+  governor/     Resource caps and foreground check
+  capability/   Live manifest assembly
+  bench/        Tier benchmarking
+  attestation/  Secure Enclave attestation verification
+  identity/     Ed25519 (+ ECDH) keypair persistence
+  coordinator/  Registry, routers, queue, coordination registry (M8)
+  wallet/       Portable account identity (M9)
+  directory/    Resolver interface + PinStore pod pinning
+  federation/   Signed cross-pod ledger-event witnessing + audit (M7)
+  settlement/   Division-order ledger, startup-grant PoW
+  economics/    All pricing: cost/reward matrix, house edge
+  payloadcrypto/ ECDH-P256 -> HKDF-SHA256 -> AES-256-GCM
+  httptls/      TLS serving helpers, fingerprint-pinned clients
+  httpmw/       Shared HTTP middleware
+  httpx/        Outbound HTTP resilience
+  sse/          Shared SSE relay
+  metrics/      Prometheus-format counters/gauges
+  nodeconfig/   Node YAML config load + validation
+dashboard/      Web dashboard (React + Vite)
+landing/        mlxmesh.net landing page
+OIMDashboard/   SwiftUI apps — iOS / tvOS / watchOS (M8/M9 clients)
+tests/          Protocol-, coordination-, integration-level tests</code></pre>
+
+    <h2 id="privacy" class="section-heading">Privacy model</h2>
+    <table>
+      <thead><tr><th>Tier</th><th>Routing</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>low</code></td><td>Any reachable node</td><td>Embeddings, classification</td></tr>
+        <tr><td><code>moderate</code></td><td>Nodes with attestation consent</td><td>Default for chat</td></tr>
+        <tr><td><code>high_requires_attestation</code></td><td>Secure Enclave gate only</td><td>PII, confidential prompts</td></tr>
+      </tbody>
+    </table>
+    <p>No prompt content, no raw embeddings, no biometric data ever leaves the device.</p>
+
+    <h2 id="why-no-token" class="section-heading">Why no token?</h2>
+    <p>Protocol credits are off-chain (stablecoin / fiat payment rails). Issuing a native token risks the Helium-style collapse pattern: token price speculation decouples from actual compute supply, then crashes when market sentiment shifts. Bootstrap grants are per-pod, keyed to <em>verified</em> capacity, and decay as earned revenue grows.</p>
+
+    <h3>Marketplace feasibility</h3>
+    <p>The current ledger architecture does not support a credit marketplace. Building one would require: a credit transfer mechanism (atomic transfers between accounts), external monetary value (a pricing mechanism), a trust model (centralized escrow or blockchain-based trustless transfer), and regulatory compliance (KYC/AML) if real money is involved. The ledger is intentionally centralized and append-only, with no transfer capability today.</p>
+
+    <h2 id="license" class="section-heading">License</h2>
+    <p>This project is licensed under the <strong>GNU Affero General Public License v3.0 (AGPL-3.0)</strong>.</p>
+    <p><strong>Open source use:</strong> Free to use, modify, and distribute under AGPL-3.0. <strong>Commercial use:</strong> Requires a separate commercial license for proprietary SaaS offerings, integration into commercial products without releasing source, or enterprise use without AGPL compliance.</p>
+    <p>The AGPL-3.0 requires that source code modifications be made available to users of the software, that network users (SaaS) have access to the source code, and that derivative works also be licensed under AGPL-3.0.</p>
+    <p>For commercial licensing: <a href="mailto:jmelton@americancode.org">jmelton@americancode.org</a></p>
+  </main>
+</div>
+</body>
+</html>
