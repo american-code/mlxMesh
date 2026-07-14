@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.png" alt="mlxMesh" width="120">
+</p>
+
 # mlxMesh
 
 A distributed inference protocol that turns geographically-spread machines into a single, routable AI compute fabric — with strict privacy tiers, measured (not declared) performance accounting, and no native token. (Internal packages, the Go module path, and the `oim` CLI/binary names are unchanged.)
