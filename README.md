@@ -8,6 +8,25 @@ A distributed inference protocol that turns geographically-spread machines into 
 
 ---
 
+## Dashboard
+
+<p align="center">
+  <img src="docs/screenshot-dashboard.png" alt="mlxMesh dashboard — 41 nodes live, 5,072 t/s, 470.9 GB committed across 2 regions" width="780">
+</p>
+
+**Native iOS/iPadOS app** — live topology, per-node performance, and wallet/credit management:
+
+<p align="center">
+  <img src="docs/screenshot-ios-nodes.png" alt="Pod node list with force-directed graph" width="380">&nbsp;&nbsp;
+  <img src="docs/screenshot-ios-node-detail.png" alt="Node detail sheet — throughput, memory, models" width="380">
+</p>
+
+<p align="center">
+  <img src="docs/screenshot-ios-account.png" alt="Account view — wallet, credit balance, device linking" width="380">
+</p>
+
+---
+
 ## What it is
 
 Most distributed inference tools (e.g. [Exo](https://github.com/exo-explore/exo)) work within a single LAN cluster. `oim` adds a coordination layer *above* that: it federates multiple clusters across the internet into a routable mesh, with:
