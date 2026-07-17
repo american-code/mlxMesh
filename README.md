@@ -38,7 +38,7 @@ Most distributed inference tools (e.g. [Exo](https://github.com/exo-explore/exo)
 - **Dual-lane routing** — fast lane for interactive jobs (resolver-routed, low-latency), background lane for recurring/batch jobs (scheduler-routed, sticky-session)
 - **MoE expert sharding** *(planner only — not wired into live dispatch; see below)* — the only WAN-viable strategy for large models (sequential token passing can't survive 20-150 ms inter-hop latency)
 - **Division-order accounting** — measured resource lines, not declared promises; credits from bootstrap grants decay as earned capacity grows
-- **Sensitivity tiers** — LOW / MODERATE / HIGH_REQUIRES_ATTESTATION (Secure Enclave gate on Apple Silicon)
+- **Sensitivity tiers** — LOW / MODERATE / HIGH_REQUIRES_ATTESTATION (Secure Enclave gate on Apple Silicon — Darwin/iOS only; non-Apple nodes cannot accept HIGH_REQUIRES_ATTESTATION jobs)
 - **Ed25519 node identity** — derived from public key, never operator-chosen
 - **iOS coordination / security layer** — iPhone/iPad devices classify on-device and host encrypted payload pointers, adding a privacy layer *without* becoming compute nodes. Additive: the mesh routes identically with zero coordination devices present.
 - **Portable wallet identity** — an Ed25519 account key (iCloud-Keychain synced, seed-recoverable) that consolidates credits across a user's devices. Not on-chain — it *proves ownership* of a server-side ledger balance.
@@ -975,7 +975,7 @@ Three sensitivity tiers for jobs:
 |------|---------|-------|
 | `low` | Any reachable node | Embeddings, classification |
 | `moderate` | Nodes with attestation consent | Default for chat |
-| `high_requires_attestation` | Secure Enclave gate only | PII, confidential prompts |
+| `high_requires_attestation` | Secure Enclave gate only (Apple Silicon — macOS/iOS nodes only) | PII, confidential prompts |
 
 Client telemetry is governed by [client-telemetry-schema-addendum.md](../meshAI/client-telemetry-schema-addendum.md). No prompt content, no raw embeddings, no biometric data ever leaves the device.
 
