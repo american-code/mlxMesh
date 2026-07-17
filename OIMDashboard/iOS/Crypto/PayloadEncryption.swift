@@ -72,13 +72,15 @@ enum PayloadEncryption {
     }
 
     /// Stores ciphertext so the assigned node can fetch it, returning the fetch
-    /// URL. v1: serve from LocalPayloadServer on the device's LAN IP. The hash IS
-    /// the address — no separate index. Auto-expires after 5 min / after fetch.
-    static func storeLocally(ciphertext: Data, hash: String) async throws -> String {
+    /// URL. v1: serve from LocalPayloadServer on the device's LAN IP. The URL
+    /// token is a random UUID (not the payloadHash) so the fetch address can't
+    /// be predicted from the plaintext content. Auto-expires after 5 min / fetch.
+    static func storeLocally(ciphertext: Data) async throws -> String {
+        let token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let port = try LocalPayloadServer.shared.start()
-        LocalPayloadServer.shared.servePayload(hash: hash, ciphertext: ciphertext)
+        LocalPayloadServer.shared.servePayload(token: token, ciphertext: ciphertext)
         let ip = LocalNetwork.primaryIPv4() ?? "127.0.0.1"
-        return "http://\(ip):\(port)/payload/\(hash)"
+        return "http://\(ip):\(port)/payload/\(token)"
     }
 }
 
@@ -185,11 +187,11 @@ final class LocalPayloadServer {
         queue.sync { port }
     }
 
-    func servePayload(hash: String, ciphertext: Data) {
+    func servePayload(token: String, ciphertext: Data) {
         queue.async { [weak self] in
             guard let self else { return }
-            self.payloads[hash] = ciphertext
-            self.scheduleExpiry(hash: hash)
+            self.payloads[token] = ciphertext
+            self.scheduleExpiry(token: token)
         }
     }
 
@@ -207,19 +209,19 @@ final class LocalPayloadServer {
 
     // MARK: - internals (all on `queue`)
 
-    private func scheduleExpiry(hash: String) {
-        expiryTimers[hash]?.cancel()
+    private func scheduleExpiry(token: String) {
+        expiryTimers[token]?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + 300) // 5 minutes
-        timer.setEventHandler { [weak self] in self?.remove(hash: hash) }
+        timer.setEventHandler { [weak self] in self?.remove(token: token) }
         timer.resume()
-        expiryTimers[hash] = timer
+        expiryTimers[token] = timer
     }
 
-    private func remove(hash: String) {
-        payloads[hash] = nil
-        expiryTimers[hash]?.cancel()
-        expiryTimers[hash] = nil
+    private func remove(token: String) {
+        payloads[token] = nil
+        expiryTimers[token]?.cancel()
+        expiryTimers[token] = nil
     }
 
     private func handle(_ conn: NWConnection) {
@@ -234,7 +236,7 @@ final class LocalPayloadServer {
     }
 
     /// Parses the request line and returns a full HTTP response. Only
-    /// `GET /payload/{hash}` for a known hash returns 200; everything else 404.
+    /// `GET /payload/{token}` for a known random token returns 200; everything else 404.
     private func route(_ request: String) -> Data {
         let firstLine = request.split(separator: "\r\n", maxSplits: 1).first.map(String.init) ?? ""
         let parts = firstLine.split(separator: " ")
@@ -242,10 +244,10 @@ final class LocalPayloadServer {
         let path = String(parts[1])
         let prefix = "/payload/"
         guard path.hasPrefix(prefix) else { return httpResponse(status: "404 Not Found", body: Data()) }
-        let hash = String(path.dropFirst(prefix.count))
-        guard let ciphertext = payloads[hash] else { return httpResponse(status: "404 Not Found", body: Data()) }
-        // Content is single-fetch: remove after serving.
-        remove(hash: hash)
+        let token = String(path.dropFirst(prefix.count))
+        guard let ciphertext = payloads[token] else { return httpResponse(status: "404 Not Found", body: Data()) }
+        // Single-fetch: remove after serving.
+        remove(token: token)
         return httpResponse(status: "200 OK", body: ciphertext, contentType: "application/octet-stream")
     }
 

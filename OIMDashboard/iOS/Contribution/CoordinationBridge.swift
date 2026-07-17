@@ -54,7 +54,7 @@ final class CoordinationBridge {
     ) async throws -> HintPacket {
         let hint = await router.classify(queryText: promptText)
         let bundle = try PayloadEncryption.encrypt(plaintext: plaintext, recipientPublicKey: recipientPublicKey)
-        let fetchURL = try await PayloadEncryption.storeLocally(ciphertext: bundle.ciphertext, hash: bundle.payloadHash)
+        let fetchURL = try await PayloadEncryption.storeLocally(ciphertext: bundle.ciphertext)
         return HintPacket(
             requesterId: requesterId,
             hint: hint,
