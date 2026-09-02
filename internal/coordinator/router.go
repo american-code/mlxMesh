@@ -122,8 +122,12 @@ const affinityMaxInFlight = 4
 // sharing the same model + leading prompt content consistently prefer the
 // same node — preserving Exo's warm KV-cache for that prefix instead of
 // forcing a cold recompute on whichever node the load balancer happens to
-// pick next (TODO.md "Prefix/KV-cache-aware routing": a 5.8x speedup on
-// shared prompt prefixes per real MLX prefix-caching benchmarks). Keys on
+// pick next. (An earlier revision of this comment cited "a 5.8x speedup on
+// shared prompt prefixes per real MLX prefix-caching benchmarks" and
+// attributed it to TODO.md; that figure appears nowhere in TODO.md or in any
+// benchmark in this repo, so it has been removed rather than left unsourced.
+// The routing behaviour below is unchanged; only the unsupported number is
+// gone.) Keys on
 // the concatenation of every system-role message (the common real pattern:
 // a fixed instruction block reused across many distinct user turns, e.g. a
 // batch summarization pass), falling back to the first message's content
