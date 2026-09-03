@@ -2478,10 +2478,16 @@ func authMiddleware(adminKey string, adminAuth *adminauth.Authenticator, keys *a
 				}
 				// Synthetic header so the credit gate picks up the caller's identity
 				// without requiring the client to send X-OIM-User-ID separately.
-				if r.Header.Get("X-OIM-User-ID") == "" {
-					r = r.Clone(r.Context())
-					r.Header.Set("X-OIM-User-ID", uid)
-				}
+				//
+				// This OVERWRITES unconditionally. It used to set the header only
+				// when absent, which let an authenticated caller supply someone
+				// else's user_id and have the debit at /v1/chat/completions land on
+				// that account — free inference for the attacker, denial-of-funds
+				// for the victim. The quota check above was already careful to key
+				// on the verified uid for exactly this reason; billing was not.
+				// Never trust an inbound X-OIM-User-ID on an authenticated request.
+				r = r.Clone(r.Context())
+				r.Header.Set("X-OIM-User-ID", uid)
 				next.ServeHTTP(w, r)
 				return
 			}

@@ -330,3 +330,38 @@ func TestAuthMiddleware_PerAccountQuota(t *testing.T) {
 		t.Errorf("admin key call = %d, want %d (admin exempt from per-account quota)", code, http.StatusOK)
 	}
 }
+
+// An authenticated caller must never be able to bill another account by supplying
+// its user_id. authMiddleware previously set X-OIM-User-ID only when the header was
+// absent, so a client could send someone else's id and the credit gate at
+// /v1/chat/completions would debit that account instead: free inference for the
+// caller, denial-of-funds for the victim.
+func TestAuthMiddleware_InboundUserIDHeaderCannotSpoofBilling(t *testing.T) {
+	var seen string
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Get("X-OIM-User-ID")
+		w.WriteHeader(http.StatusOK)
+	})
+	keys := newAPIKeyStore()
+	attackerKey, err := keys.generate("attacker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := authMiddleware("admin-secret", nil, keys, nil, next)
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("Authorization", "Bearer "+attackerKey)
+	r.Header.Set("X-OIM-User-ID", "victim") // the spoof attempt
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authenticated call = %d, want 200", rec.Code)
+	}
+	if seen == "victim" {
+		t.Fatal("client-supplied X-OIM-User-ID reached the handler: billing can be spoofed onto another account")
+	}
+	if seen != "attacker" {
+		t.Fatalf("X-OIM-User-ID = %q, want the verified caller %q", seen, "attacker")
+	}
+}
