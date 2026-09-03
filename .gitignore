@@ -30,3 +30,9 @@ dashboard/node_modules/
 OIMMenuBar/Resources/oim
 OIMMenuBar/**/xcuserdata/
 OIMMenuBar/**/*.xcuserstate
+OIMDashboard/**/xcuserdata/
+OIMDashboard/**/*.xcuserstate
+
+# macOS metadata — never project content
+.DS_Store
+**/.DS_Store

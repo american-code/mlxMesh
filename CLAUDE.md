@@ -13,7 +13,7 @@ Source docs live in `/Users/melton/meshAI/`. When multiple files have the same b
 ## Core architecture (non-negotiable constraints)
 - **No WAN dense-model pipeline-sharding** — 20–150 ms inter-hop latency kills sequential token passing; MoE expert-sharding is the only WAN-viable strategy for large models
 - **No native token** — off-protocol payment rails (stablecoin/fiat) to avoid Helium-style token trap; `earned_referral` credit type is explicitly banned
-- **Division-order accounting** — measured resource lines, not declared; grant vs earned balances must NEVER collapse to one number
+- **Division-order accounting** — measured resource lines, not declared; grant vs earned balances must NEVER collapse to one number. Note the settlement builders (`BuildDivisionOrder`, `CreateSettlementRecord`, `ReconcileAgainstMeasuredSignature`) currently have no callers outside tests — the ledger split and decay are live, the signed division-order records are not yet wired
 - **Ed25519 node identity** — node_id = `SHA-256(pubkey)[:32]` hex; never operator-chosen
 - **Bootstrap grants** — per-pod, keyed to VERIFIED capacity, decay as earned capacity grows
 - Sensitivity tiers: `low` | `moderate` | `high_requires_attestation` (Secure Enclave gate)

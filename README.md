@@ -36,8 +36,8 @@ A distributed inference protocol that turns geographically-spread machines into 
 Most distributed inference tools (e.g. [Exo](https://github.com/exo-explore/exo)) work within a single LAN cluster. `oim` adds a coordination layer *above* that: it federates multiple clusters across the internet into a routable mesh, with:
 
 - **Dual-lane routing** — fast lane for interactive jobs (resolver-routed, low-latency), background lane for recurring/batch jobs (scheduler-routed, sticky-session)
-- **MoE expert sharding** *(planner only — not wired into live dispatch; see below)* — the only WAN-viable strategy for large models (sequential token passing can't survive 20-150 ms inter-hop latency)
-- **Division-order accounting** — measured resource lines, not declared promises; credits from bootstrap grants decay as earned capacity grows
+- **MoE expert sharding** *(planner only — nothing calls it; see below)* — the strategy we expect to be WAN-viable for large models, since sequential token passing can't survive 20-150 ms inter-hop latency. Untested against a live mesh.
+- **Division-order accounting** *(library only — the settlement builders have no live callers)* — measured resource lines, not declared promises; credits from bootstrap grants decay as earned capacity grows. The grant/earned split and decay **are** live; `BuildDivisionOrder`, `CreateSettlementRecord` and `ReconcileAgainstMeasuredSignature` are implemented and tested but not yet invoked on any request path
 - **Sensitivity tiers** — LOW / MODERATE / HIGH_REQUIRES_ATTESTATION (Secure Enclave gate on Apple Silicon — Darwin/iOS only; non-Apple nodes cannot accept HIGH_REQUIRES_ATTESTATION jobs)
 - **Ed25519 node identity** — derived from public key, never operator-chosen
 - **iOS coordination / security layer** — iPhone/iPad devices classify on-device and host encrypted payload pointers, adding a privacy layer *without* becoming compute nodes. Additive: the mesh routes identically with zero coordination devices present.
@@ -539,7 +539,7 @@ Native clients: iOS · tvOS · watchOS ← M8 / M9  (OIMDashboard/)
 | M3 | **Done** | Spot-check verification, tier-claim validation, measurement store |
 | M4 | **Done** | Centralized global directory with gossip sync and cache fallback |
 | M5 | **Done** | Division-order settlement ledger with SQLite persistence (single coordinator) or Postgres (`--ledger-db-url`, multi-coordinator safe via row locks + unique constraints), startup grants with PoW |
-| M6 | **Done** | MoE expert-shard planner with proportional assignment and load imbalance detection |
+| M6 | **Planner only** | MoE expert-shard planner with proportional assignment and load imbalance detection — implemented and unit-tested, but no dispatch path calls it |
 | M7 | **Partial** | Federated *directory* (multi-librarian, `FederatedResolver`/`DHTResolver`) is still a stub. Federated ledger *authority* — the harder half of M7 — now has coordinator identity + signed, TOFU-pinned pod registration and cross-pod signed-ledger-event witnessing/audit (`internal/federation`); see [Security model](#security-model--threat-analysis) item 3 for exactly what's closed vs. still open |
 
 **What remains of the original 7-milestone scope:** **M7** (federated
@@ -585,7 +585,7 @@ Concrete things a tester will hit today, so nothing reads as "silently broken":
 - **Node Setup cluster topology is web-only and Exo-driven.** The dashboard's per-device diagram (RAM/GPU/temp/power ring) renders from the local agent's `/detect`, which parses Exo's `/state`. It now populates in the docker sim (stub-exo emits a topology; node-us-1 / node-eu-1 are 3-device clusters). Against a **real** Exo cluster it reads the field names (`topology.nodes`, `nodeMemory`, `nodeIdentities`, `nodeSystem`) — verified end-to-end on a live Mac Studio instance. **iOS has no Node Setup** by design — iOS devices can't run Exo, so they contribute as the coordination/security layer, not as compute nodes. **iOS 27 opportunity:** Apple now ships `MLXLanguageModel` and `CoreAILanguageModel` (public `LanguageModel` protocol) for running MLX-community models on Apple Silicon via Core AI. This enables iPad compute nodes without hand-rolling MLX bindings, but requires implementing the HTTP networking layer (NWListener) to expose it as a mesh-servable endpoint — not yet implemented.
 - **Webhook / async callback** submission is documented as a target but not implemented.
 - **M7 federated directory is a stub; progressive decentralization is partially started.** A public seed IS now deployed (task #42) and clients/coordinators can be configured with multiple directory endpoints so no single instance is a hard dependency (task #49) — but there's still only one directory *instance* actually running, "parity" now has a real metric (real vs. simulated capacity, see below) but no defined threshold or automatic handoff logic, and `FederatedResolver`/`DHTResolver` remain stubs. (The ledger-authority half of M7 — coordinator identity, pod pinning, cross-pod signed-event witnessing — is now partially built; see [Security model](#security-model--threat-analysis) item 3.)
-- **MoE expert sharding is a planner, not a live feature.** `internal/coordinator/moe_planner.go` (assign experts to nodes by memory, route tokens to the expert-holding node, detect load imbalance) is implemented and tested (M6) but **not wired into any dispatch path** — no request is MoE-sharded across mesh nodes today. See the note below on why it wouldn't speed up the fast lane anyway. What *is* wired is **query decomposition** (`RouteWithDecomposition`), and only for the **background lane** (it refuses fast-lane jobs).
+- **MoE expert sharding is a planner, not a live feature.** `internal/coordinator/moe_planner.go` (assign experts to nodes by memory, route tokens to the expert-holding node, detect load imbalance) is implemented and unit-tested (M6) but **nothing calls it** — `PlanMoEExpertAssignment`, `RouteTokenToExpertNode` and `DetectExpertLoadImbalance` have no callers outside `tests/`, and `protocol.ModelCapability.ExpertShardIDs` is declared but never read or written. No request is MoE-sharded across mesh nodes today, and the node runtime could not execute such a plan if one were produced: `internal/exoadapter` has no expert, shard or partition parameter, so a node loads whole models only. The MoE tests exercise the apportionment arithmetic on in-memory manifests, not sharded inference. See the note below on why it wouldn't speed up the fast lane anyway. What *is* wired is **query decomposition** (`RouteWithDecomposition`), and only for the **background lane** (it refuses fast-lane jobs).
 
 Everything above is tracked in the release path below.
 
@@ -911,7 +911,7 @@ Regional sharding (one coordinator per pod) also mitigates this independently of
 | Item | Status |
 |------|--------|
 | **Public seed deploy** — EC2 coordinator + directory as the bootstrap (task #42) | **Done** — live at mlxmesh.net (pod-us + pod-eu + directory), running the M7-signed/pinned build with an Elastic IP |
-| CI pipeline wiring | **Done** — `.github/workflows/ci.yml` runs on every push/PR: a `go` job (build, vet, `golangci-lint`, unit tests, and the `-tags integration` suite), a `dashboard` job (`npm ci && npm run build`, which typechecks via `tsc -b`), and a `swift` job (macOS runner, `xcodegen generate` + `xcodebuild` for the iOS/tvOS/watchOS schemes with `CODE_SIGNING_ALLOWED=NO` so it doesn't need the project's personal signing identity). `.golangci.yml` migrated to the v2 config format and the repo was brought to a clean `0 issues` baseline (misspellings, a few real slow-loris/file-permission gaps, dead unchecked-error patterns) rather than shipping lint wired to a repo that was never actually run through it |
+| CI pipeline wiring | **Done** — `.github/workflows/ci.yml` runs on every push/PR: a `go` job (build, vet, `golangci-lint`, unit tests, and the `-tags integration` suite), a `dashboard` job (`npm ci && npm run build`, which typechecks via `tsc -b`), and a `swift` job (macOS runner, `xcodegen generate` + `xcodebuild` for the iOS/tvOS/watchOS schemes with `CODE_SIGNING_ALLOWED=NO` so it doesn't need the project's personal signing identity). `.golangci.yml` migrated to the v2 config format and the repo was brought to a clean `0 issues` baseline at the time (misspellings, a few real slow-loris/file-permission gaps, dead unchecked-error patterns) rather than shipping lint wired to a repo that was never actually run through it. **That baseline has since drifted — `golangci-lint run ./...` currently reports 12 issues (errcheck 3, gofmt 2, gosec 6, staticcheck 1).** The CI step uses `version: latest` rather than a pinned release, so the rule set moves underneath the repo |
 | Signed release binaries + reproducible Docker images | **Mostly done** — `make release` (`scripts/build-release.sh`) produces byte-for-byte reproducible cross-platform binaries (darwin/linux × arm64/amd64) via `-trimpath -buildid=`, with a `SHA256SUMS` manifest (binary checksums verified stable across runs); `internal/version` stamps version/commit/date into every binary (`oim version`, coordinator/directory startup logs) and the Docker image (build args + OCI labels); see [RELEASING.md](RELEASING.md). **Remaining (operator):** provision a signing key and wire `cosign`/`minisign` over `SHA256SUMS` + the image — deliberately not automated since it needs a private key |
 | App Store / TestFlight pipeline for the Apple apps | **Scaffolded** — the build side is already in CI (all three schemes compile via xcodegen). Added `fastlane/` (`Fastfile` with `preflight`/`beta` lanes reading all credentials from env, `Appfile`) and a manual-dispatch `.github/workflows/testflight.yml` that runs a no-upload preflight by default and gates the real `beta` upload on the operator having configured App Store Connect secrets. **Remaining (operator):** provision the ASC API key, signing certs/profiles, and App Store records — the parts that need an Apple Developer account and can't be committed |
 | Runbook + incident/on-call docs; SLOs | **Done** — [RUNBOOK.md](RUNBOOK.md) (golden signals, deploy/rollback/scale/restart/secrets procedures grounded in the real EC2 topology, plus an incident-response playbook covering every failure this seed has actually hit — OOM, secret-as-directory, IP change, ledger anomaly, node churn, directory 429) and [SLOS.md](SLOS.md) (availability/latency/integrity objectives each tied to a real metric, alerting priorities, and an honest list of gaps that keep it a beta SLA) |
@@ -1058,3 +1058,24 @@ The AGPL-3.0 requires that:
 - Derivative works also be licensed under AGPL-3.0
 
 See the [LICENSE](LICENSE) file for the full text.
+
+### Dual licensing and App Store distribution
+
+This project is offered under **two** licenses, at your option:
+
+1. **AGPL-3.0-or-later** — the terms in `LICENSE`. Use, modify and redistribute
+   freely, provided derivative works and network-served modifications are made
+   available under the same terms.
+2. **A commercial license** — for anyone who cannot accept the AGPL's copyleft
+   or source-disclosure obligations. Contact jmelton@americancode.org.
+
+Binaries distributed through the Apple App Store are released under the
+commercial license, **not** the AGPL. This is deliberate: Apple's terms of
+service impose usage and device restrictions that the GPL family forbids adding
+to a covered work, so an AGPL binary cannot be distributed there. As sole
+copyright holder, American Code can and does license the App Store build
+separately. Every third-party component this project depends on is MIT,
+Apache-2.0 or BSD-3-Clause (see `NOTICE`), so none of them restricts that.
+
+Nothing here changes your rights to the source in this repository, which remain
+AGPL-3.0-or-later.
