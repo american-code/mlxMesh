@@ -17,7 +17,7 @@ datastore land (both are post-beta — see the README release path).
 | 3 | **Fast-lane dispatch success** — a credited request gets a node and a reply (not 503) | 99.0% of dispatch attempts | `oim_rejections_total{reason="..."}` vs `oim_http_requests_total` on `/v1/chat/completions` |
 | 4 | **Fast-lane latency** — coordinator overhead (excludes node inference time) | p95 < 250 ms | `oim_latency_ms` tag on responses / request histogram |
 | 5 | **Ledger integrity** — the books reconcile | 100%, no error budget | `oim_ledger_consistent == 1` and `oim_ledger_anomalies == 0` |
-| 6 | **Credit-gate correctness** — no request is served that wasn't paid for, none double-charged | 100%, no error budget | integration suite (75/25 split, no double-credit) + item 5 reconciliation |
+| 6 | **Credit-gate correctness** — no request is served that wasn't paid for, none double-charged | 100%, no error budget | integration suite (75/25 split, no double-credit) + item 5 reconciliation. Enforced by refusing unidentified callers at `/v1/chat/completions`; `--allow-anonymous-inference` deliberately suspends this for local development and must not be set in production |
 
 Objectives 5 and 6 are **hard invariants**, not budgeted SLOs: a single
 violation is an incident, because they are the difference between a credit

@@ -151,7 +151,7 @@ func startMesh(t *testing.T) string {
 
 	startProc(t, nil, bin.coordinator,
 		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
-		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0")
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0", "--allow-anonymous-inference")
 	waitHealthy(t, coordURL+"/health")
 
 	startProc(t, nil, bin.node, "node", "start",
@@ -587,7 +587,7 @@ func TestIntegrationNodeTLSPinning(t *testing.T) {
 
 	startProc(t, nil, bin.coordinator,
 		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
-		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0")
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0", "--allow-anonymous-inference")
 	waitHealthy(t, coordURL+"/health")
 
 	startProc(t, nil, bin.node, "node", "start",
@@ -667,7 +667,7 @@ func TestIntegrationAvailabilityReward(t *testing.T) {
 	}, bin.coordinator,
 		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
 		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0",
-		"--availability-reward")
+		"--availability-reward", "--allow-anonymous-inference")
 	waitHealthy(t, coordURL+"/health")
 
 	startProc(t, nil, bin.node, "node", "start",
@@ -847,7 +847,7 @@ func TestIntegrationExplicitReachabilityEndpointSkipsAutoPortMap(t *testing.T) {
 
 	startProc(t, nil, bin.coordinator,
 		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
-		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0")
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0", "--allow-anonymous-inference")
 	waitHealthy(t, coordURL+"/health")
 
 	startProc(t, nil, bin.node, "node", "start",
@@ -884,7 +884,7 @@ func TestIntegrationPullModeNodeEarns(t *testing.T) {
 
 	startProc(t, nil, bin.coordinator,
 		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
-		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0")
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0", "--allow-anonymous-inference")
 	waitHealthy(t, coordURL+"/health")
 
 	// Crucially: NO --reachability-endpoint. The node goes pull mode. --listen
@@ -961,7 +961,7 @@ func TestIntegrationColdModelExcludedUntilWarmed(t *testing.T) {
 
 	startProc(t, nil, bin.coordinator,
 		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
-		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0")
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0", "--allow-anonymous-inference")
 	waitHealthy(t, coordURL+"/health")
 
 	startProc(t, nil, bin.node, "node", "start",
@@ -1081,7 +1081,7 @@ func TestIntegrationObservedThroughputUpdatesMeasuredSignature(t *testing.T) {
 
 	startProc(t, nil, bin.coordinator,
 		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
-		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0")
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0", "--allow-anonymous-inference")
 	waitHealthy(t, coordURL+"/health")
 
 	startProc(t, nil, bin.node, "node", "start",
@@ -1174,7 +1174,7 @@ func TestIntegrationSimulatedNodeNotCreditedByFastLane(t *testing.T) {
 
 	startProc(t, nil, bin.coordinator,
 		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
-		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0")
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0", "--allow-anonymous-inference")
 	waitHealthy(t, coordURL+"/health")
 
 	startProc(t, []string{"OIM_SIMULATED_NODE=true"}, bin.node, "node", "start",
@@ -1240,7 +1240,7 @@ func TestIntegrationClusterRingDeduplicated(t *testing.T) {
 
 	startProc(t, nil, bin.coordinator,
 		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
-		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0")
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0", "--allow-anonymous-inference")
 	waitHealthy(t, coordURL+"/health")
 
 	// Two devices of ONE ring: independent stub-exo and oim-agent processes,
@@ -1328,7 +1328,7 @@ func TestIntegrationPrefixAffinityKeepsRepeatedPromptsOnTheSameNode(t *testing.T
 
 	startProc(t, nil, bin.coordinator,
 		fmt.Sprintf("--listen=:%d", coordPort), "--pod-id=itest", "--region=us",
-		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0")
+		fmt.Sprintf("--public-url=%s", coordURL), "--grant-pow-bits=0", "--allow-anonymous-inference")
 	waitHealthy(t, coordURL+"/health")
 
 	for i, user := range []string{"affinity-miner-1", "affinity-miner-2"} {

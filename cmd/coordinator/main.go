@@ -191,6 +191,7 @@ func main() {
 }
 
 func rootCmd() *cobra.Command {
+	var allowAnonInference bool
 	var listenAddr, podID, regionHint, publicURL, apiKey, dbPath, ledgerDBURL string
 	var directoryURLs []string
 	var maxDispatchAttempts, directoryIntervalSec, grantPoWBits int
@@ -214,7 +215,7 @@ and routes inference jobs to the best available node.
 Nodes register with: oim node start --coordinator http://<this-host>:<port>
 Optionally report aggregate health to a directory with --directory.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCoordinator(listenAddr, podID, regionHint, directoryURLs, publicURL, apiKey, dbPath, ledgerDBURL,
+			return runCoordinator(allowAnonInference, listenAddr, podID, regionHint, directoryURLs, publicURL, apiKey, dbPath, ledgerDBURL,
 				maxDispatchAttempts, time.Duration(directoryIntervalSec)*time.Second, rateLimitRPS, rateLimitBurst,
 				corsOrigins, grantPoWBits, grantRateLimitPerHour, tlsCert, tlsKey,
 				identityPath, federationKey, federationDBPath, time.Duration(federationPollIntervalSec)*time.Second,
@@ -230,6 +231,10 @@ Optionally report aggregate health to a directory with --directory.`,
 	cmd.Flags().StringSliceVar(&directoryURLs, "directory", nil, "Directory server URL(s) for pod discovery registration (repeatable or comma-separated; empty = disabled). Registers with ALL of them and, for reads (peer topology polling), tries each in order until one answers — no single directory instance is a hard dependency once more than one is configured (task #49)")
 	cmd.Flags().IntVar(&directoryIntervalSec, "directory-interval", 60, "Seconds between directory health-digest reports")
 	cmd.Flags().StringVar(&apiKey, "api-key", "", "Bearer token required for write operations (empty = disabled)")
+	cmd.Flags().BoolVar(&allowAnonInference, "allow-anonymous-inference", false,
+		"Serve /v1/chat/completions to callers who present no identity. Off by default: "+
+			"anonymous requests bypass the credit gate entirely, so inference is free and "+
+			"nothing is debited. Intended for local development only.")
 	cmd.Flags().StringVar(&dbPath, "db-path", "", "SQLite file for the credit ledger and API keys (empty = in-memory only, resets on restart)")
 	cmd.Flags().StringVar(&ledgerDBURL, "ledger-db-url", "", "Postgres DSN (e.g. postgres://user:pass@host:5432/oim) for the credit ledger. Takes priority over --db-path for the ledger specifically — --db-path keeps governing the API-key store either way. Unlike SQLite, correctness here is enforced by Postgres transactions/row locks rather than this process's in-memory mutex, so multiple coordinator processes can safely share one Postgres instance (SQLite cannot)")
 	cmd.Flags().Float64Var(&rateLimitRPS, "rate-limit-rps", 20.0, "Sustained requests per second allowed per client IP (0 disables rate limiting)")
@@ -276,7 +281,7 @@ func (s *settlementRecordStore) store(r map[string]any) {
 	s.records = append(s.records, r)
 }
 
-func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string, publicURL, apiKey, dbPath, ledgerDBURL string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64, tlsCert, tlsKey, identityPath, federationKey, federationDBPath string, federationPollInterval time.Duration, protectUserReads bool, userQuotaPerHour float64, trustedProxies []string, availabilityRewardEnabled bool, bdflPublicKey string, adminTreasuryRateLimitPerMin float64, deploymentHistoryPath string) error {
+func runCoordinator(allowAnonInference bool, listenAddr, podID, regionHint string, directoryURLs []string, publicURL, apiKey, dbPath, ledgerDBURL string, maxAttempts int, directoryInterval time.Duration, rateLimitRPS, rateLimitBurst float64, corsOrigins []string, grantPoWBits int, grantRateLimitPerHour float64, tlsCert, tlsKey, identityPath, federationKey, federationDBPath string, federationPollInterval time.Duration, protectUserReads bool, userQuotaPerHour float64, trustedProxies []string, availabilityRewardEnabled bool, bdflPublicKey string, adminTreasuryRateLimitPerMin float64, deploymentHistoryPath string) error {
 	log.Printf("[coordinator] oim-coordinator %s", version.String())
 	proxyNets, err := httpmw.ParseTrustedProxies(trustedProxies)
 	if err != nil {
@@ -731,9 +736,21 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 			maxTok = defaultMaxTokens
 		}
 
-		// Credit gate — only enforced when the caller identifies themselves.
-		// Anonymous / internal calls are allowed through (dev mode, node-to-node).
+		// Credit gate. An anonymous caller has no account to debit, so serving one
+		// is free inference — and the node still earns, minting credits with no
+		// matching debit. That breaks the ledger invariant, so it is refused unless
+		// the operator has explicitly opted in with --allow-anonymous-inference.
 		userID := r.Header.Get("X-OIM-User-ID")
+		if userID == "" && !allowAnonInference {
+			mx.Counter(`oim_rejections_total{reason="unidentified_caller"}`).Inc()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]any{
+				"error": "unidentified caller: present an oim_ API key via Authorization, " +
+					"or start the coordinator with --allow-anonymous-inference for local development",
+			})
+			return
+		}
 		if userID != "" {
 			// Activity-discounted estimate (bootstrapping-economics fix, TODO.md
 			// Economic Sustainability) — using the same discount here as at actual
@@ -1927,6 +1944,9 @@ func runCoordinator(listenAddr, podID, regionHint string, directoryURLs []string
 		}
 	} else if userQuotaPerHour > 0 {
 		log.Printf("[coordinator] WARNING: --user-quota-per-hour set but --api-key is not; per-account quota only applies to authenticated (oim_ key) requests, so it will not engage without auth")
+	}
+	if allowAnonInference {
+		log.Printf("[coordinator] WARNING: --allow-anonymous-inference is set. Unidentified callers can run inference free of charge; nodes still earn, so credits are minted with no matching debit. Do not use this in production.")
 	}
 	if protectUserReads {
 		log.Printf("[coordinator] per-user read protection enabled: GET /users/{id}/balance and /api-key require the account's own key or the admin key")
